@@ -407,7 +407,7 @@ private struct OverflowMenu: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        var types: [UTType] = [.pdf]
+        var types: [UTType] = [.pdf, .epub]
         if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
         panel.allowedContentTypes = types
         guard panel.runModal() == .OK else { return }

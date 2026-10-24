@@ -40,16 +40,27 @@ enum TabPresentation {
         if fallback.lowercased().hasSuffix(".pdf") {
             return String(fallback.dropLast(4))
         }
+        if fallback.lowercased().hasSuffix(".epub") {
+            return String(fallback.dropLast(5))
+        }
         return fallback.isEmpty ? "Untitled" : fallback
     }
 
     static func typeLabel(for tab: PdfTab) -> String {
         guard let document = tab.document else { return "New Tab" }
-        return document.kind == .web ? "Webpage" : "PDF"
+        switch document.kind {
+        case .web: return "Webpage"
+        case .pdf: return "PDF"
+        case .epub: return "Book"
+        }
     }
 
     static func iconName(for tab: PdfTab) -> String {
         guard let document = tab.document else { return "plus.square" }
-        return document.kind == .web ? "globe" : "doc.text"
+        switch document.kind {
+        case .web: return "globe"
+        case .pdf: return "doc.text"
+        case .epub: return "book"
+        }
     }
 }

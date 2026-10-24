@@ -338,11 +338,17 @@ struct WelcomeScreen: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
+    private var openingLabel: String {
+        guard let download = appStore.bookDownloadProgress else { return "Opening…" }
+        guard let fraction = download else { return "Downloading book…" }
+        return "Downloading book… \(Int((fraction * 100).rounded()))%"
+    }
+
     private var libraryOpenPDFButton: some View {
         TextButton(disabled: appStore.isLoading, action: openDocuments) {
             Image(systemName: "folder")
                 .font(.system(size: 14))
-            Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+            Text(appStore.isLoading ? openingLabel : "Open a PDF")
         }
         .accessibilityIdentifier("welcome.openPdf")
     }
@@ -825,7 +831,7 @@ struct WelcomeScreen: View {
         TextButton(size: .lg, disabled: appStore.isLoading, action: openDocuments) {
             Image(systemName: "folder")
                 .font(.system(size: 18))
-            Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+            Text(appStore.isLoading ? openingLabel : "Open a PDF")
         }
         .accessibilityIdentifier("welcome.openPdf")
     }
@@ -881,7 +887,7 @@ struct WelcomeScreen: View {
                 disabled: appStore.isLoading || trimmedUrlInput.isEmpty,
                 action: openTypedUrl
             ) {
-                Text("Open")
+                Text(appStore.bookDownloadProgress == nil ? "Open" : openingLabel)
             }
             .accessibilityIdentifier("welcome.openUrl")
         }
@@ -1063,7 +1069,7 @@ struct WelcomeScreen: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        var types: [UTType] = [.pdf]
+        var types: [UTType] = [.pdf, .epub]
         if let archive = UTType(filenameExtension: "vellumweb") {
             types.append(archive)
         }

@@ -558,11 +558,11 @@ struct DocumentAccessResolver: Sendable {
 }
 
 #if os(iOS)
-private let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
+let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
     DocumentImport.libraryDirectory
 }
 #else
-private let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
+let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
     if let root = TestEnvironment.storageRoot { return root.appendingPathComponent("Documents", isDirectory: true) }
     let base = FileManager.default.urls(
         for: .applicationSupportDirectory, in: .userDomainMask)[0]

@@ -221,7 +221,7 @@ struct ContentView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        var types: [UTType] = [.pdf]
+        var types: [UTType] = [.pdf, .epub]
         if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
         if let bundle = UTType(filenameExtension: "vellum") { types.append(bundle) }
         panel.allowedContentTypes = types

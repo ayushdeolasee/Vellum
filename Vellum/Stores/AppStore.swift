@@ -303,6 +303,8 @@ final class AppStore {
     // Active document state
     private(set) var document: DocumentInfo?
     private(set) var isLoading = false
+    /// Fraction of an in-flight book download; `.some(nil)` when the size is unknown.
+    private(set) var bookDownloadProgress: Double??
     /// Count concurrent opens/navigation, including the interval before a tab
     /// has DocumentInfo. A recovery restore cannot admit against a hidden open.
     private var pendingDocumentAdmissions = 0
@@ -1032,6 +1034,9 @@ final class AppStore {
                         opened = try await sessions.openWebDocument(
                             url: savedDocument.pdfPath, sessionId: sessionId)
                     }
+                } else if savedDocument.kind == .epub {
+                    opened = try await sessions.openEpubFile(
+                        path: savedDocument.pdfPath, sessionId: sessionId)
                 } else {
                     opened = try await documentAccess.restoreSavedPDF(
                         savedDocument,
@@ -1400,6 +1405,19 @@ final class AppStore {
     }
 
     private func openOneUrl(_ url: String, saveToLibrary: Bool = false) async throws {
+        if let link = URL(string: url), ["http", "https"].contains(link.scheme?.lowercased() ?? "") {
+            defer { bookDownloadProgress = nil }
+            let outcome = try await EpubDownload.fetch(link) { [weak self] fraction in
+                await MainActor.run { self?.bookDownloadProgress = .some(fraction) }
+            }
+            if case .downloaded(let file, let filename) = outcome {
+                defer {
+                    Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: file) }
+                }
+                try await openEpubFile(path: file.path, preferredName: filename)
+                return
+            }
+        }
         try await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
         let sessionId = UUID().uuidString.lowercased()
         let doc = try await sessions.openWebDocument(url: url, sessionId: sessionId)
@@ -1419,7 +1437,27 @@ final class AppStore {
         workspace?.settingsSection = .storage
     }
 
+    private func openEpubFile(path: String, preferredName: String? = nil) async throws {
+        let source = URL(fileURLWithPath: path)
+        let admission = Task.detached(priority: .userInitiated) {
+            try EpubLibrary.importBook(at: source, preferredName: preferredName)
+        }
+        let managed = try await withTaskCancellationHandler {
+            try await admission.value
+        } onCancel: {
+            admission.cancel()
+        }
+        try await awaitTeardowns(ofDocumentAt: managed.path)
+        let sessionId = UUID().uuidString.lowercased()
+        let doc = try await sessions.openEpubFile(path: managed.path, sessionId: sessionId)
+        try await adoptOpenedDocument(doc, sessionId: sessionId)
+    }
+
     private func openDocumentFile(path: String) async throws {
+        if (path as NSString).pathExtension.lowercased() == "epub" {
+            try await openEpubFile(path: path)
+            return
+        }
         let isArchive = path.lowercased().hasSuffix(".vellumweb")
         // Close-then-immediately-reopen: a teardown from a preceding close may
         // still be rewriting this exact file. Opening before it lands would
