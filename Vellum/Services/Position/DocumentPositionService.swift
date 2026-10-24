@@ -51,9 +51,9 @@ struct DocumentPositionService: Sendable {
             }
             return .pdfPath(document.pdfPath)
         case .epub:
-            // EPUB locations are chapter/text anchors, not pages; they get
-            // their own namespace with the reader.
-            return nil
+            // `page` is the 1-based spine index and `scrollFraction` the
+            // progression through that chapter.
+            return document.docId.flatMap(DocumentKey.epub(docId:))
         }
     }
 

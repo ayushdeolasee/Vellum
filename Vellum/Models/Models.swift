@@ -246,6 +246,8 @@ struct PdfTab: Identifiable, Equatable, Sendable {
     /// Ids of point bookmarks whose re-anchored position is on screen right
     /// now (web documents only; reported by the content script).
     var webVisibleBookmarks: [String]
+    /// Scroll progression (0...1) through the current EPUB chapter.
+    var epubProgression: Double? = nil
     var mode: InteractionMode
     /// AI text queued for the next placed note. It deliberately remains live
     /// only: relaunching restores the note tool, never a stale AI reply.

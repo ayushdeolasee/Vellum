@@ -1109,6 +1109,27 @@ final class AppStore {
         recordActivePosition()
     }
 
+    func setEpubLocation(tabId: String, chapter: Int, progression: Double) {
+        guard let tab = tabs.first(where: { $0.id == tabId }), tab.document?.kind == .epub,
+              tab.currentPage != chapter || tab.epubProgression != progression else { return }
+        if tabId == activeTabId { currentPage = chapter }
+        updateTab(tabId) {
+            $0.currentPage = chapter
+            $0.epubProgression = progression
+        }
+        if let updated = tabs.first(where: { $0.id == tabId }) { recordPosition(for: updated) }
+    }
+
+    /// Progression to restore when an EPUB tab's reader first appears: the
+    /// tab's own value, else the stored resume point for the same chapter.
+    func epubResumeProgression(tabId: String) async -> Double? {
+        guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else { return nil }
+        if let progression = tab.epubProgression { return progression }
+        guard let resume = await workspace?.positions.resumePosition(for: document),
+              resume.page == tab.currentPage else { return nil }
+        return resume.scrollFraction
+    }
+
     func setNumPages(_ num: Int) {
         numPages = num
         updateActiveTab { $0.numPages = num }

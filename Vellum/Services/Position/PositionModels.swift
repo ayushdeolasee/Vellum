@@ -19,6 +19,7 @@ struct DocumentKey: Hashable, Sendable, Codable, CustomStringConvertible {
     enum Namespace: String, Sendable, Codable {
         case web
         case pdf
+        case epub
     }
 
     let namespace: Namespace
@@ -58,6 +59,11 @@ struct DocumentKey: Hashable, Sendable, Codable, CustomStringConvertible {
     /// Device-local fallback: sha256 of the filesystem path, matching
     /// `PageTextCache.pathKey`. Positions written under a path key resume
     /// correctly on the same device and are inert on other devices.
+    /// EPUB doc ids are already a sha256 of the book's bytes.
+    static func epub(docId: String) -> DocumentKey? {
+        DocumentKey(rawValue: "\(Namespace.epub.rawValue):\(docId)")
+    }
+
     static func pdfPath(_ path: String) -> DocumentKey {
         DocumentKey(namespace: .pdf, hash: PageTextCache.pathKey(path))
     }

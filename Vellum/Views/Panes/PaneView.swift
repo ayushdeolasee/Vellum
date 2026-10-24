@@ -242,7 +242,11 @@ private struct LiveTabHost: View {
                         tabId: tabId, document: document, isActive: isActive,
                         runtime: runtime)
                 } else if document.kind == .epub {
+                    #if os(macOS)
+                    EpubReaderView(tabId: tabId, document: document)
+                    #else
                     EpubPendingReaderView(document: document)
+                    #endif
                 } else {
                     PdfViewerView(
                         tabId: tabId, documentInfo: document, isActive: isActive,

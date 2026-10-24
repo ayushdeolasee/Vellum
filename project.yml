@@ -153,6 +153,7 @@ targets:
       - path: Tests/StorageMigrationRecoveryTests.swift
       - path: Tests/EpubPackageTests.swift
       - path: Tests/EpubImportTests.swift
+      - path: Tests/EpubReaderTests.swift
       - path: Tests/TestSupport/EpubFixture.swift
       - path: Tests/TestSupport/StorageIsolationTrait.swift
       - path: Tests/TestSupport/FakeSyncedContainer.swift
