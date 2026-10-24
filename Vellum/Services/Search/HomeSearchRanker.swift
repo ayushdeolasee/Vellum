@@ -37,7 +37,7 @@ enum HomeSearchFilter: Hashable, Sendable {
     var label: String {
         switch self {
         case .all: "Everything"
-        case .documents: "PDFs"
+        case .documents: "Documents"
         case .webpages: "Webpages"
         case .saved: "Saved"
         case .provider(let provider): provider.name
@@ -47,7 +47,7 @@ enum HomeSearchFilter: Hashable, Sendable {
     func accepts(_ item: HomeSearchItem) -> Bool {
         switch self {
         case .all: true
-        case .documents: item.kind == .pdf
+        case .documents: item.kind != .web
         case .webpages: item.kind == .web
         // Reads the BADGE, not the section: dedupe can surface a saved page
         // under Recents, and `HomeSearchEngine.deduplicated` unions the badges

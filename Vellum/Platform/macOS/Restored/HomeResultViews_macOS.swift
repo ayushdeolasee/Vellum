@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import ImageIO
 import SwiftUI
 
 // The small, reusable pieces of the home screen's result list. Split out of
@@ -71,6 +72,7 @@ struct HomeResultRow: View {
             HStack(spacing: 12) {
                 HomeResultIcon(
                     thumbnailURL: item.thumbnailURL,
+                    localCoverURL: item.localCoverURL,
                     systemImage: item.systemImage,
                     isMissing: item.badges.contains(.missing))
 
@@ -140,6 +142,7 @@ struct HomeResultRow: View {
 /// and its context menu while the library is scrolling.
 private struct HomeResultIcon: View {
     let thumbnailURL: URL?
+    let localCoverURL: URL?
     let systemImage: String
     let isMissing: Bool
     @Environment(IntegrationsStore.self) private var integrations
@@ -165,9 +168,27 @@ private struct HomeResultIcon: View {
             .overlay {
                 RoundedRectangle(cornerRadius: Radius.md).strokeBorder(.separator)
             }
-            .task(id: thumbnailURL) {
+            .task(id: localCoverURL ?? thumbnailURL) {
                 guard !Task.isCancelled else { return }
                 if thumbnail != nil { thumbnail = nil }
+                if let url = localCoverURL {
+                    let worker = Task.detached(priority: .utility) { () -> CGImage? in
+                        guard !Task.isCancelled,
+                              let data = EpubLibraryCatalog.boundedData(url, cap: EpubLibraryCatalog.maxCoverBytes),
+                              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+                        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                            kCGImageSourceCreateThumbnailFromImageAlways: true,
+                            kCGImageSourceThumbnailMaxPixelSize: 128,
+                            kCGImageSourceCreateThumbnailWithTransform: true,
+                        ] as CFDictionary)
+                    }
+                    let image = await withTaskCancellationHandler {
+                        await worker.value
+                    } onCancel: { worker.cancel() }
+                    guard !Task.isCancelled, localCoverURL == url else { return }
+                    thumbnail = image.map { NSImage(cgImage: $0, size: .zero) }
+                    return
+                }
                 guard let url = thumbnailURL else { return }
                 let image = await integrations.thumbnailImage(for: url)
                 guard !Task.isCancelled else { return }

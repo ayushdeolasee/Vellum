@@ -40,7 +40,7 @@ struct VellumToolbar: ToolbarContent {
 
         // PDF-only reading controls stay in the leading region so the centered
         // title and the trailing pod never move between modes.
-        if hasDocument, !isWeb {
+        if appStore.document?.kind == .pdf {
             ToolbarItemGroup(placement: .navigation) {
                 ControlGroup {
                     ZoomControls()
@@ -358,7 +358,7 @@ private struct OverflowMenu: View {
                 }
             }
 
-            if hasDocument, !isWeb {
+            if appStore.document?.kind == .pdf {
                 Section {
                     Button(action: savePdf) {
                         Label("Save", systemImage: "square.and.arrow.down")
@@ -538,6 +538,7 @@ private struct DocumentTitleField: View {
 
     private var helpText: String {
         let path = appStore.document?.pdfPath ?? ""
+        if appStore.document?.kind == .epub { return "\(path) — imported EPUB; notes are saved separately" }
         return isWeb
             ? "\(path) — click to copy, double-click to export a copy"
             : "\(path) — double-click to change where the file is saved"
@@ -561,6 +562,7 @@ private struct DocumentTitleField: View {
     }
 
     private func saveAs() {
+        guard appStore.document?.kind != .epub else { return }
         if isWeb {
             exportWebArchive()
         } else {

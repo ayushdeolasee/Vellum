@@ -316,8 +316,13 @@ final class HomeSearchStore {
         }
         // Read the entry BEFORE the write — it is the whole of what Undo needs
         // to put the row back untouched.
-        let entry = RecentFilesService.getRecent().first { $0.pdfPath == path }
-        _ = RecentFilesService.remove(path: path)
+        let entry = RecentFilesService.getRecent().first {
+            if item.kind == .epub, let docId = item.storageKey {
+                return $0.kind == .epub && $0.docId == docId
+            }
+            return $0.pdfPath == path
+        }
+        _ = RecentFilesService.remove(path: entry?.pdfPath ?? path)
         if selectedId == item.id { selectedId = nil }
         return entry.map(HomeRecentRemovalTransaction.init)
     }

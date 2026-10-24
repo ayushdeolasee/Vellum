@@ -99,7 +99,8 @@ enum ContinueReadingResolver {
             return keys
 
         case .epub:
-            return []
+            guard let docId = document.storageKey, let key = DocumentKey.epub(docId: docId) else { return [] }
+            return [key]
         }
     }
 }

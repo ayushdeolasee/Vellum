@@ -32,6 +32,7 @@ import Foundation
 //   2. the recents list in UserDefaults   — RecentFilesService
 //   3. the saved-page record on disk      — WebLibrary
 //   4. the in-memory open tab             — AppStore
+//   5. the imported book's catalog        — EpubLibraryCatalog
 //
 // Updating a subset is worse than updating none, because the screen the user
 // is not looking at keeps the old name and the two disagree until something
@@ -66,6 +67,11 @@ enum DocumentRenameService {
     @discardableResult
     static func apply(_ target: Target, title: String?) -> Bool {
         var wrote = false
+
+        if target.kind == .epub, let key = target.storageKey,
+           (try? EpubLibraryCatalog.setTitle(docId: key, title: title)) == true {
+            wrote = true
+        }
 
         // 1. The document's own metadata folder. Absent for a document that
         // has never been annotated or chatted about, which is normal, not an
@@ -104,6 +110,13 @@ enum DocumentRenameService {
     ) async -> Bool {
         var wrote = false
 
+        if target.kind == .epub, let key = target.storageKey {
+            let saved = await Task.detached(priority: .userInitiated) {
+                (try? EpubLibraryCatalog.setTitle(docId: key, title: title)) == true
+            }.value
+            if saved { wrote = true }
+        }
+
         if let key = target.storageKey {
             if let coordinator = storage.coordinator {
                 if await DocumentDataStore.setTitle(
@@ -141,6 +154,12 @@ enum DocumentRenameService {
         _ target: Target, title: String?, storage: WebLibraryStorage?
     ) async -> Bool {
         var succeeded = true
+        if target.kind == .epub, let key = target.storageKey {
+            let saved = await Task.detached(priority: .userInitiated) {
+                (try? EpubLibraryCatalog.setTitle(docId: key, title: title)) == true
+            }.value
+            if !saved { succeeded = false }
+        }
         if let key = target.storageKey {
             if let coordinator = storage?.coordinator {
                 let saved = await ScratchpadWriteCoordinator.shared.withExclusiveAccess(forKeys: [key]) {
