@@ -108,6 +108,7 @@ struct ReadingPosition: Hashable, Sendable, Codable {
     var anchorSuffix: String?
     /// CSS px, mirroring `PositionData.viewportOffset`.
     var viewportOffset: Double?
+    var epubLocation: EpubLocation? = nil
 
     init(
         page: Int,
@@ -115,7 +116,8 @@ struct ReadingPosition: Hashable, Sendable, Codable {
         scrollFraction: Double? = nil,
         anchorPrefix: String? = nil,
         anchorSuffix: String? = nil,
-        viewportOffset: Double? = nil
+        viewportOffset: Double? = nil,
+        epubLocation: EpubLocation? = nil
     ) {
         self.page = page
         self.pageCount = pageCount
@@ -123,6 +125,7 @@ struct ReadingPosition: Hashable, Sendable, Codable {
         self.anchorPrefix = anchorPrefix
         self.anchorSuffix = anchorSuffix
         self.viewportOffset = viewportOffset
+        self.epubLocation = epubLocation
     }
 
     enum CodingKeys: String, CodingKey {
@@ -132,6 +135,7 @@ struct ReadingPosition: Hashable, Sendable, Codable {
         case anchorPrefix = "anchor_prefix"
         case anchorSuffix = "anchor_suffix"
         case viewportOffset = "viewport_offset"
+        case epubLocation = "epub_location"
     }
 }
 
