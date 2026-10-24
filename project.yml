@@ -144,6 +144,8 @@ targets:
       - path: Tests/PdfSearchTests.swift
       - path: Tests/DocumentAccessBookmarkStoreTests.swift
       - path: Tests/HomeDropTests.swift
+      - path: Tests/ChromeHandoffTests.swift
+      - path: Tests/VellumExternalWebLinkTests.swift
       - path: Tests/ReleaseIsolationTests.swift
       - path: Tests/AiPromptContextTests.swift
       - path: Tests/StorageMigrationRecoveryTests.swift

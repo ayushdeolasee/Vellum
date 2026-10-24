@@ -12,6 +12,16 @@ import WebKit
 // MARK: - URL normalization (Rust `normalize_url`)
 
 enum WebUrl {
+    static func navigationURL(_ raw: String) throws -> String {
+        let normalized = try normalize(raw)
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .filter { $0 != "\t" && $0 != "\n" && $0 != "\r" }
+        guard let fragment = URLComponents(string: cleaned)?.percentEncodedFragment else {
+            return normalized
+        }
+        return normalized + "#" + fragment
+    }
+
     /// Normalize a user-supplied URL: default to https, strip fragments and
     /// tracking params so the same article always maps to one record. The
     /// output must match the Rust `url` crate's serialization (the sha256 of
@@ -818,7 +828,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
     /// server-rendered for — `window.location.pathname` must match, or SPA
     /// hydration tears the page down (see plans/web-proxy-truthful-urls.html).
     nonisolated static func proxyUrl(for target: String) -> URL {
-        // `target` is always WebUrl.normalize output; swap the scheme by
+        // `target` is a normalized URL, optionally with a navigation fragment; swap the scheme by
         // string surgery so the WHATWG-serialized authority/path/query stay
         // byte-identical (URLComponents reassembly would re-encode).
         let mapped: String
@@ -876,6 +886,9 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         if path.isEmpty { path = "/" }
         var out = "\(realScheme)://\(authority)\(path)"
         if let query = comps.percentEncodedQuery { out += "?\(query)" }
+        #if os(macOS)
+        if let fragment = comps.percentEncodedFragment { out += "#\(fragment)" }
+        #endif
         return out
     }
 

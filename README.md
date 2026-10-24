@@ -21,6 +21,8 @@ The Mac extension uses validated URL intake, so it does not copy Safari’s cook
 
 The extension in `VellumChrome/` opens the current HTTP or HTTPS page in the macOS app. To install it locally, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the `VellumChrome` folder. Pin **Open in Vellum** for one-click access. The distributed extension targets the production app (`vellum://`); Debug builds register only `vellum-dev://`.
 
+Online PDFs are downloaded into Vellum’s local document library and opened in the native PDF reader (up to 250 MiB). Vellum fetches the URL independently; Chrome’s cookies and local `file://` PDFs are not transferred. Webpage anchors are retained for navigation without creating separate annotation records.
+
 ## Current limits
 
 - Local, custom-folder, and coordinated iCloud storage are implemented. `project.yml` wires iCloud entitlements for both main apps and App Groups for the mobile app/extensions. Portal profiles and signed cross-device behavior remain release gates in #149; source wiring alone does not verify them.
