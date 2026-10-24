@@ -158,7 +158,7 @@ private struct EpubWebView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(session: session) }
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> EpubChapterWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.setURLSchemeHandler(context.coordinator.resources, forURLScheme: EpubResourceSchemeHandler.scheme)
@@ -168,18 +168,24 @@ private struct EpubWebView: NSViewRepresentable {
             source: Self.readerScript, injectionTime: .atDocumentEnd,
             forMainFrameOnly: true, in: .defaultClient))
         controller.add(context.coordinator, contentWorld: .defaultClient, name: "epubReader")
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = EpubChapterWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.setAccessibilityIdentifier("epub.content")
         return webView
     }
 
-    func updateNSView(_ webView: WKWebView, context: Context) {
+    func updateNSView(_ webView: EpubChapterWebView, context: Context) {
         context.coordinator.parent = self
+        webView.onChapterStep = { step in
+            let chapter = location.chapter + step
+            guard session.publication.spine.indices.contains(chapter) else { return }
+            onNavigate(chapter, nil)
+        }
         context.coordinator.show(location, in: webView)
     }
 
-    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+    static func dismantleNSView(_ webView: EpubChapterWebView, coordinator: Coordinator) {
+        webView.onChapterStep = nil
         webView.configuration.userContentController.removeAllScriptMessageHandlers()
         webView.stopLoading()
         coordinator.resources.cancelAll()
@@ -284,6 +290,25 @@ private struct EpubWebView: NSViewRepresentable {
       };
     })();
     """
+}
+
+final class EpubChapterWebView: WKWebView {
+    var onChapterStep: ((Int) -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // WebKit consumes its history shortcuts before SwiftUI's chapter buttons.
+        if let responder = window?.firstResponder as? NSView,
+           responder === self || responder.isDescendant(of: self),
+           event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+           let onChapterStep {
+            switch event.charactersIgnoringModifiers {
+            case "[": onChapterStep(-1); return true
+            case "]": onChapterStep(1); return true
+            default: break
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 /// Serves archive resources of one open book under

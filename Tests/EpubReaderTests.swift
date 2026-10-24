@@ -1,5 +1,9 @@
 import Foundation
 import Testing
+#if os(macOS)
+import AppKit
+import WebKit
+#endif
 @testable import Vellum
 
 @Suite("EPUB reader locations")
@@ -31,6 +35,33 @@ struct EpubReaderTests {
     }
 
     #if os(macOS)
+    @MainActor @Test("Focused EPUB content routes command brackets to chapters")
+    func chapterShortcuts() throws {
+        let window = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        let webView = EpubChapterWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        window.contentView = webView
+        #expect(window.makeFirstResponder(webView))
+        var steps: [Int] = []
+        webView.onChapterStep = { steps.append($0) }
+        func event(_ key: String, modifiers: NSEvent.ModifierFlags = .command) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: key,
+                charactersIgnoringModifiers: key, isARepeat: false, keyCode: key == "[" ? 33 : 30))
+        }
+        #expect(webView.performKeyEquivalent(with: try event("[")))
+        #expect(webView.performKeyEquivalent(with: try event("]")))
+        #expect(steps == [-1, 1])
+        _ = webView.performKeyEquivalent(with: try event("]", modifiers: [.command, .shift]))
+        _ = webView.performKeyEquivalent(with: try event("[", modifiers: []))
+        #expect(steps == [-1, 1])
+        window.makeFirstResponder(nil)
+        _ = webView.performKeyEquivalent(with: try event("]"))
+        #expect(steps == [-1, 1])
+        webView.onChapterStep = nil
+        window.contentView = nil
+    }
+
     @Test("Resource URLs round-trip archive paths")
     func resourceURLs() {
         for path in ["OEBPS/text/ch 1.xhtml", "OPS/Ünïcode#1.xhtml", "a/b%20c.css"] {
