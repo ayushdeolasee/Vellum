@@ -1,11 +1,21 @@
 import Foundation
 
-enum EpubAnnotationError: Error, Equatable {
+enum EpubAnnotationError: LocalizedError, Equatable {
     case invalidAnchor
     case invalidChapter
     case duplicateID
     case invalidSidecar
     case limitExceeded
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidAnchor: "This passage could not be located unambiguously. Select it again before saving."
+        case .invalidChapter: "This chapter is no longer available."
+        case .duplicateID: "This annotation already exists."
+        case .invalidSidecar: "The book's annotation data could not be read. It has been kept unchanged."
+        case .limitExceeded: "This book's annotations exceed the supported size limit."
+        }
+    }
 }
 
 /// No cached records: every edit merges against the latest docId-keyed bytes.

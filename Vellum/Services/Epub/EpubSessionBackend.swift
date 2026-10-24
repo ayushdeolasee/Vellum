@@ -70,15 +70,16 @@ final class EpubSessionBackend {
     func open(path: String, sessionId: String) async throws -> EpubDocumentSession {
         let limits = limits
         let loading = Task.detached(priority: .userInitiated) {
-            try EpubBook.load(path: path, limits: limits)
+            let book = try EpubBook.load(path: path, limits: limits)
+            return (book, EpubLibraryCatalog.customTitle(docId: book.docId))
         }
-        let book = try await withTaskCancellationHandler {
+        let (book, title) = try await withTaskCancellationHandler {
             try await loading.value
         } onCancel: {
             loading.cancel()
         }
         try Task.checkCancellation()
-        return EpubDocumentSession(book: book, coordinator: coordinator)
+        return EpubDocumentSession(book: book, coordinator: coordinator, titleOverride: title)
     }
 }
 

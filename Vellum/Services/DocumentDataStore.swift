@@ -220,11 +220,14 @@ enum DocumentDataStore {
                     // Refuse unavailable active bytes even when a local fallback was read.
                     let active = try await access.store.read(destination)
                     guard active == nil || active == original else { throw LibraryFileError.retryable }
-                    let meta = Meta(
-                        version: 1, kind: document.kind.rawValue, title: document.title,
-                        lastKnownPath: document.pdfPath, lastOpened: WebLibrary.rfc3339Now())
                     let metaURL = directory.appendingPathComponent("meta.json")
-                    _ = try await access.store.read(metaURL)
+                    let previousMeta = try await access.store.read(metaURL).map {
+                        try JSONDecoder().decode(Meta.self, from: $0)
+                    }
+                    let meta = Meta(
+                        version: 1, kind: document.kind.rawValue,
+                        title: previousMeta == nil ? document.title : previousMeta?.title,
+                        lastKnownPath: document.pdfPath, lastOpened: WebLibrary.rfc3339Now())
                     try Task.checkCancellation()
                     try await access.store.replace(metaURL, with: WebLibrary.jsonEncoderPretty.encode(meta))
                     try Task.checkCancellation()

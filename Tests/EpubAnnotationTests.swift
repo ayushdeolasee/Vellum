@@ -13,13 +13,16 @@ struct EpubAnnotationTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let oldRoot = DocumentDataStore.rootDirectoryOverride
         let oldWeb = WebLibrary.storeDirOverride
+        let oldBooks = EpubLibrary.directoryOverride
         DocumentDataStore.rootDirectoryOverride = root.appendingPathComponent("documents")
         WebLibrary.storeDirOverride = root.appendingPathComponent("web")
+        EpubLibrary.directoryOverride = root.appendingPathComponent("Books")
         let suite = "epub-annotations-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer {
             DocumentDataStore.rootDirectoryOverride = oldRoot
             WebLibrary.storeDirOverride = oldWeb
+            EpubLibrary.directoryOverride = oldBooks
             defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: root)
         }
@@ -76,6 +79,28 @@ struct EpubAnnotationTests {
             } catch { try? await reopened.close(); throw error }
             #expect(try Data(contentsOf: file) == bytes)
             #expect(try EpubIdentity.contentDocId(fileAt: file) == first.book.docId)
+        }
+    }
+
+    @Test("Annotation writes preserve a renamed or explicitly cleared metadata title")
+    func preservesRenamedTitle() async throws {
+        try await environment { first, second, _ in
+            _ = try await first.createAnnotation(input(first, id: "a"))
+            let key = first.book.docId
+            let renamed = await Task.detached {
+                DocumentDataStore.setTitle(forKey: key, title: "Renamed book")
+            }.value
+            #expect(renamed)
+            _ = try await second.createAnnotation(input(second, id: "b"))
+            let renamedMeta = await Task.detached { DocumentDataStore.loadMeta(forKey: key) }.value
+            #expect(renamedMeta?.title == "Renamed book")
+            let cleared = await Task.detached {
+                DocumentDataStore.setTitle(forKey: key, title: nil)
+            }.value
+            #expect(cleared)
+            _ = try await first.createAnnotation(input(first, id: "c"))
+            let clearedMeta = await Task.detached { DocumentDataStore.loadMeta(forKey: key) }.value
+            #expect(clearedMeta != nil && clearedMeta?.title == nil)
         }
     }
 

@@ -45,6 +45,10 @@ struct EpubLibraryIntegrationTests {
         #expect(DocumentDataStore.listDocumentMetas().isEmpty)
         let items = try await EpubBooksSearchProvider().items(matching: "")
         #expect(items.first?.title == "My Edition")
+        let session = try await EpubSessionBackend().open(path: managed.path, sessionId: "title")
+        let info = await session.info
+        #expect(info.title == "My Edition" && info.titleIsUserDefined == true)
+        try await session.close()
         #expect(try EpubLibraryCatalog.setTitle(docId: docId, title: nil))
         #expect(EpubLibraryCatalog.customTitle(docId: docId) == nil)
         #expect(EpubLibraryCatalog.customTitle(docId: "../outside") == nil)

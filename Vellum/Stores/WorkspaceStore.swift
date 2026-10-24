@@ -633,6 +633,7 @@ final class WorkspaceStore {
         self.documentAccess = documentAccess
         if let manager = sessions as? DocumentSessionManager {
             manager.webBackend.storage = webLibraryStorage
+            manager.epubBackend.coordinator = webLibraryStorage.coordinator
         }
         let catalog = OpenRouterCatalog()
         let settingsAi = AiStore()

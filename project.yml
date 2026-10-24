@@ -156,6 +156,8 @@ targets:
       - path: Tests/EpubReaderTests.swift
       - path: Tests/EpubTextTests.swift
       - path: Tests/EpubLibraryIntegrationTests.swift
+      - path: Tests/EpubAnnotationTests.swift
+      - path: Tests/EpubSearchTests.swift
       - path: Tests/ScratchDefaultsTrait.swift
       - path: Tests/TestSupport/EpubFixture.swift
       - path: Tests/TestSupport/StorageIsolationTrait.swift
