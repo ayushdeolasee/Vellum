@@ -289,6 +289,15 @@ enum EpubLibraryCatalog {
         return true
     }
 
+    static func customTitle(docId: String, in library: URL = EpubLibrary.directory) -> String? {
+        guard isDocId(docId) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        let folder = canonicalURL(library).appendingPathComponent(docId)
+        guard !isSymbolicLink(folder) else { return nil }
+        return readRecord(in: folder)?.customTitle
+    }
+
     private static func readRecord(in folder: URL) -> Record? {
         let url = folder.appendingPathComponent(recordFilename)
         guard let data = boundedData(url, cap: maxRecordBytes),

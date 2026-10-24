@@ -32,6 +32,24 @@ struct EpubLibraryIntegrationTests {
         #expect(try EpubLibraryCatalog.list().first?.record.importedAt == before)
     }
 
+    @Test("Custom titles survive recents eviction and reimport without creating user sidecars")
+    func customTitle() async throws {
+        let source = try stores.source()
+        let managed = try EpubLibrary.importBook(at: source)
+        let docId = managed.deletingLastPathComponent().lastPathComponent
+        #expect(try EpubLibraryCatalog.setTitle(docId: docId, title: "My Edition"))
+        #expect(EpubLibraryCatalog.customTitle(docId: docId) == "My Edition")
+        _ = try EpubLibrary.importBook(at: source)
+        #expect(EpubLibraryCatalog.customTitle(docId: docId) == "My Edition")
+        #expect(RecentFilesService.getRecent().isEmpty)
+        #expect(DocumentDataStore.listDocumentMetas().isEmpty)
+        let items = try await EpubBooksSearchProvider().items(matching: "")
+        #expect(items.first?.title == "My Edition")
+        #expect(try EpubLibraryCatalog.setTitle(docId: docId, title: nil))
+        #expect(EpubLibraryCatalog.customTitle(docId: docId) == nil)
+        #expect(EpubLibraryCatalog.customTitle(docId: "../outside") == nil)
+    }
+
     @Test("Stage 2 originals are discovered once and must match the enclosing content ID")
     func legacyDiscovery() throws {
         let source = try stores.source()
