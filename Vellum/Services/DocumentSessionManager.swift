@@ -3,11 +3,13 @@ import Foundation
 // Session router — the concrete SessionService. One open document = one
 // DocumentSession object keyed by the caller's session id (tab id). PDF
 // sessions are produced by PdfSessionBackend (Services/Pdf/), web sessions by
-// WebSessionBackend (Services/Web/). This file owns only routing; document
+// WebSessionBackend (Services/Web/), EPUB sessions by EpubSessionBackend
+// (Services/Epub/). This file owns only routing; document
 // behavior lives in the backends.
 
 /// Per-open-document operations. Implementations: PdfDocumentSession (PDF files
-/// with embedded annotations) and WebDocumentSession (webpages + .vellumweb).
+/// with embedded annotations), WebDocumentSession (webpages + .vellumweb) and
+/// EpubDocumentSession (EPUB books).
 @MainActor
 protocol DocumentSession: AnyObject {
     var info: DocumentInfo { get }
@@ -32,6 +34,7 @@ protocol DocumentSession: AnyObject {
 final class DocumentSessionManager: SessionService {
     let pdfBackend: PdfSessionBackend
     let webBackend: WebSessionBackend
+    let epubBackend: EpubSessionBackend
 
     private(set) var sessions: [String: any DocumentSession] = [:]
     private var openGenerations: [String: UUID] = [:]
@@ -58,10 +61,12 @@ final class DocumentSessionManager: SessionService {
     init(
         pdfBackend: PdfSessionBackend = PdfSessionBackend(),
         webBackend: WebSessionBackend = WebSessionBackend(),
+        epubBackend: EpubSessionBackend = EpubSessionBackend(),
         openWebSession: (@MainActor (String, String) async throws -> any DocumentSession)? = nil
     ) {
         self.pdfBackend = pdfBackend
         self.webBackend = webBackend
+        self.epubBackend = epubBackend
         self.openWebSession = openWebSession
     }
 
@@ -108,6 +113,12 @@ final class DocumentSessionManager: SessionService {
     func openVellumwebFile(path: String, sessionId: String) async throws -> DocumentInfo {
         let generation = beginOpen(sessionId)
         let session = try await webBackend.openVellumwebFile(path: path, sessionId: sessionId)
+        return try admit(session, sessionId: sessionId, generation: generation)
+    }
+
+    func openEpubFile(path: String, sessionId: String) async throws -> DocumentInfo {
+        let generation = beginOpen(sessionId)
+        let session = try await epubBackend.open(path: path, sessionId: sessionId)
         return try admit(session, sessionId: sessionId, generation: generation)
     }
 

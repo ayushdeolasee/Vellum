@@ -107,6 +107,9 @@ struct InspectorPresentationTests {
         case .web:
             location = "https://example.com"
             await app.openUrl(location)
+        case .epub:
+            Issue.record("EPUB is not a parameter of this test")
+            return
         }
 
         let originalTabId = try #require(app.activeTabId)
@@ -119,6 +122,8 @@ struct InspectorPresentationTests {
             await app.openFile(path: location)
         case .web:
             await app.openUrl(location)
+        case .epub:
+            break
         }
 
         #expect(app.activeTabId == originalTabId)
