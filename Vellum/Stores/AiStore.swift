@@ -199,10 +199,12 @@ struct AiReference: Identifiable, Equatable, Sendable, Codable {
     }
     let id: String
     var kind: Kind
+    var epubCitation: AiEpubCitation? = nil
 
-    init(id: String = UUID().uuidString.lowercased(), kind: Kind) {
+    init(id: String = UUID().uuidString.lowercased(), kind: Kind, epubCitation: AiEpubCitation? = nil) {
         self.id = id
         self.kind = kind
+        self.epubCitation = epubCitation
     }
 
     /// The image payload, if this reference carries one.
@@ -538,6 +540,7 @@ final class AiStore {
     /// explicit clear can cancel it. Fire-and-forget requests aren't otherwise
     /// interruptible.
     private var sendTask: Task<Void, Never>?
+    @ObservationIgnored private var cancelledRequestTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var activeRequest: AiDocumentRequest?
     @ObservationIgnored private var promotingRequestToken: UUID?
     @ObservationIgnored private var promotionReloadBinding: DocumentBinding?
@@ -620,6 +623,121 @@ final class AiStore {
     ///   otherwise become a fourth ungated producer of `PDFPage.string` bursts
     ///   and defeat the serialization the gate exists for.
     var ensureExtractedHandler: ((Set<Int>?) async -> Int)?
+
+    @ObservationIgnored private var epubSession: EpubDocumentSession?
+    @ObservationIgnored private var epubBinding: DocumentBinding?
+    @ObservationIgnored private var epubRegistration = UUID()
+    /// Pane-level router, not a current-tab page callback. Keep installed across
+    /// tab changes so a saved citation can reopen its stable content docId.
+    var epubCitationNavigationHandler: ((AiEpubCitation) -> Void)?
+
+    @discardableResult
+    func registerEpubSession(_ session: EpubDocumentSession, binding: DocumentBinding) -> Bool {
+        guard app?.activeDocumentBinding == binding, binding.docId == session.info.docId,
+              app?.document?.kind == .epub, app?.document?.pdfPath == session.info.pdfPath else { return false }
+        epubRegistration = UUID()
+        epubBinding = binding
+        epubSession = session
+        pageTexts = [:]
+        let registration = epubRegistration
+        ensureExtractedHandler = { [weak self] pages in
+            guard let self, let services = self.epubTools(binding: binding, registration: registration) else { return 0 }
+            // nil is deliberately CURRENT chapter, never an implicit whole-book read.
+            let requested = (pages ?? [self.app?.currentPage ?? 1]).sorted().prefix(4)
+            var added = 0
+            do {
+                for chapterNumber in requested where chapterNumber > 0 && chapterNumber <= (session.info.pageCount ?? 0) {
+                    let chapter = try await services.chapter(chapterNumber - 1)
+                    guard self.epubIsCurrent(binding, registration: registration) else { return 0 }
+                    let text = String(chapter.text.prefix(AiToolEngine.maxPageReadCharacters))
+                    if self.pageTexts[chapterNumber] != text { added += 1 }
+                    self.pageTexts[chapterNumber] = text
+                    while self.pageTexts.count > 4,
+                          let victim = self.pageTexts.keys.sorted().first(where: { $0 != chapterNumber }) {
+                        self.pageTexts.removeValue(forKey: victim)
+                    }
+                }
+            } catch is CancellationError { return 0 }
+            catch {
+                if self.epubIsCurrent(binding, registration: registration) { self.error = error.localizedDescription }
+                return 0
+            }
+            return added
+        }
+        return true
+    }
+
+    func unregisterEpubSession(binding: DocumentBinding) {
+        guard epubBinding == binding else { return }
+        cancelActiveRequest()
+        epubRegistration = UUID()
+        epubSession = nil
+        epubBinding = nil
+        ensureExtractedHandler = nil
+        pageTexts = [:]
+    }
+
+    private func epubIsCurrent(_ binding: DocumentBinding, registration: UUID) -> Bool {
+        !Task.isCancelled && epubRegistration == registration && epubBinding == binding
+            && app?.activeDocumentBinding == binding
+    }
+
+    private func epubTools(binding: DocumentBinding, registration: UUID) -> AiEpubToolContext? {
+        guard let session = epubSession, epubIsCurrent(binding, registration: registration) else { return nil }
+        let check: @MainActor () throws -> Void = { [weak self] in
+            guard self?.epubIsCurrent(binding, registration: registration) == true else { throw CancellationError() }
+        }
+        return AiEpubToolContext(
+            metadata: { try check(); let value = try await session.chapterMetadata(); try check(); return value },
+            chapter: { index in try check(); let value = try await session.chapterText(spineIndex: index); try check(); return value },
+            search: { query, limit in try check(); let value = try await session.search(query: query, limit: limit); try check(); return value },
+            resolve: { anchor in try check(); let value = try await session.resolveAnchor(anchor); try check(); return value },
+            navigate: { [weak self] citation in
+                guard (try? check()) != nil else { return }
+                self?.navigateToEpubCitation(citation)
+            })
+    }
+
+    func navigateToEpubCitation(_ citation: AiEpubCitation) {
+        guard let bounded = citation.bounded else { error = "This EPUB citation has an invalid location."; return }
+        guard let handler = epubCitationNavigationHandler else {
+            error = "EPUB passage navigation is unavailable. Open its book in the reader and try again."
+            return
+        }
+        handler(bounded)
+    }
+
+    func navigateToReference(_ reference: AiReference, fallback: (Int) -> Void) {
+        if let citation = reference.epubCitation { navigateToEpubCitation(citation) }
+        else if let page = reference.page { fallback(page) }
+    }
+
+    /// Selected text/highlights use the existing composer and docId chat store.
+    /// The reader must await this task (and drain it before closing its session).
+    @discardableResult
+    func addEpubReference(anchor: EpubTextAnchor, chapterNumber: Int, highlight: Bool = false,
+                          target: AiReferenceTarget) async -> Bool {
+        guard currentReferenceTarget() == target, let binding = epubBinding,
+              let services = epubTools(binding: binding, registration: epubRegistration),
+              let docId = binding.docId,
+              AiEpubCitation(docId: docId, chapterNumber: chapterNumber,
+                             chapterHref: anchor.chapterHref, anchor: anchor).bounded != nil else { return false }
+        let registration = epubRegistration
+        do {
+            let metadata = try await services.metadata()
+            guard epubIsCurrent(binding, registration: registration), currentReferenceTarget() == target,
+                  let chapter = metadata.first(where: { $0.chapterNumber == chapterNumber }),
+                  chapter.chapterHref == anchor.chapterHref else { return false }
+            guard let resolved = try await services.resolve(anchor),
+                  epubIsCurrent(binding, registration: registration), currentReferenceTarget() == target else { return false }
+            let citation = AiEpubCitation(docId: docId, chapterNumber: chapterNumber,
+                chapterTitle: chapter.title, chapterHref: chapter.chapterHref, anchor: resolved)
+            guard let bounded = citation.bounded else { return false }
+            return addCapturedReference(AiReference(kind: highlight
+                ? .highlight(text: resolved.quote, page: chapterNumber)
+                : .selection(text: resolved.quote, page: chapterNumber), epubCitation: bounded), target: target)
+        } catch { return false }
+    }
 
     init(settings: AiSettings? = nil, generate: Generate? = nil) {
         self.generate = generate
@@ -1008,6 +1126,7 @@ final class AiStore {
         guard contextBinding != binding else { return }
         contextBinding = binding
         if consumeOwnPromotionReload() { return }
+        if let epubBinding, epubBinding != binding { unregisterEpubSession(binding: epubBinding) }
         cancelActiveRequest()
         contextLoadGeneration = UUID()
         messages = []
@@ -1026,7 +1145,10 @@ final class AiStore {
     /// Late callbacks cannot clear a successor's activity or schedule a save.
     func cancelActiveRequest(preservingHistory: Bool = true) {
         if let request = activeRequest {
-            request.providerTask?.cancel()
+            if let provider = request.providerTask {
+                provider.cancel()
+                cancelledRequestTasks.append(Task { _ = try? await provider.value })
+            }
             if preservingHistory {
                 persist(request.accumulatedHistory, for: request)
                 if app?.activeDocumentBinding == request.binding { messages = request.accumulatedHistory }
@@ -1035,10 +1157,23 @@ final class AiStore {
         activeRequest = nil
         promotingRequestToken = nil
         promotionReloadBinding = nil
-        sendTask?.cancel()
+        if let sendTask {
+            sendTask.cancel()
+            cancelledRequestTasks.append(sendTask)
+        }
         sendTask = nil
         activity = .idle
         streamingMessageId = nil
+    }
+
+    /// Call after unregister/cancel and before the reader closes its backend.
+    /// Persistence itself remains in AppStore's existing document owner lane.
+    func awaitCancelledRequests() async {
+        while !cancelledRequestTasks.isEmpty {
+            let tasks = cancelledRequestTasks
+            cancelledRequestTasks = []
+            for task in tasks { await task.value }
+        }
     }
 
     private func isCurrent(_ request: AiDocumentRequest) -> Bool {
@@ -1210,6 +1345,7 @@ final class AiStore {
 
     /// Wipes pageTexts, messages, activity, error (called on doc/tab change).
     func clearDocumentContext() {
+        if let epubBinding { unregisterEpubSession(binding: epubBinding) }
         cancelActiveRequest()
         contextLoadGeneration = UUID()
         messages = []
@@ -1401,7 +1537,7 @@ final class AiStore {
         let locate = document.kind == .web ? locateWebTextHandler : locatePdfTextHandler
         let backend = app.sessions.documentSession(sessionId: binding.tabId)
         let valid: @MainActor () -> Bool = { [weak self] in self?.isCurrent(request) == true }
-        let execution = AiToolExecutionContext(
+        var execution = AiToolExecutionContext(
             binding: binding, document: document, currentPage: context.currentPage,
             pageCount: context.numPages, pageTexts: pageTexts, annotations: annotationStore.annotations,
             isCurrent: valid,
@@ -1425,6 +1561,9 @@ final class AiStore {
                     input, document: document, binding: binding, backend: backend, isCurrentRequest: valid)
             },
             navigate: { page in if valid() { app.goToPage(page) } })
+        if document.kind == .epub {
+            execution.epub = epubTools(binding: binding, registration: epubRegistration)
+        }
         let engine = AiToolEngine(context: execution)
         let onEvent: @MainActor (AiStreamEvent) -> Void = { [weak self] event in
             guard let self, self.isCurrent(request) else { return }
@@ -1440,14 +1579,21 @@ final class AiStore {
             }
         }
         do {
+            if document.kind == .epub, execution.epub == nil {
+                throw AiClientError.message("EPUB reader context is not bound. Reopen the chapter and try again.")
+            }
             activity = .indexing
-            let texts = try await execution.extract(Set([context.currentPage] + context.visiblePages))
+            let texts = try await execution.extract(document.kind == .epub
+                ? [context.currentPage] : Set([context.currentPage] + context.visiblePages))
             try execution.checkCurrent()
             activity = .thinking
             let conversation = AiPrompts.buildConversationBlock(Self.promptHistory(from: messagesWithUser))
+            let epubMetadata = try await execution.epub?.metadata()
+            try execution.checkCurrent()
             let prompt = AiPrompts.buildNativeToolUserPrompt(AiPromptParameters(
                 conversation: conversation.isEmpty ? "(start of conversation)" : conversation,
-                context: AiPrompts.buildContextBlock(pageTexts: texts, context: context),
+                context: AiPrompts.buildContextBlock(pageTexts: texts, context: context,
+                    epubChapters: epubMetadata, epubDocId: document.docId),
                 latestUserRequest: trimmed, references: context.references))
             var images = context.currentPageImage.map { [$0] } ?? []
             images.append(contentsOf: context.references.compactMap(\.image))

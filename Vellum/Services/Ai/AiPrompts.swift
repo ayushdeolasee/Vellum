@@ -96,7 +96,34 @@ enum AiPrompts {
     /// image. User attachments are sent beside the latest request instead.
     /// The model reaches anything else via
     /// the `searchDocument` / `getPageText` tools rather than a full-text dump.
-    static func buildContextBlock(pageTexts: [Int: String], context: AiContextSnapshot) -> String {
+    static func buildContextBlock(pageTexts: [Int: String], context: AiContextSnapshot,
+                                  epubChapters: [EpubChapterMetadata]? = nil, epubDocId: String? = nil) -> String {
+        if let epubChapters {
+            let chapter = epubChapters.first { $0.chapterNumber == context.currentPage }
+            let text = String((pageTexts[context.currentPage] ?? "").prefix(AiToolEngine.maxPageReadCharacters))
+            let excerpt = String(text.prefix(280))
+            let anchor = EpubChapterText(chapterHref: chapter?.chapterHref ?? "", text: text)
+                .anchor(in: NSRange(location: 0, length: excerpt.utf16.count))
+            let citation = chapter.flatMap {
+                AiEpubCitation(docId: epubDocId ?? "", chapterNumber: $0.chapterNumber,
+                    chapterTitle: $0.title, chapterHref: $0.chapterHref, anchor: anchor).bounded
+            }
+            let locator = citation.flatMap { try? JSONEncoder().encode($0) }
+                .map { String(decoding: $0, as: UTF8.self) } ?? "(unavailable)"
+            let annotations = context.annotations.filter { $0.pageNumber == context.currentPage && $0.type != .bookmark }
+                .suffix(20).map { annotation in
+                    "- \(annotation.type.rawValue): \(String((annotation.positionData?.epubAnchor?.quote ?? annotation.content ?? "").prefix(300)))"
+                }.joined(separator: "\n")
+            return [
+                "Document title: \(context.title ?? "Untitled")", "Document format: EPUB (reflowable; no PDF pages)",
+                "Total chapters: \(epubChapters.count)", "Current chapter: \(context.currentPage) — \(String((chapter?.title ?? "Untitled").prefix(256)))",
+                "Chapter href: \(chapter?.chapterHref ?? "unknown")", "Current passage citation: \(locator)",
+                "Current chapter excerpt (up to \(AiToolEngine.maxPageReadCharacters) characters; may be truncated):",
+                text.isEmpty ? "(no chapter text available)" : text,
+                "Current chapter annotations:", annotations.isEmpty ? "(none)" : annotations,
+                "EPUB tool rules: pageNumber means one-based CHAPTER number, not a rendered page. getPageText reads one explicitly requested chapter (bounded). searchDocument is literal/case-sensitive and may be truncated; never imply full-book coverage when truncated=true. Cite chapter and exact quote. Use returned epubAnchor for goToPage/addNote/addHighlight; notes require an anchor, never PDF coordinates. Do not invent offsets. No page images exist for EPUB.",
+            ].joined(separator: "\n")
+        }
         let rawCurrent = pageTexts[context.currentPage] ?? ""
         let currentText: String
         if rawCurrent.count > maxContextCharacters {
@@ -150,6 +177,10 @@ enum AiPrompts {
     }
 
     private static func referenceLine(_ reference: AiReference, imagesAttached: Bool) -> String {
+        if let citation = reference.epubCitation?.bounded {
+            let locator = (try? JSONEncoder().encode(citation)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+            return "- [EPUB \(citation.label), passage citation: \(locator)] \(quoted(bounded(reference.text ?? citation.anchor?.quote ?? "")))"
+        }
         let imageStatus = imagesAttached ? "image attached" : "image not included in this request"
         switch reference.kind {
         case let .selection(text, page):

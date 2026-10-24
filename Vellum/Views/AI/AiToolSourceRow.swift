@@ -3,10 +3,19 @@ import SwiftUI
 struct AiToolSourceRow: View {
     let source: AiToolSummary.Source
     let onJumpToPage: (Int) -> Void
+    var onJumpToEpub: ((AiEpubCitation) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let page = source.page {
+            if let citation = source.epubCitation {
+                Button(citation.label + " · passage", systemImage: "arrow.right.circle") {
+                    onJumpToEpub?(citation)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
+                .disabled(onJumpToEpub == nil)
+                .accessibilityIdentifier("aiToolSource.jumpToPassage")
+            } else if let page = source.page {
                 Button("Page \(page)", systemImage: "arrow.right.circle") {
                     onJumpToPage(page)
                 }
