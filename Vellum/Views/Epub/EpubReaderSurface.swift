@@ -3,6 +3,57 @@ import AppKit
 import SwiftUI
 import WebKit
 
+/// A navigation is allowed to finish only for the document load that requested
+/// it; a chapter href alone cannot distinguish successive visits to one chapter.
+struct EpubReaderLoadGate {
+    private(set) var loading: (id: UUID, url: URL)?
+    private(set) var loadedURL: URL?
+
+    mutating func begin(path: String) -> (id: UUID, url: URL) {
+        let id = UUID()
+        var components = URLComponents(url: EpubResourceSchemeHandler.url(for: path), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "vellum-load", value: id.uuidString)]
+        let attempt = (id: id, url: components.url!)
+        loadedURL = nil
+        loading = attempt
+        return attempt
+    }
+
+    func isLoading(path: String) -> Bool {
+        loading.flatMap { EpubResourceSchemeHandler.archivePath(for: $0.url) } == path
+    }
+
+    func isLoaded(path: String, viewURL: URL?) -> Bool {
+        loadedURL != nil && loadedURL == viewURL && loadedURL.flatMap(EpubResourceSchemeHandler.archivePath(for:)) == path
+    }
+
+    func allows(_ url: URL?, mainFrame: Bool, path: String) -> Bool {
+        mainFrame && url == loading?.url && url.flatMap(EpubResourceSchemeHandler.archivePath(for:)) == path
+    }
+
+    mutating func finish(_ id: UUID, viewURL: URL?) -> Bool {
+        guard let loading, loading.id == id, loading.url == viewURL else { return false }
+        loadedURL = loading.url
+        self.loading = nil
+        return true
+    }
+
+    mutating func invalidate() { loading = nil; loadedURL = nil }
+}
+
+enum EpubReaderLinkRouter {
+    static func follow(_ url: URL?, active: Bool, sourceIsMainFrame: Bool,
+                       targetIsMainFrame: Bool?, spineIndex: (String) -> Int?,
+                       navigate: (Int, String?) -> Void, openExternal: (URL) -> Void) {
+        guard active, sourceIsMainFrame, targetIsMainFrame != false, let url else { return }
+        if let path = EpubResourceSchemeHandler.archivePath(for: url) {
+            if let chapter = spineIndex(path) { navigate(chapter, url.fragment) }
+        } else if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+            openExternal(url)
+        }
+    }
+}
+
 struct EpubReaderSurface: NSViewRepresentable {
     let reader: EpubReaderController
     let session: EpubDocumentSession
@@ -42,6 +93,7 @@ struct EpubReaderSurface: NSViewRepresentable {
     static func dismantleNSView(_ view: EpubChapterWebView, coordinator: Coordinator) {
         view.readerActive = false; view.removeKeyMonitor(); view.onChapterStep = nil
         view.configuration.userContentController.removeAllScriptMessageHandlers()
+        coordinator.invalidateLoad()
         view.navigationDelegate = nil; view.stopLoading()
         coordinator.resources.cancelAll()
         coordinator.parent?.reader.deactivate()
@@ -52,23 +104,41 @@ struct EpubReaderSurface: NSViewRepresentable {
         let resources: EpubResourceSchemeHandler
         var parent: EpubReaderSurface?
         private var shown: UUID?
+        private var loadGate = EpubReaderLoadGate()
+        private var loadingNavigation: WKNavigation?
+        private var loadingID: UUID?
         private var pending = false
         private var configurationJSON = ""
         private var annotationJSON = ""
+        var openExternalURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
         init(session: EpubDocumentSession) { resources = EpubResourceSchemeHandler(session: session) }
+
+        func invalidateLoad() {
+            loadingNavigation = nil; loadingID = nil; loadGate.invalidate()
+        }
 
         func show(in view: WKWebView) {
             guard let parent else { return }
             let location = parent.location
-            if shown != location.request {
+            let changed = shown != location.request
+            if changed {
                 shown = location.request; pending = true
                 configurationJSON = ""; annotationJSON = ""
-                let url = EpubResourceSchemeHandler.url(for: resources.session.publication.spine[location.chapter].path)
-                if view.url?.path != url.path || view.isLoading {
-                    view.stopLoading(); view.load(URLRequest(url: url)); return
+            }
+            let path = resources.session.publication.spine[location.chapter].path
+            if loadGate.isLoaded(path: path, viewURL: view.url) {
+                synchronize(view)
+            } else if changed && !(loadingNavigation != nil && loadGate.isLoading(path: path)) {
+                invalidateLoad()
+                view.stopLoading()
+                let attempt = loadGate.begin(path: path)
+                loadingID = attempt.id
+                loadingNavigation = view.load(URLRequest(url: attempt.url))
+                if loadingNavigation == nil {
+                    loadGate.invalidate(); loadingID = nil
+                    parent.reader.notice = "This chapter could not be loaded."
                 }
             }
-            if !view.isLoading { synchronize(view) }
         }
 
         private struct Configuration: Encodable {
@@ -80,7 +150,7 @@ struct EpubReaderSurface: NSViewRepresentable {
 
         private func synchronize(_ view: WKWebView) {
             guard let parent, shown == parent.location.request,
-                  EpubResourceSchemeHandler.archivePath(for: view.url ?? URL(fileURLWithPath: "/")) == href else { return }
+                  loadGate.isLoaded(path: href, viewURL: view.url) else { return }
             let config = EpubReaderJavaScript.literal(Configuration(token: parent.location.request.uuidString, href: href,
                 active: parent.reader.isCurrent, settings: parent.reader.settings, dark: parent.dark))
             var script = ""
@@ -105,26 +175,50 @@ struct EpubReaderSurface: NSViewRepresentable {
             return resources.session.publication.spine[parent.location.chapter].path
         }
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { synchronize(webView) }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard let loadingNavigation, navigation === loadingNavigation, let loadingID else { return }
+            self.loadingNavigation = nil; self.loadingID = nil
+            guard loadGate.finish(loadingID, viewURL: webView.url) else {
+                loadGate.invalidate(); return
+            }
+            synchronize(webView)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            fail(navigation, error: error)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            fail(navigation, error: error)
+        }
+
+        private func fail(_ navigation: WKNavigation, error: Error) {
+            guard let loadingNavigation, navigation === loadingNavigation else { return }
+            invalidateLoad()
+            parent?.reader.notice = "This chapter could not be loaded: \(error.localizedDescription)"
+        }
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                      decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-            guard let url = action.request.url, let path = EpubResourceSchemeHandler.archivePath(for: url) else {
-                // No publication navigation can escape this book's origin.
-                decisionHandler(.cancel); return
-            }
             if action.navigationType == .linkActivated {
                 decisionHandler(.cancel)
-                guard parent?.reader.isCurrent == true, action.targetFrame?.isMainFrame != false,
-                      let chapter = resources.session.publication.spineIndex(path: path) else { return }
-                parent?.reader.go(chapter: chapter, fragment: url.fragment)
+                EpubReaderLinkRouter.follow(action.request.url,
+                    active: parent?.reader.isCurrent == true &&
+                        loadGate.isLoaded(path: href, viewURL: action.sourceFrame.request.url),
+                    sourceIsMainFrame: action.sourceFrame.isMainFrame, targetIsMainFrame: action.targetFrame?.isMainFrame,
+                    spineIndex: { resources.session.publication.spineIndex(path: $0) },
+                    navigate: { [weak self] chapter, fragment in self?.parent?.reader.go(chapter: chapter, fragment: fragment) },
+                    openExternal: openExternalURL)
             } else {
-                decisionHandler(action.targetFrame?.isMainFrame == true && path == href ? .allow : .cancel)
+                decisionHandler(loadGate.allows(action.request.url,
+                    mainFrame: action.targetFrame?.isMainFrame == true, path: href) ? .allow : .cancel)
             }
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard let parent, parent.reader.isCurrent, message.frameInfo.isMainFrame,
+                  loadGate.isLoaded(path: href, viewURL: message.webView?.url),
+                  message.frameInfo.request.url == loadGate.loadedURL,
                   let message = EpubReaderMessage.decode(message.body, token: parent.location.request.uuidString,
                     href: href, docId: resources.session.info.docId ?? "") else { return }
             parent.reader.receive(message)

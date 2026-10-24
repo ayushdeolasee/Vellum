@@ -45,6 +45,84 @@ struct EpubReaderIntegrationTests {
         #expect(EpubReaderSettings.load() == .init(fontSize: 24, lineSpacing: 1.9))
     }
 
+    @Test("Only active main-frame user links leave the book, using the injected opener")
+    func externalLinks() {
+        var opened: [URL] = []
+        var chapters: [(Int, String?)] = []
+        let follow: (String, Bool, Bool, Bool?) -> Void = { address, active, source, target in
+            EpubReaderLinkRouter.follow(URL(string: address), active: active,
+                sourceIsMainFrame: source, targetIsMainFrame: target,
+                spineIndex: { $0 == self.href ? 2 : nil },
+                navigate: { chapters.append(($0, $1)) }, openExternal: { opened.append($0) })
+        }
+        for address in ["https://example.org/article", "http://example.org/page", "mailto:reader@example.org"] {
+            follow(address, true, true, true)
+        }
+        follow("https://example.org/new-tab", true, true, nil)
+        #expect(opened.map(\.absoluteString) == ["https://example.org/article", "http://example.org/page",
+            "mailto:reader@example.org", "https://example.org/new-tab"])
+        follow(EpubResourceSchemeHandler.url(for: href).absoluteString + "#section", true, true, true)
+        #expect(chapters.count == 1 && chapters[0].0 == 2 && chapters[0].1 == "section")
+        for address in ["https://example.org/inactive", "https://example.org/subframe", "file:///tmp/leak",
+                        "javascript:alert(1)", "ftp://example.org/book", "vellum-epub://other/OEBPS/a.html"] {
+            follow(address, address != "https://example.org/inactive",
+                address != "https://example.org/subframe", true)
+        }
+        follow("https://example.org/target-subframe", true, true, false)
+        follow(EpubResourceSchemeHandler.url(for: href).absoluteString, false, true, true)
+        #expect(opened.count == 4 && chapters.count == 1)
+    }
+
+    @Test("Only the latest document navigation may install a bridge after a repeated chapter load")
+    func navigationNonce() async throws {
+        var gate = EpubReaderLoadGate()
+        let first = gate.begin(path: href)
+        #expect(EpubResourceSchemeHandler.archivePath(for: first.url) == href)
+        #expect(gate.allows(first.url, mainFrame: true, path: href))
+        #expect(!gate.allows(first.url, mainFrame: false, path: href))
+        #expect(!gate.allows(URL(string: "https://example.org"), mainFrame: true, path: href))
+        let second = gate.begin(path: href)
+        #expect(first.url != second.url && first.id != second.id)
+        #expect(!gate.allows(first.url, mainFrame: true, path: href))
+        let staleFinish = gate.finish(first.id, viewURL: first.url)
+        let wrongDocument = gate.finish(second.id, viewURL: first.url)
+        let currentFinish = gate.finish(second.id, viewURL: second.url)
+        #expect(!staleFinish && !wrongDocument && currentFinish)
+        #expect(gate.isLoaded(path: href, viewURL: second.url))
+        #expect(!gate.isLoaded(path: href, viewURL: first.url))
+        gate.invalidate()
+        #expect(!gate.isLoaded(path: href, viewURL: second.url))
+        try await withDOM("<html><body><p>Book</p></body></html>", loadURL: second.url) { view in
+            #expect(view.url == second.url)
+            let search = try await js(view, "location.search") as? String
+            #expect(search == "?vellum-load=\(second.id.uuidString)")
+        }
+    }
+
+    @Test("Only the focused book handles a native chapter shortcut in a split window")
+    func splitPaneShortcuts() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        let left = EpubChapterWebView(frame: NSRect(x: 0, y: 0, width: 300, height: 400), configuration: WKWebViewConfiguration())
+        let right = EpubChapterWebView(frame: NSRect(x: 300, y: 0, width: 300, height: 400), configuration: WKWebViewConfiguration())
+        container.addSubview(left); container.addSubview(right); window.contentView = container
+        defer { left.removeKeyMonitor(); right.removeKeyMonitor(); window.contentView = nil }
+        var leftSteps = 0, rightSteps = 0
+        left.onChapterStep = { _ in leftSteps += 1 }; right.onChapterStep = { _ in rightSteps += 1 }
+        #expect(window.makeFirstResponder(right))
+        let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "]", charactersIgnoringModifiers: "]", isARepeat: false, keyCode: 30))
+        #expect(!left.handleChapterShortcut(event) && right.handleChapterShortcut(event))
+        #expect(leftSteps == 0 && rightSteps == 1)
+        right.readerActive = false
+        #expect(!right.handleChapterShortcut(event))
+        #expect(window.makeFirstResponder(left))
+        #expect(left.handleChapterShortcut(event) && !right.handleChapterShortcut(event))
+        #expect(leftSteps == 1 && rightSteps == 1)
+    }
+
     @Test("Isolated DOM text/UTF16 anchors match extractor without mutating publication text")
     func domParity() async throws {
         let xhtml = """
@@ -222,7 +300,7 @@ struct EpubReaderIntegrationTests {
         return result.value
     }
 
-    private func withDOM(_ html: String, body: (WKWebView) async throws -> Void) async throws {
+    private func withDOM(_ html: String, loadURL: URL? = nil, body: (WKWebView) async throws -> Void) async throws {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
         let namespaced = html.replacingOccurrences(of: "<html>", with: "<html xmlns=\"http://www.w3.org/1999/xhtml\">")
@@ -232,7 +310,7 @@ struct EpubReaderIntegrationTests {
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 700, height: 480), configuration: config)
         let load = DOMLoad(); view.navigationDelegate = load
         defer { view.stopLoading(); view.navigationDelegate = nil; view.configuration.userContentController.removeAllUserScripts() }
-        view.load(URLRequest(url: EpubResourceSchemeHandler.url(for: href)))
+        view.load(URLRequest(url: loadURL ?? EpubResourceSchemeHandler.url(for: href)))
         try await load.wait()
         _ = try await js(view, configure())
         try await body(view)
