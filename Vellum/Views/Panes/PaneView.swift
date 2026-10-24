@@ -75,6 +75,9 @@ struct PaneView: View {
             if !isFocused { workspace.focus(pane.id) }
         })
         .task(id: documentIdentity) { await loadDocumentState() }
+        .onAppear {
+            pane.ai.epubCitationNavigationHandler = { [weak app] citation in app?.routeEpubCitation(citation) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
             guard app.document != nil else { return }
             Task { await pane.annotations.loadAnnotations() }
@@ -243,7 +246,7 @@ private struct LiveTabHost: View {
                         runtime: runtime)
                 } else if document.kind == .epub {
                     #if os(macOS)
-                    EpubReaderView(tabId: tabId, document: document)
+                    EpubReaderView(tabId: tabId, document: document, isActive: isActive)
                     #else
                     EpubPendingReaderView(document: document)
                     #endif

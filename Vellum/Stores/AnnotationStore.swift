@@ -54,6 +54,8 @@ final class AnnotationStore {
     /// Registered by the web viewer to capture the current reading position
     /// for a point bookmark (window.__captureWebPosition in the original).
     var captureWebPositionHandler: (() async -> CapturedWebPosition?)?
+    var captureEpubPositionHandler: (() async -> CapturedWebPosition?)?
+    var unresolvedEpubAnnotationIds: Set<String> = []
 
     /// Stable-id optimistic rows can be edited immediately, before their first
     /// full-file write finishes. Mutations await that write before touching the
@@ -142,6 +144,12 @@ final class AnnotationStore {
             await addBookmark(pageNumber: captured.pageNumber, positionData: captured.positionData)
             return
         }
+        if doc.kind == .epub {
+            let binding = app.activeDocumentBinding
+            guard let captured = await captureEpubPositionHandler?(), app.activeDocumentBinding == binding else { return }
+            await addBookmark(pageNumber: captured.pageNumber, positionData: captured.positionData)
+            return
+        }
         await addBookmark(pageNumber: app.currentPage)
     }
 
@@ -174,6 +182,15 @@ final class AnnotationStore {
     @discardableResult
     func updateAnnotation(_ input: UpdateAnnotationInput) async -> Bool {
         guard let binding = app.activeDocumentBinding else { return false }
+        if app.document?.kind == .epub, let document = app.document,
+           let backend = sessions.documentSession(sessionId: binding.tabId) {
+            var result = false
+            let write = app.enqueueDocumentPersistence(document: document, generation: binding.generation) { [self] _ in
+                result = await updateAnnotation(input, binding: binding, backend: backend)
+            }
+            await write.value
+            return result
+        }
         return await updateAnnotation(input, binding: binding,
             backend: sessions.documentSession(sessionId: binding.tabId))
     }
@@ -218,6 +235,27 @@ final class AnnotationStore {
     }
 
     func deleteAnnotation(id: String) async {
+        if app.document?.kind == .epub, let document = app.document, let binding = app.activeDocumentBinding,
+           let backend = sessions.documentSession(sessionId: binding.tabId) {
+            let pending = pendingCreates[id]
+            let removed = annotations.first { $0.id == id }
+            annotations.removeAll { $0.id == id }
+            unresolvedEpubAnnotationIds.remove(id)
+            if selectedAnnotationId == id { selectedAnnotationId = nil }
+            let write = app.enqueueDocumentPersistence(document: document, generation: binding.generation) { [self] _ in
+                if let pending, !(await pending.value) { return }
+                do {
+                    guard try await backend.deleteAnnotation(id: id) else { throw SessionServiceError.invalidDocument("Annotation not found") }
+                } catch {
+                    if app.activeDocumentBinding == binding, let removed, !annotations.contains(where: { $0.id == id }) {
+                        annotations = Annotation.sortedForDisplay(annotations + [removed])
+                        app.error = error.localizedDescription
+                    }
+                }
+            }
+            await write.value
+            return
+        }
         guard let sessionId = app.activeTabId else { return }
         let pendingCreate = pendingCreates[id]
         // Optimistic delete
@@ -257,6 +295,7 @@ final class AnnotationStore {
     }
 
     func clearAnnotations() {
+        unresolvedEpubAnnotationIds = []
         annotations = []
         selectedAnnotationId = nil
     }
@@ -312,6 +351,12 @@ final class AnnotationStore {
     }
 
     private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
+        if app.document?.kind == .epub, let document = app.document,
+           let binding = app.activeDocumentBinding,
+           let backend = sessions.documentSession(sessionId: binding.tabId) {
+            return try? await createForAI(input, document: document, binding: binding, backend: backend,
+                isCurrentRequest: { [weak app] in app?.activeDocumentBinding == binding })
+        }
         guard let sessionId = app.activeTabId else { return nil }
         return enqueueCreate(input, label: label, sessionId: sessionId)?.annotation
     }

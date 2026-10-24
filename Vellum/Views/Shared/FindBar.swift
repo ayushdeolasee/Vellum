@@ -124,6 +124,9 @@ struct FindBar: View {
     private var matchLabel: String {
         if app.findQuery.isEmpty { return "" }
         if app.findIsSearching { return "Searching…" }
+        if app.findTruncated {
+            return app.findMatchCount == 0 ? "No results in indexed portion (limited)" : "\(app.findCurrentMatch) of \(app.findMatchCount)+ (limited)"
+        }
         if app.findMatchCount == 0 { return "No results" }
         return "\(app.findCurrentMatch) of \(app.findMatchCount)"
     }
