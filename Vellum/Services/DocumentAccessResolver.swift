@@ -135,10 +135,11 @@ struct DocumentAccessResolver: Sendable {
     func openPickedPDF(
         url: URL,
         sessionId: String,
+        copyToLibrary: Bool = false,
         open: (String, String) async throws -> DocumentInfo,
         close: (String) async -> Void = { _ in }
     ) async throws -> DocumentInfo {
-        let local = try await localReadableURL(for: url)
+        let local = try await localReadableURL(for: url, copyToLibrary: copyToLibrary)
         do {
             return try await openLocalPDF(
                 url: url,
@@ -399,10 +400,11 @@ struct DocumentAccessResolver: Sendable {
 
     private func localReadableURL(
         for url: URL,
-        access: DocumentBookmarkAccess = .external
+        access: DocumentBookmarkAccess = .external,
+        copyToLibrary: Bool = false
     ) async throws -> (url: URL, staged: Bool) {
         let local = try await performFileOperation {
-            if isAppOwnedURL(url) {
+            if !copyToLibrary, isAppOwnedURL(url) {
                 return (url: url, staged: false)
             }
             return try withSecurityScopeIfNeeded(to: url, access: access) {

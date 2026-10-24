@@ -52,7 +52,14 @@ final class WebSessionBackend {
             return (normalized: normalized, record: record)
         }.value
 
-        return WebDocumentSession(url: opened.normalized, record: opened.record, storage: storage)
+        #if os(macOS)
+        let navigationURL = try WebUrl.navigationURL(url)
+        #else
+        let navigationURL: String? = nil
+        #endif
+        return WebDocumentSession(
+            url: opened.normalized, record: opened.record, storage: storage,
+            navigationURL: navigationURL)
     }
 
     /// Open a `.vellumweb` archive: install its snapshot locally, merge its
@@ -159,7 +166,10 @@ final class WebDocumentSession: DocumentSession {
     private let io: WebDocumentIO
     private let storage: WebLibraryStorage
 
-    init(url: String, record: WebPageRecord, storage: WebLibraryStorage = WebLibraryStorage()) {
+    init(
+        url: String, record: WebPageRecord, storage: WebLibraryStorage = WebLibraryStorage(),
+        navigationURL: String? = nil
+    ) {
         self.url = url
         self.storage = storage
         key = WebLibrary.pageKey(url)
@@ -171,7 +181,8 @@ final class WebDocumentSession: DocumentSession {
             pageCount: record.pageCount,
             lastPage: record.lastPage,
             docId: key,
-            titleIsUserDefined: record.titleIsUserDefined)
+            titleIsUserDefined: record.titleIsUserDefined,
+            webNavigationURL: navigationURL)
         io = WebDocumentIO(url: url, key: key, storage: storage)
     }
 
