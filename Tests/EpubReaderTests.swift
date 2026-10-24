@@ -49,14 +49,14 @@ struct EpubReaderTests {
                 windowNumber: window.windowNumber, context: nil, characters: key,
                 charactersIgnoringModifiers: key, isARepeat: false, keyCode: key == "[" ? 33 : 30))
         }
-        #expect(webView.performKeyEquivalent(with: try event("[")))
-        #expect(webView.performKeyEquivalent(with: try event("]")))
+        #expect(webView.handleChapterShortcut(try event("[")))
+        #expect(webView.handleChapterShortcut(try event("]")))
         #expect(steps == [-1, 1])
-        _ = webView.performKeyEquivalent(with: try event("]", modifiers: [.command, .shift]))
-        _ = webView.performKeyEquivalent(with: try event("[", modifiers: []))
+        #expect(!webView.handleChapterShortcut(try event("]", modifiers: [.command, .shift])))
+        #expect(!webView.handleChapterShortcut(try event("[", modifiers: [])))
         #expect(steps == [-1, 1])
         window.makeFirstResponder(nil)
-        _ = webView.performKeyEquivalent(with: try event("]"))
+        #expect(!webView.handleChapterShortcut(try event("]")))
         #expect(steps == [-1, 1])
         webView.onChapterStep = nil
         window.contentView = nil

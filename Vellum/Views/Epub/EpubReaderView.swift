@@ -185,6 +185,7 @@ private struct EpubWebView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ webView: EpubChapterWebView, coordinator: Coordinator) {
+        webView.removeKeyMonitor()
         webView.onChapterStep = nil
         webView.configuration.userContentController.removeAllScriptMessageHandlers()
         webView.stopLoading()
@@ -294,10 +295,26 @@ private struct EpubWebView: NSViewRepresentable {
 
 final class EpubChapterWebView: WKWebView {
     var onChapterStep: ((Int) -> Void)?
+    private var keyMonitor: Any?
 
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        // WebKit consumes its history shortcuts before SwiftUI's chapter buttons.
-        if let responder = window?.firstResponder as? NSView,
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeKeyMonitor()
+        guard window != nil else { return }
+        // Intercept before WebKit's content responder handles history navigation.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleChapterShortcut(event) == true ? nil : event
+        }
+    }
+
+    func removeKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+    }
+
+    func handleChapterShortcut(_ event: NSEvent) -> Bool {
+        if let window, event.window === window, window.attachedSheet == nil,
+           let responder = window.firstResponder as? NSView,
            responder === self || responder.isDescendant(of: self),
            event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
            let onChapterStep {
@@ -307,7 +324,7 @@ final class EpubChapterWebView: WKWebView {
             default: break
             }
         }
-        return super.performKeyEquivalent(with: event)
+        return false
     }
 }
 
