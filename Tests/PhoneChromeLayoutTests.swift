@@ -185,6 +185,7 @@ private struct ChromeFixture {
         switch kind {
         case .pdf: await app.openFile(path: "/tmp/phone-chrome.pdf")
         case .web: await app.openUrl("https://example.com/article")
+        case .epub: await app.openFile(path: "/tmp/phone-chrome.epub")
         }
         shell.didOpenDocument()
     }
