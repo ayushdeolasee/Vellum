@@ -18,6 +18,9 @@ struct StorageSettingsTab: View {
     @State private var docEntries: [DocumentDataStore.DocumentDataEntry] = []
     @State private var cacheEntries: [PageTextCacheEntry] = []
     @State private var webEntries: [WebLibrary.SnapshotStorageEntry] = []
+    @State private var bookEntries: [EpubLibraryCatalog.Entry] = []
+    @State private var bookListingFailure: String?
+    @State private var reloadGeneration = UUID()
     @State private var webRecordBytes: Int64 = 0
     @State private var legacyScratchpad: [LegacyRow] = []
     @State private var legacyAi: [LegacyRow] = []
@@ -52,7 +55,7 @@ struct StorageSettingsTab: View {
     private var rows: [StorageInventory.DocumentRow] {
         StorageInventory.joinRows(
             documents: docEntries, cacheEntries: cacheEntries,
-            webEntries: webEntries, sort: sortOrder)
+            webEntries: webEntries, bookEntries: bookEntries, sort: sortOrder)
     }
 
     private var linkedRows: [StorageInventory.DocumentRow] {
@@ -71,6 +74,10 @@ struct StorageSettingsTab: View {
         Form {
             storageLocationSection
             summaryTilesSection
+            if let bookListingFailure {
+                Text("Books could not be listed: \(bookListingFailure)")
+                    .foregroundStyle(.secondary)
+            }
             documentsSection
             if !archivedConflicts.isEmpty { syncConflictsSection }
             if hasOrphanSection { orphansSection }
@@ -136,6 +143,9 @@ struct StorageSettingsTab: View {
             tile(
                 "Caches", bytes: cacheBytes,
                 caption: "Extracted text that makes AI and search start instantly. Rebuilt the next time you open a document.")
+            tile(
+                "Imported books", bytes: bookEntries.reduce(0) { $0 + $1.totalBytes },
+                caption: "Original EPUBs, local covers and publication metadata. Kept when notes or chat are deleted; never removed by cache cleanup.")
         } header: {
             Text("Overview")
         }
@@ -230,6 +240,16 @@ struct StorageSettingsTab: View {
     @ViewBuilder
     private func breakdown(_ row: StorageInventory.DocumentRow) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if row.kind == .epub {
+                LabeledContent("Original EPUB", value: row.originalBookBytes.formatted(.byteCount(style: .file)))
+                LabeledContent("Cover & catalog", value: (row.coverBytes + row.catalogBytes).formatted(.byteCount(style: .file)))
+                if let path = row.sourcePath, row.sourceExists {
+                    Button("Show Book in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
             if row.hasNotes {
                 BreakdownLine(
                     label: "Notes & attachments", bytes: row.notesBytes,
@@ -254,7 +274,7 @@ struct StorageSettingsTab: View {
                     idSuffix: "deleteArchive.\(row.key)", help: "Remove archive",
                     action: { deleteArchive(row) })
             }
-            Button("Delete everything for this document", role: .destructive) {
+            Button(row.kind == .epub ? "Delete notes, chat & caches (keep book)" : "Delete everything for this document", role: .destructive) {
                 pendingDeleteAll = row
             }
             .buttonStyle(.borderless)
@@ -513,7 +533,7 @@ struct StorageSettingsTab: View {
         workspace.root.allLeaves().flatMap { $0.app.tabs }.compactMap(\.document)
     }
     private var openPdfKeys: Set<String> {
-        Set(openDocuments.filter { $0.kind == .pdf }.map { DocumentIdentity.storageKey(for: $0) })
+        Set(openDocuments.filter { $0.kind != .web }.map { DocumentIdentity.storageKey(for: $0) })
     }
     private var openWebUrls: Set<String> {
         Set(openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
@@ -527,12 +547,21 @@ struct StorageSettingsTab: View {
         var webRecordBytes: Int64
         var legacyScratchpad: [LegacyRow]
         var legacyAi: [LegacyRow]
+        var books: [EpubLibraryCatalog.Entry]
+        var bookFailure: String?
     }
 
     private func reload() async {
+        let generation = UUID()
+        reloadGeneration = generation
         isLoading = true
-        let listing = await Task.detached(priority: .userInitiated) { () -> Listing in
-            Listing(
+        defer { if reloadGeneration == generation { isLoading = false } }
+        let worker = Task.detached(priority: .userInitiated) { () -> Listing in
+            let books: [EpubLibraryCatalog.Entry]
+            let failure: String?
+            do { books = try EpubLibraryCatalog.list(); failure = nil }
+            catch { books = []; failure = error.localizedDescription }
+            return Listing(
                 documents: DocumentDataStore.listDocuments(),
                 web: WebLibrary.listSnapshotStorage(),
                 webRecordBytes: WebLibrary.totalRecordBytes(),
@@ -541,17 +570,24 @@ struct StorageSettingsTab: View {
                 },
                 legacyAi: AiPersistence.listLegacyEntries().map {
                     LegacyRow(source: .ai, key: $0.key, bytes: $0.bytes)
-                })
-        }.value
+                }, books: books, bookFailure: failure)
+        }
+        let listing = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: { worker.cancel() }
+        guard !Task.isCancelled, reloadGeneration == generation else { return }
         let cache = await PageTextCache.shared.listEntries()
+        let conflicts = await workspace.storageCoordinator.archivedConflicts()
+        guard !Task.isCancelled, reloadGeneration == generation else { return }
         docEntries = listing.documents
         webEntries = listing.web
+        bookEntries = listing.books
+        bookListingFailure = listing.bookFailure
         webRecordBytes = listing.webRecordBytes
         legacyScratchpad = listing.legacyScratchpad
         legacyAi = listing.legacyAi
         cacheEntries = cache
-        archivedConflicts = await workspace.storageCoordinator.archivedConflicts()
-        isLoading = false
+        archivedConflicts = conflicts
     }
 
     // MARK: - Destructive actions
@@ -795,8 +831,10 @@ struct StorageSettingsTab: View {
                 Button("Delete Everything", role: .destructive) { deleteEverything(row) }
                     .accessibilityIdentifier("storage.confirmDeleteAll")
                 Button("Cancel", role: .cancel) {}
-            } message: { _ in
-                Text("This permanently deletes this document's notes, attachments and AI chat, along with its cached text and offline copy. Highlights saved inside the document file itself are not affected. This cannot be undone.")
+            } message: { row in
+                Text(row.kind == .epub
+                    ? "This permanently deletes this book's notes, attachments, AI chat and cached text. The original imported EPUB, cover and catalog entry are kept. This cannot be undone."
+                    : "This permanently deletes this document's notes, attachments and AI chat, along with its cached text and offline copy. Highlights saved inside the document file itself are not affected. This cannot be undone.")
             }
         let recoveryDialogs = documentDialogs
             .confirmationDialog(
@@ -864,7 +902,7 @@ private struct DocumentRowHeader: View {
 
     var body: some View {
         HStack {
-            Image(systemName: row.kind == .web ? "globe" : "doc.text")
+            Image(systemName: row.kind == .web ? "globe" : row.kind == .epub ? "book.closed" : "doc.text")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
@@ -941,9 +979,15 @@ private struct OrphanRow: View {
                 .font(.callout)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
-            Button("Relink…", action: onRelink)
-                .buttonStyle(.borderless)
-                .accessibilityIdentifier("storageOrphan.relink.\(row.key)")
+            if row.kind == .epub {
+                Text("Reimport the original EPUB to reconnect")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Relink…", action: onRelink)
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("storageOrphan.relink.\(row.key)")
+            }
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
             }

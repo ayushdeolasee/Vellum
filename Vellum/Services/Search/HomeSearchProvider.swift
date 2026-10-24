@@ -82,7 +82,7 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
             // A moved PDF re-resolves to its current location via the stable
             // docId; web entries and dead entries come back unchanged.
             let resolved = resolvePath(entry)
-            let onDisk = entry.kind == .pdf && fileExists(resolved)
+            let onDisk = entry.kind != .web && fileExists(resolved)
             let name = entry.kind == .web
                 ? RecentFilesService.webpageDisplayName(for: entry.pdfPath)
                 : RecentFilesService.fileName(for: entry.pdfPath)
@@ -94,11 +94,12 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
                 subtitle += " · \(count) \(count == 1 ? "page" : "pages")"
             }
             var badges: HomeSearchBadges = []
-            if entry.kind == .pdf, !onDisk { badges.insert(.missing) }
+            if entry.kind != .web, !onDisk { badges.insert(.missing) }
+            if entry.kind == .epub { subtitle += " · EPUB" }
 
             return HomeSearchItem(
                 id: "\(id):\(resolved)",
-                identity: HomeSearchItemBuilder.identity(resolved, kind: entry.kind),
+                identity: HomeSearchItemBuilder.identity(resolved, kind: entry.kind, docId: entry.docId),
                 section: .recents,
                 kind: entry.kind,
                 target: entry.kind == .web
@@ -250,7 +251,7 @@ struct LibraryDocumentsSearchProvider: HomeSearchProvider {
         return try await load().compactMap { entry -> HomeSearchItem? in
             let meta = entry.meta
             let isWeb = meta.kind == DocumentKind.web.rawValue
-            let kind: DocumentKind = isWeb ? .web : .pdf
+            let kind = DocumentKind(rawValue: meta.kind) ?? .pdf
             // For web documents `last_known_path` holds the normalized URL —
             // DocumentInfo.pdfPath is the generic document URI, not a file path.
             let locator = meta.lastKnownPath
@@ -277,7 +278,7 @@ struct LibraryDocumentsSearchProvider: HomeSearchProvider {
 
             return HomeSearchItem(
                 id: "\(id):\(entry.key)",
-                identity: HomeSearchItemBuilder.identity(locator, kind: kind),
+                identity: HomeSearchItemBuilder.identity(locator, kind: kind, docId: entry.key),
                 section: isWeb ? .webpages : .documents,
                 kind: kind,
                 target: isWeb ? .url(locator) : .file(path: locator, recordedPath: locator),
@@ -329,7 +330,8 @@ enum HomeSearchItemBuilder {
     ///
     /// File paths are left verbatim: two paths differing only in case are two
     /// different documents on a case-sensitive volume.
-    static func identity(_ locator: String, kind: DocumentKind) -> String {
+    static func identity(_ locator: String, kind: DocumentKind, docId: String? = nil) -> String {
+        if kind == .epub, let docId, EpubLibraryCatalog.isDocId(docId) { return "epub:\(docId)" }
         guard kind == .web else { return locator }
         return (try? WebUrl.normalize(locator)) ?? locator.lowercased()
     }
@@ -340,5 +342,38 @@ enum HomeSearchItemBuilder {
     static func host(of url: String) -> String? {
         guard let host = URL(string: url)?.host, !host.isEmpty else { return nil }
         return host
+    }
+}
+
+/// Every imported book, independent of recents and user-generated sidecars.
+struct EpubBooksSearchProvider: HomeSearchProvider {
+    let id = "books"
+    let displayName = "Books"
+    private let load: @Sendable () throws -> [EpubLibraryCatalog.Entry]
+
+    init(load: @escaping @Sendable () throws -> [EpubLibraryCatalog.Entry] = { try EpubLibraryCatalog.list() }) {
+        self.load = load
+    }
+
+    func items(matching _: String) async throws -> [HomeSearchItem] {
+        try load().map { entry in
+            let record = entry.record
+            let path = entry.fileURL.path
+            let meta = DocumentDataStore.loadMeta(forKey: record.docId)
+            let title = HomeSearchItemBuilder.title(meta?.title ?? record.customTitle ?? record.title, fallback: entry.fileURL.lastPathComponent)
+            let author = record.authors.joined(separator: ", ")
+            let subtitle = author.isEmpty ? "EPUB" : "\(author) · EPUB"
+            var item = HomeSearchItem(
+                id: "\(id):\(record.docId)", identity: "epub:\(record.docId)", section: .documents,
+                kind: .epub, target: .file(path: path, recordedPath: path), title: title,
+                subtitle: subtitle, detail: "EPUB", tooltip: path,
+                date: meta.flatMap { WebLibrary.parseRfc3339($0.lastOpened) } ?? record.importedAt,
+                badges: entry.available ? [] : [.missing], canRevealInFinder: entry.available,
+                haystack: HomeSearchHaystack(title: title, name: entry.fileURL.lastPathComponent,
+                                            location: path, extra: "\(author) epub book library"),
+                storageKey: record.docId)
+            item.localCoverURL = entry.coverURL
+            return item
+        }
     }
 }

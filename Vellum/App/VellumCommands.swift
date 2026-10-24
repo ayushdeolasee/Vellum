@@ -106,7 +106,7 @@ struct VellumCommands: Commands {
         CommandGroup(replacing: .printItem) {
             Button("Print…") { appStore?.printDocument() }
                 .keyboardShortcut("p", modifiers: .command)
-                .disabled(!hasDocument)
+                .disabled(!hasDocument || appStore?.document?.kind == .epub)
         }
 
         // MARK: Edit → Find
@@ -146,15 +146,15 @@ struct VellumCommands: Commands {
             }
             Button("Zoom In") { appStore?.zoomIn() }
                 .keyboardShortcut("+", modifiers: .command)
-                .disabled(!hasDocument)
+                .disabled(!hasDocument || appStore?.document?.kind == .epub)
 
             Button("Zoom Out") { appStore?.zoomOut() }
                 .keyboardShortcut("-", modifiers: .command)
-                .disabled(!hasDocument)
+                .disabled(!hasDocument || appStore?.document?.kind == .epub)
 
             Button("Actual Size") { appStore?.resetZoom() }
                 .keyboardShortcut("0", modifiers: .command)
-                .disabled(!hasDocument)
+                .disabled(!hasDocument || appStore?.document?.kind == .epub)
 
             Divider()
 
