@@ -41,6 +41,9 @@ extension AiReference {
     /// One-line chip caption — the excerpt (whitespace collapsed) plus a page
     /// locator where there is one.
     var chipLabel: String {
+        if let citation = epubCitation {
+            return "“\(Self.collapse(text ?? citation.anchor?.quote ?? ""))” · \(citation.label)"
+        }
         switch kind {
         case let .selection(text, page): return "“\(Self.collapse(text))” · p.\(page)"
         case let .highlight(text, page): return "“\(Self.collapse(text))” · p.\(page)"
@@ -86,6 +89,7 @@ struct SentReferenceChips: View {
     /// Scroll the reader to a page a reference points at. Called only for
     /// references with a `page`.
     let onGoToPage: (Int) -> Void
+    var onGoToEpub: ((AiEpubCitation) -> Void)? = nil
     /// Pixels to preview for an image-carrying reference, or nil when there are
     /// none to show. Resolved by the store, not by the reference itself: the
     /// persisted copy has had its base64 stripped, so the bytes come from the
@@ -104,7 +108,8 @@ struct SentReferenceChips: View {
         ChipFlowLayout(spacing: 4, lineSpacing: 4, alignment: .trailing) {
             ForEach(references) { reference in
                 SentReferenceChip(
-                    reference: reference, onGoToPage: onGoToPage, previewData: previewData)
+                    reference: reference, onGoToPage: onGoToPage,
+                    onGoToEpub: onGoToEpub, previewData: previewData)
             }
         }
         // Matches the bubble's own cap so the chips read as one column with it.
@@ -116,6 +121,7 @@ struct SentReferenceChips: View {
 private struct SentReferenceChip: View {
     let reference: AiReference
     let onGoToPage: (Int) -> Void
+    var onGoToEpub: ((AiEpubCitation) -> Void)? = nil
     let previewData: (AiReference) -> Data?
 
     @Environment(\.palette) private var palette
@@ -167,6 +173,12 @@ private struct SentReferenceChip: View {
                     // reader just scrolled away from is disorienting.
                     detailShown = false
                     onGoToPage(page)
+                },
+                onGoToEpub: onGoToEpub.map { handler in
+                    { citation in
+                        detailShown = false
+                        handler(citation)
+                    }
                 }
             )
             // In a compact split-view width iPadOS would promote this popover to
@@ -199,6 +211,7 @@ private struct SentReferenceDetail: View {
     /// Decoded pixels, or nil when this reference is no longer previewable.
     let preview: UIImage?
     let onGoToPage: (Int) -> Void
+    var onGoToEpub: ((AiEpubCitation) -> Void)? = nil
 
     @Environment(\.palette) private var palette
 
@@ -211,7 +224,11 @@ private struct SentReferenceDetail: View {
                 Text(reference.chipKindName)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(palette.foreground)
-                if let page = reference.page {
+                if let citation = reference.epubCitation {
+                    Text("· \(citation.label)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.mutedForeground)
+                } else if let page = reference.page {
                     Text("· page \(page)")
                         .font(.system(size: 12))
                         .foregroundStyle(palette.mutedForeground)
@@ -224,7 +241,16 @@ private struct SentReferenceDetail: View {
                 excerptBody
             }
 
-            if let page = reference.page {
+            if let citation = reference.epubCitation {
+                Button { onGoToEpub?(citation) } label: {
+                    Label("Go to \(citation.label) · passage", systemImage: "arrow.right.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.primary)
+                }
+                .buttonStyle(.plain)
+                .disabled(onGoToEpub == nil)
+                .accessibilityIdentifier("aiMessage.reference.goToPassage")
+            } else if let page = reference.page {
                 // Deliberately not `.buttonStyle(.link)`: that paints the system
                 // link blue, which clashes with the app's own accent everywhere
                 // else in the panel. Plain + `palette.primary` reads as a link

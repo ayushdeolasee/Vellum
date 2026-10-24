@@ -1045,8 +1045,11 @@ enum AiPersistence {
         // turns matter most, references are a single message's attachment list
         // in the order the user built it, and truncating the tail is what the
         // composer's own cap would have done.
-        return references.prefix(maxReferencesPerMessage).map {
-            $0.truncatingText(to: maxReferenceCharacters).strippingImageData
+        return references.prefix(maxReferencesPerMessage).compactMap {
+            var reference = $0.truncatingText(to: maxReferenceCharacters).strippingImageData
+            reference.epubCitation = reference.epubCitation?.bounded
+            if $0.epubCitation != nil, reference.epubCitation == nil { return nil }
+            return reference
         }
     }
 
@@ -1066,6 +1069,8 @@ enum AiPersistence {
                 bounded($0, limit: maxToolSummaryDetailCharacters)
             }
             summary.destinationPage = boundedPage(summary.destinationPage)
+            summary.destinationEpub = summary.destinationEpub?.bounded
+            if original.destinationEpub != nil { summary.destinationPage = nil }
             var seenSourceIds = Set<String>()
             summary.sources = summary.sources.prefix(maxToolSourcesPerSummary)
                 .enumerated()
@@ -1077,6 +1082,8 @@ enum AiPersistence {
                     seen: &seenSourceIds
                 )
                 source.page = boundedPage(source.page)
+                source.epubCitation = source.epubCitation?.bounded
+                if originalSource.epubCitation != nil { source.page = nil }
                 source.excerpt = bounded(
                     source.excerpt,
                     limit: maxToolSourceExcerptCharacters

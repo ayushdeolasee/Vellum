@@ -3,6 +3,7 @@ import SwiftUI
 struct AiToolSummaryView: View {
     let summary: AiToolSummary
     let onJumpToPage: (Int) -> Void
+    var onJumpToEpub: ((AiEpubCitation) -> Void)? = nil
 
     @State private var isExpanded = false
 
@@ -10,9 +11,17 @@ struct AiToolSummaryView: View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(summary.sources) { source in
-                    AiToolSourceRow(source: source, onJumpToPage: onJumpToPage)
+                    AiToolSourceRow(source: source, onJumpToPage: onJumpToPage, onJumpToEpub: onJumpToEpub)
                 }
-                if summary.sources.isEmpty, let page = summary.destinationPage {
+                if summary.sources.isEmpty, let citation = summary.destinationEpub {
+                    Button("Jump to " + citation.label, systemImage: "arrow.right.circle") {
+                        onJumpToEpub?(citation)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .disabled(onJumpToEpub == nil)
+                    .accessibilityIdentifier("aiToolSummary.jumpToPassage")
+                } else if summary.sources.isEmpty, let page = summary.destinationPage {
                     Button("Jump to page \(page)", systemImage: "arrow.right.circle") {
                         onJumpToPage(page)
                     }

@@ -295,7 +295,8 @@ final class OpenCodeClient {
             color: value["color"] as? String,
             x: (value["x"] as? NSNumber)?.doubleValue,
             y: (value["y"] as? NSNumber)?.doubleValue,
-            isRegex: value["isRegex"] as? Bool
+            isRegex: value["isRegex"] as? Bool,
+            epubAnchor: AiToolArguments.decodeEpubAnchor(value["epubAnchor"])
         )
     }
 
@@ -352,7 +353,10 @@ final class OpenCodeClient {
                 "description": "Navigate the document viewport to a specific 1-indexed page.",
                 "parameters": [
                     "type": "object",
-                    "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to navigate to. Out-of-range values are clamped."]],
+                "properties": [
+                    "pageNumber": ["type": "number", "description": "1-indexed page number to navigate to; chapter number for EPUB. Out-of-range values are clamped."],
+                    "epubAnchor": AiToolArguments.epubAnchorSchema,
+                ],
                     "required": ["pageNumber"], "additionalProperties": false,
                 ],
             ],
@@ -365,7 +369,8 @@ final class OpenCodeClient {
                 "parameters": [
                     "type": "object",
                     "properties": [
-                        "pageNumber": ["type": "number", "description": "1-indexed page number for the note."],
+                    "pageNumber": ["type": "number", "description": "1-indexed page number for the note; chapter number for EPUB."],
+                    "epubAnchor": AiToolArguments.epubAnchorSchema,
                         "text": ["type": "string", "description": "Note body. Must be non-empty."],
                         "x": ["type": "number", "description": "Optional top-left x in PDF points (default 72)."],
                         "y": ["type": "number", "description": "Optional top-left y in PDF points (default 96)."],
@@ -382,7 +387,8 @@ final class OpenCodeClient {
                 "parameters": [
                     "type": "object",
                     "properties": [
-                        "pageNumber": ["type": "number", "description": "1-indexed page number for the highlight."],
+                    "pageNumber": ["type": "number", "description": "1-indexed page number for the highlight; chapter number for EPUB."],
+                    "epubAnchor": AiToolArguments.epubAnchorSchema,
                         "text": ["type": "string", "description": "Exact phrase to highlight, quoted verbatim from the page text. The app locates it; do not supply coordinates."],
                         "color": ["type": "string", "description": "Optional CSS color (e.g. #fef08a). Invalid values fall back to yellow."],
                     ],
