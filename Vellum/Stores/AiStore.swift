@@ -1345,7 +1345,10 @@ final class AiStore {
 
     /// Wipes pageTexts, messages, activity, error (called on doc/tab change).
     func clearDocumentContext() {
-        if let epubBinding { unregisterEpubSession(binding: epubBinding) }
+        // The reader may register before the pane's conversation-load task runs.
+        if let epubBinding, epubBinding != app?.activeDocumentBinding {
+            unregisterEpubSession(binding: epubBinding)
+        }
         cancelActiveRequest()
         contextLoadGeneration = UUID()
         messages = []
