@@ -7,6 +7,8 @@ import WebKit
 final class EpubReaderController {
     private(set) var location: EpubReaderLocation?
     private(set) var selection: EpubTextAnchor?
+    private(set) var selectionNoteDraft: EpubSelectionNoteDraft?
+    var selectedAnchor: EpubTextAnchor? { selectionNoteDraft?.anchor ?? selection }
     private(set) var unresolved: Set<String> = []
     var notice: String?
     var settings = EpubReaderSettings.load()
@@ -60,9 +62,9 @@ final class EpubReaderController {
         app.findStepHandler = { [weak self] step in self?.stepSearch(step) }
         app.findClearHandler = { [weak self] in self?.clearSearch() }
         annotations?.captureEpubPositionHandler = { [weak self] in
-            guard let self, self.isCurrent, let anchor = self.selection ?? self.app?.tab(id: binding.tabId)?.epubLocation?.textAnchor,
-                  let location = self.location else { return nil }
-            return CapturedWebPosition(pageNumber: location.chapter + 1, positionData: Self.position(anchor))
+            guard let self, self.isCurrent, let anchor = self.selectedAnchor ?? self.app?.tab(id: binding.tabId)?.epubLocation?.textAnchor,
+                  let chapter = self.session?.publication.spineIndex(path: anchor.chapterHref) else { return nil }
+            return CapturedWebPosition(pageNumber: chapter + 1, positionData: Self.position(anchor))
         }
         if let pending = app.takePendingEpubCitation(binding: binding) {
             go(chapter: pending.chapterNumber - 1, anchor: pending.anchor)
@@ -135,7 +137,8 @@ final class EpubReaderController {
               message.href == session.publication.spine[location.chapter].path else { return }
         switch message.type {
         case "progress": progress(message)
-        case "selection": selection = message.anchor
+        case "selection":
+            if selectionNoteDraft == nil { selection = message.anchor }
         case "annotation":
             guard let id = message.id, annotations?.annotations.contains(where: { $0.id == id }) == true else { return }
             annotations?.selectAnnotation(id, scrollIntoView: false)
@@ -158,11 +161,12 @@ final class EpubReaderController {
     }
 
     func annotate(type: AnnotationType, color: String? = nil, note: String? = nil) {
-        guard isCurrent, let anchor = selection, let location, let annotations else { return }
+        guard isCurrent, let anchor = selectedAnchor, let location, let annotations, let session,
+              let chapter = session.publication.spineIndex(path: anchor.chapterHref) else { return }
         let request = location.request
-        let input = CreateAnnotationInput(type: type, pageNumber: location.chapter + 1, color: color,
+        let input = CreateAnnotationInput(type: type, pageNumber: chapter + 1, color: color,
             content: note, positionData: Self.position(anchor))
-        selection = nil
+        clearSelection()
         run { [self] in
             guard isCurrent, self.location?.request == request else { return }
             let annotation = type == .highlight ? await annotations.addHighlight(input) : await annotations.addNote(input)
@@ -177,10 +181,10 @@ final class EpubReaderController {
     func askAI(anchor: EpubTextAnchor? = nil, chapter: Int? = nil, highlight: Bool = false) {
         // Capture the composer identity before any asynchronous selection work.
         guard isCurrent, let ai, let target = ai.currentReferenceTarget(), let location,
-              let anchor = anchor ?? selection else { return }
+              let anchor = anchor ?? selectedAnchor else { return }
         let request = location.request
-        let chapter = chapter ?? location.chapter + 1
-        selection = nil
+        let chapter = chapter ?? session?.publication.spineIndex(path: anchor.chapterHref).map { $0 + 1 } ?? location.chapter + 1
+        clearSelection()
         run { [self] in
             guard isCurrent, self.location?.request == request else { return }
             let added = await ai.addEpubReference(anchor: anchor, chapterNumber: chapter, highlight: highlight, target: target)
@@ -190,13 +194,23 @@ final class EpubReaderController {
     }
 
     func quoteToScratchpad() {
-        guard isCurrent, let anchor = selection, let scratchpad, scratchpad.editorAcceptsChanges else { return }
+        guard isCurrent, let anchor = selectedAnchor, let scratchpad, scratchpad.editorAcceptsChanges else { return }
         let quote = anchor.quote.components(separatedBy: .newlines).map { "> \($0)" }.joined(separator: "\n")
         scratchpad.text += (scratchpad.text.isEmpty ? "" : "\n\n") + quote + "\n"
-        selection = nil
+        clearSelection()
     }
 
-    func clearSelection() { selection = nil }
+    func beginSelectionNote() {
+        guard isCurrent, selectionNoteDraft == nil, let anchor = selection else { return }
+        selectionNoteDraft = EpubSelectionNoteDraft(anchor: anchor, text: "")
+    }
+
+    func updateSelectionNoteDraft(_ text: String) {
+        guard isCurrent, selectionNoteDraft != nil else { return }
+        selectionNoteDraft?.text = text
+    }
+
+    func clearSelection() { selection = nil; selectionNoteDraft = nil }
 
     private func clearSearch() {
         searchGeneration = UUID(); searchTask?.cancel(); searchTask = nil
@@ -234,5 +248,10 @@ final class EpubReaderController {
         go(chapter: result.chapterNumber - 1, anchor: result.anchor)
         app?.setFindResults(count: searchResults.count, current: searchIndex + 1)
     }
+}
+
+struct EpubSelectionNoteDraft {
+    let anchor: EpubTextAnchor
+    var text: String
 }
 #endif

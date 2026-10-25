@@ -20,6 +20,9 @@ struct SelectionPopover: View {
     var onEpubNote: ((String) -> Void)? = nil
     var onEpubAI: (() -> Void)? = nil
     var onScratchpad: (() -> Void)? = nil
+    var initialNoteDraft: String? = nil
+    var onBeginNote: (() -> Void)? = nil
+    var onNoteDraftChange: ((String) -> Void)? = nil
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
@@ -68,7 +71,9 @@ struct SelectionPopover: View {
 
             if showNoteInput {
                 HStack(spacing: 6) {
-                    TextField("Add a note...", text: $noteText)
+                    TextField("Add a note...", text: Binding(
+                        get: { noteText }, set: { noteText = $0; onNoteDraftChange?($0) }
+                    ))
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 13))
                         .focused($noteFieldFocused)
@@ -76,7 +81,11 @@ struct SelectionPopover: View {
                         #if os(macOS)
                         .onExitCommand { onClose() }
                         #endif
-                        .onAppear { noteFieldFocused = true }
+                        .task {
+                            await Task.yield()
+                            guard !Task.isCancelled else { return }
+                            noteFieldFocused = true
+                        }
 
                     Button("Add", action: handleAddNote)
                         .buttonStyle(.glassProminent)
@@ -85,6 +94,12 @@ struct SelectionPopover: View {
                 .padding(8)
                 .frame(width: min(256, availableWidth ?? 256))
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
+            }
+        }
+        .onAppear {
+            if let initialNoteDraft {
+                noteText = initialNoteDraft
+                showNoteInput = true
             }
         }
     }
@@ -146,6 +161,7 @@ struct SelectionPopover: View {
 
         Button {
             showNoteInput.toggle()
+            if showNoteInput { onBeginNote?() }
         } label: {
             Image(systemName: "plus.bubble")
                 .font(.system(size: 12))

@@ -30,15 +30,19 @@ struct EpubReaderView: View {
                         Divider()
                         EpubReaderSurface(reader: reader, session: session, location: location,
                             annotations: annotations.annotations, dark: colorScheme == .dark)
-                        if let anchor = reader.selection, reader.isCurrent {
+                        if let anchor = reader.selectedAnchor, reader.isCurrent {
                             SelectionPopover(
                                 selection: PdfTextSelection(text: anchor.quote,
-                                    positionData: EpubReaderController.position(anchor), pageNumber: location.chapter + 1),
+                                    positionData: EpubReaderController.position(anchor),
+                                    pageNumber: (session.publication.spineIndex(path: anchor.chapterHref) ?? location.chapter) + 1),
                                 onClose: { reader.clearSelection() },
                                 onEpubHighlight: { reader.annotate(type: .highlight, color: $0) },
                                 onEpubNote: { reader.annotate(type: .note, note: $0) },
                                 onEpubAI: { reader.askAI() },
-                                onScratchpad: { reader.quoteToScratchpad() })
+                                onScratchpad: { reader.quoteToScratchpad() },
+                                initialNoteDraft: reader.selectionNoteDraft?.text,
+                                onBeginNote: { reader.beginSelectionNote() },
+                                onNoteDraftChange: { reader.updateSelectionNoteDraft($0) })
                             .padding(8)
                         }
                         if let notice = reader.notice {
