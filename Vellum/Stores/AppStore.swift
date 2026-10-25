@@ -337,6 +337,7 @@ final class AppStore {
     private(set) var findQuery = ""
     private(set) var findMatchCount = 0
     private(set) var findIsSearching = false
+    private(set) var findTruncated = false
     /// 1-based index of the current match; 0 when there are no matches.
     private(set) var findCurrentMatch = 0
 
@@ -358,6 +359,104 @@ final class AppStore {
     var zoomToHandler: ((Double) -> Void)?
     /// Registered by the viewer to scroll a page into view (window.__scrollToPage).
     var scrollToPageHandler: ((Int) -> Void)?
+    var scrollToEpubAnchorHandler: ((EpubTextAnchor?, Int) -> Void)?
+    var referenceEpubAnnotationHandler: ((Annotation) -> Void)?
+    var epubHandlerOwner: DocumentBinding?
+    var epubHandlerToken: UUID?
+    #if os(macOS)
+    private struct EpubReaderOwner {
+        let binding: DocumentBinding
+        let deactivate: () -> Void
+        let drain: () async -> Void
+        let close: () async -> Void
+    }
+    @ObservationIgnored private var epubReaders: [String: EpubReaderOwner] = [:]
+    @ObservationIgnored private var epubCitationTask: Task<Void, Never>?
+    @ObservationIgnored private var cancelledEpubCitationTasks: [Task<Void, Never>] = []
+    private var epubCitationGeneration = UUID()
+    private var pendingEpubCitation: AiEpubCitation?
+
+    func registerEpubReader(binding: DocumentBinding, deactivate: @escaping () -> Void,
+                            drain: @escaping () async -> Void, close: @escaping () async -> Void) {
+        guard documentBinding(for: binding.tabId) == binding else { return }
+        let previous = epubReaders[binding.tabId]
+        epubReaders[binding.tabId] = EpubReaderOwner(binding: binding, deactivate: deactivate, drain: drain, close: close)
+        if let previous {
+            previous.deactivate()
+            // Re-mount/eviction retains the old owner until its cancelled tasks drain.
+            if let document = tab(id: binding.tabId)?.document {
+                enqueueDocumentPersistence(document: document, generation: previous.binding.generation) { _ in await previous.close() }
+            }
+        }
+    }
+
+    func takePendingEpubCitation(binding: DocumentBinding) -> AiEpubCitation? {
+        guard activeDocumentBinding == binding, let citation = pendingEpubCitation,
+              citation.docId == binding.docId else { return nil }
+        pendingEpubCitation = nil
+        return citation
+    }
+
+    /// Installed on the pane, not on a book view: a PDF/web tab can reopen a
+    /// saved book reference. The task never joins the lane that closes it.
+    func routeEpubCitation(_ input: AiEpubCitation) {
+        guard let citation = input.bounded else { return }
+        epubCitationTask?.cancel()
+        if let epubCitationTask { cancelledEpubCitationTasks.append(epubCitationTask) }
+        let generation = UUID(); epubCitationGeneration = generation
+        let initialBinding = activeDocumentBinding
+        epubCitationTask = Task { [weak self] in
+            guard let self else { return }
+            let leaves = workspace?.root.allLeaves() ?? []
+            let open = leaves.compactMap { pane -> (AppStore, String)? in
+                guard let tab = pane.app.tabs.first(where: { $0.document?.kind == .epub && $0.document?.docId == citation.docId }) else { return nil }
+                return (pane.app, tab.id)
+            }.first ?? tabs.first(where: { $0.document?.kind == .epub && $0.document?.docId == citation.docId }).map { (self, $0.id) }
+            let destination: AppStore
+            let tabId: String
+            if let open { (destination, tabId) = open }
+            else {
+                let lookup = Task.detached { EpubLibraryCatalog.resolve(docId: citation.docId) }
+                let url = await withTaskCancellationHandler { await lookup.value } onCancel: { lookup.cancel() }
+                guard !Task.isCancelled, epubCitationGeneration == generation, activeDocumentBinding == initialBinding else { return }
+                guard let url else { error = "The book for this citation is not in the local library."; return }
+                await openFile(path: url.path)
+                guard !Task.isCancelled, epubCitationGeneration == generation,
+                      let tab = tabs.first(where: { $0.document?.kind == .epub && $0.document?.docId == citation.docId }),
+                      activeTabId == tab.id else { return }
+                destination = self; tabId = tab.id
+            }
+            guard !Task.isCancelled, epubCitationGeneration == generation,
+                  let binding = destination.documentBinding(for: tabId), binding.docId == citation.docId,
+                  let session = destination.sessions.documentSession(sessionId: tabId) as? EpubDocumentSession,
+                  let chapter = session.publication.spineIndex(path: citation.chapterHref) else { return }
+            var resolved = citation
+            let destinationActiveBinding = destination.activeDocumentBinding
+            let sourceActiveBinding = activeDocumentBinding
+            resolved.chapterNumber = chapter + 1
+            if let anchor = citation.anchor {
+                do { resolved.anchor = try await session.resolveAnchor(anchor) }
+                catch { resolved.anchor = nil }
+                guard !Task.isCancelled, epubCitationGeneration == generation,
+                      destination.documentBinding(for: tabId) == binding,
+                      destination.activeDocumentBinding == destinationActiveBinding,
+                      activeDocumentBinding == sourceActiveBinding else { return }
+                if resolved.anchor == nil { destination.error = "The cited passage could not be located unambiguously. Showing its chapter instead." }
+            }
+            guard !Task.isCancelled, epubCitationGeneration == generation,
+                  destination.documentBinding(for: tabId) == binding,
+                  destination.activeDocumentBinding == destinationActiveBinding,
+                  activeDocumentBinding == sourceActiveBinding else { return }
+            destination.pendingEpubCitation = resolved
+            if let pane = leaves.first(where: { $0.app === destination }) { workspace?.focus(pane.id) }
+            destination.activateTab(tabId)
+            // An already-active reader has no activation transition to observe.
+            if destination.epubHandlerOwner == binding, let handler = destination.scrollToEpubAnchorHandler {
+                destination.pendingEpubCitation = nil; handler(resolved.anchor, chapter + 1)
+            }
+        }
+    }
+    #endif
     /// Registered by the web viewer: scroll to a text-anchored web position;
     /// returns whether the anchor was found (window.__scrollToWebPosition).
     var scrollToWebPositionHandler: ((PositionData, Int) -> Bool)?
@@ -892,7 +991,7 @@ final class AppStore {
                 try? await sessions.closeFile(sessionId: sessionId)
                 return
             }
-            let duplicate = PdfTab(
+            var duplicate = PdfTab(
                 id: sessionId,
                 document: opened,
                 currentPage: source.currentPage,
@@ -903,6 +1002,10 @@ final class AppStore {
                 webVisibleBookmarks: [],
                 mode: .view
             )
+            if opened.kind == .epub {
+                duplicate.epubProgression = source.epubProgression
+                duplicate.epubLocation = source.epubLocation
+            }
             let insertion = min(currentSourceIndex + 1, tabs.count)
             tabs.insert(duplicate, at: insertion)
             applyActiveState(from: duplicate)
@@ -1062,7 +1165,7 @@ final class AppStore {
                 let page = resume?.page ?? descriptor.currentPage
                 await workspace?.positions.recordOpened(document: opened, tabOrdinal: tabs.count)
                 let restoredMode: InteractionMode = descriptor.mode == .snapshotRegion ? .view : descriptor.mode
-                let tab = PdfTab(
+                var tab = PdfTab(
                     id: sessionId,
                     document: opened,
                     currentPage: page,
@@ -1072,6 +1175,10 @@ final class AppStore {
                     webVisibleRange: nil,
                     webVisibleBookmarks: [],
                     mode: restoredMode)
+                if opened.kind == .epub {
+                    tab.epubProgression = resume?.epubLocation?.progression ?? resume?.scrollFraction
+                    tab.epubLocation = resume?.epubLocation
+                }
                 tabs.append(tab)
                 restoredTabIds[descriptorIndex] = sessionId
             } catch {
@@ -1109,15 +1216,35 @@ final class AppStore {
         recordActivePosition()
     }
 
-    func setEpubLocation(tabId: String, chapter: Int, progression: Double) {
-        guard let tab = tabs.first(where: { $0.id == tabId }), tab.document?.kind == .epub,
-              tab.currentPage != chapter || tab.epubProgression != progression else { return }
+    func setEpubLocation(tabId: String, chapter: Int, progression: Double, anchor: EpubTextAnchor? = nil) {
+        guard progression.isFinite, let tab = tabs.first(where: { $0.id == tabId }), tab.document?.kind == .epub,
+              let session = sessions.documentSession(sessionId: tabId) as? EpubDocumentSession,
+              session.publication.spine.indices.contains(chapter - 1) else { return }
+        let href = session.publication.spine[chapter - 1].path
+        guard anchor == nil || anchor?.chapterHref == href else { return }
+        let progression = min(1, max(0, progression))
+        let location = EpubLocation(chapterHref: href, textAnchor: anchor, progression: progression)
+        guard tab.currentPage != chapter || tab.epubProgression != progression || tab.epubLocation != location else { return }
         if tabId == activeTabId { currentPage = chapter }
         updateTab(tabId) {
             $0.currentPage = chapter
             $0.epubProgression = progression
+            $0.epubLocation = location
         }
         if let updated = tabs.first(where: { $0.id == tabId }) { recordPosition(for: updated) }
+    }
+
+    func epubResumeLocation(tabId: String) async -> EpubLocation? {
+        guard let tab = tab(id: tabId), let document = tab.document, document.kind == .epub,
+              let binding = documentBinding(for: tabId) else { return nil }
+        if let location = tab.epubLocation { return location }
+        let saved = await workspace?.positions.resumePosition(for: document)
+        guard documentBinding(for: tabId) == binding,
+              let session = sessions.documentSession(sessionId: tabId) as? EpubDocumentSession else { return nil }
+        if let location = saved?.epubLocation { return location }
+        let chapter = min(max(0, tab.currentPage - 1), session.publication.spine.count - 1)
+        return EpubLocation(chapterHref: session.publication.spine[chapter].path,
+            progression: tab.epubProgression ?? (saved?.page == tab.currentPage ? saved?.scrollFraction : nil) ?? 0)
     }
 
     /// Progression to restore when an EPUB tab's reader first appears: the
@@ -1220,6 +1347,7 @@ final class AppStore {
 
     /// Transient viewer work; never restored from a tab's saved results.
     func setFindSearching(_ searching: Bool) { findIsSearching = searching }
+    func setFindTruncated(_ truncated: Bool) { findTruncated = truncated }
 
     /// Called by the active viewer with the outcome of a query / step.
     func setFindResults(count: Int, current: Int) {
@@ -1240,6 +1368,7 @@ final class AppStore {
     }
 
     private func resetFindState() {
+        findTruncated = false
         findIsSearching = false
         findVisible = false
         findQuery = ""
@@ -1281,6 +1410,9 @@ final class AppStore {
         // page 0 — ignore navigation until pages exist.
         guard numPages >= 1 else { return }
         let clamped = min(numPages, max(1, page))
+        if document?.kind == .epub {
+            updateActiveTab { $0.epubLocation = nil; $0.epubProgression = 0 }
+        }
         setCurrentPage(clamped)
         scrollToPageHandler?(clamped)
     }
@@ -1978,7 +2110,7 @@ final class AppStore {
         if workspace?.layout == .splitScreen {
             workspace?.sidebarOpen = true
         }
-        let tab = PdfTab(
+        var tab = PdfTab(
             id: sessionId,
             document: doc,
             currentPage: openingPage,
@@ -1989,6 +2121,10 @@ final class AppStore {
             webVisibleBookmarks: [],
             mode: .view
         )
+        if doc.kind == .epub {
+            tab.epubProgression = resume?.epubLocation?.progression ?? resume?.scrollFraction
+            tab.epubLocation = resume?.epubLocation
+        }
         if let activeStartId, let startIndex = tabs.firstIndex(where: { $0.id == activeStartId }) {
             tabs[startIndex] = tab
         } else {
@@ -2000,6 +2136,10 @@ final class AppStore {
     }
 
     private func applyActiveState(from tab: PdfTab) {
+        #if os(macOS)
+        if activeTabId != tab.id, let activeTabId { epubReaders[activeTabId]?.deactivate() }
+        #endif
+        findTruncated = false
         // Note-placement state travels with the tab. Find state does too now,
         // so the incoming tab's query is restored below rather than reset here.
         pendingNoteContent = tab.pendingNoteContent
@@ -2026,6 +2166,9 @@ final class AppStore {
     }
 
     private func applyEmptyActiveState() {
+        #if os(macOS)
+        if let activeTabId { epubReaders[activeTabId]?.deactivate() }
+        #endif
         resetFindState()
         pendingNoteContent = nil
         // No tab on screen here, so this pane pins nothing.
@@ -2075,6 +2218,12 @@ final class AppStore {
     }
 
     func flushPendingPositionRecords() async {
+        #if os(macOS)
+        await epubCitationTask?.value
+        for task in cancelledEpubCitationTasks { await task.value }
+        cancelledEpubCitationTasks.removeAll()
+        for owner in Array(epubReaders.values) { await owner.drain() }
+        #endif
         if let positionRecordTask {
             await positionRecordTask.value
         }
@@ -2100,6 +2249,10 @@ final class AppStore {
     }
 
     private func registerTeardown(for tab: PdfTab, markDocumentClosed: Bool) {
+        #if os(macOS)
+        let epubReader = epubReaders.removeValue(forKey: tab.id)
+        epubReader?.deactivate()
+        #endif
         sessions.invalidatePendingOpen(sessionId: tab.id)
         let pendingPositionRecordTask = positionRecordTask
         pendingPositionRecords[tab.id] = nil
@@ -2119,6 +2272,9 @@ final class AppStore {
             document: closingDocument,
             generation: tab.documentBindingGeneration,
             task: Task { [weak workspace] in
+                #if os(macOS)
+                await epubReader?.close()
+                #endif
                 await workspace?.awaitMaintenance()
                 for task in pendingPersistence { await task.value }
                 await pendingPositionRecordTask?.value

@@ -44,6 +44,17 @@ struct AnnotationSidebar: View {
                                     Task { await annotationStore.deleteAnnotation(id: annotation.id) }
                                 }
                             )
+                            .contextMenu {
+                                if appStore.document?.kind == .epub, annotation.positionData?.epubAnchor != nil {
+                                    Button("Ask AI about this passage") { appStore.referenceEpubAnnotationHandler?(annotation) }
+                                }
+                            }
+                            if appStore.document?.kind == .epub,
+                               annotation.positionData?.epubAnchor == nil || annotationStore.unresolvedEpubAnnotationIds.contains(annotation.id) {
+                                Text("Passage unresolved — note is still editable")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12)
+                            }
                         }
                     }
                     .padding(6)
@@ -177,6 +188,10 @@ struct AnnotationSidebar: View {
 
     private func navigate(to annotation: Annotation) {
         annotationStore.selectAnnotation(annotation.id)
+        if appStore.document?.kind == .epub {
+            appStore.scrollToEpubAnchorHandler?(annotation.positionData?.epubAnchor, annotation.pageNumber)
+            return
+        }
         if appStore.document?.kind == .web,
            annotation.type != .highlight,
            let position = annotation.positionData,
@@ -185,7 +200,6 @@ struct AnnotationSidebar: View {
             return
         }
         appStore.goToPage(annotation.pageNumber)
-        appStore.scrollToPageHandler?(annotation.pageNumber)
     }
 
     /// Recolor a highlight in place — deliberately no selectAnnotation /
@@ -296,7 +310,7 @@ private struct AnnotationRow: View {
                     Text(typeLabel(for: annotation.type).uppercased())
                         .tracking(0.5)
                     Text("·")
-                    Text("p.\(annotation.pageNumber)")
+                    Text(annotation.positionData?.epubAnchor == nil ? "p.\(annotation.pageNumber)" : "Ch.\(annotation.pageNumber)")
                     if annotation.pinned {
                         Image(systemName: "pin.fill")
                             .font(.system(size: metaSize - 1))

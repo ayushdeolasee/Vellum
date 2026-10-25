@@ -4,6 +4,7 @@ import Foundation
 //   <appData>/documents/<storageKey>/
 //     ├── meta.json        kind, title, last-known path, last-opened
 //     ├── scratchpad.md     markdown; image refs are RELATIVE (attachments/<id>.<ext>)
+//     ├── epub-annotations.json durable EPUB highlights/bookmarks, when present
 //     └── attachments/      region snapshots + dropped images, scoped to this doc
 //
 // `storageKey` is DocumentIdentity.storageKey(for:) — the /VellumDocId (or the
@@ -193,6 +194,74 @@ enum DocumentDataStore {
 
     static func scratchpadPath(forKey key: String) -> URL {
         documentDir(forKey: key).appendingPathComponent("scratchpad.md")
+    }
+
+    static let epubAnnotationsFilename = "epub-annotations.json"
+    private static let annotationLane = AnnotationLane()
+
+    /// The complete read/modify/replace stays in one process-wide lane, including
+    /// across sessions and coordinator instances. No caller can save a stale snapshot.
+    static func withEpubAnnotations<T: Sendable>(
+        document: DocumentInfo,
+        coordinator: StorageCoordinator?,
+        _ mutate: @escaping @Sendable (Data?) throws -> (Data?, T)
+    ) async throws -> T {
+        try await annotationLane.run {
+            let key = DocumentIdentity.storageKey(for: document)
+            let operation: @Sendable (Access) async throws -> T = { access in
+                try Task.checkCancellation()
+                let original = try await readData(
+                    forKey: key, relativeName: epubAnnotationsFilename, access: access)
+                let (replacement, result) = try mutate(original)
+                if let replacement, replacement != original {
+                    try Task.checkCancellation()
+                    let directory = documentDir(forKey: key, root: access.documentsRoot)
+                    let destination = directory.appendingPathComponent(epubAnnotationsFilename)
+                    // Refuse unavailable active bytes even when a local fallback was read.
+                    let active = try await access.store.read(destination)
+                    guard active == nil || active == original else { throw LibraryFileError.retryable }
+                    let metaURL = directory.appendingPathComponent("meta.json")
+                    let previousMeta = try await access.store.read(metaURL).map {
+                        try JSONDecoder().decode(Meta.self, from: $0)
+                    }
+                    let meta = Meta(
+                        version: 1, kind: document.kind.rawValue,
+                        title: previousMeta == nil ? document.title : previousMeta?.title,
+                        lastKnownPath: document.pdfPath, lastOpened: WebLibrary.rfc3339Now())
+                    try Task.checkCancellation()
+                    try await access.store.replace(metaURL, with: WebLibrary.jsonEncoderPretty.encode(meta))
+                    try Task.checkCancellation()
+                    try await access.store.replace(destination, with: replacement)
+                }
+                return result
+            }
+            if let coordinator {
+                return try await withAccess(coordinator: coordinator, operation)
+            }
+            guard rootDirectoryOverride != nil || !WebLibrary.activeLayout.requiresCoordination else {
+                throw LibraryFileError.unavailable
+            }
+            let root = rootDirectory
+            return try await operation(Access(
+                store: DirectLibraryFileStore(allowedRoot: root),
+                documentsRoot: root, fallbackRoot: nil))
+        }
+    }
+
+    private actor AnnotationLane {
+        private var held = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func run<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
+            if held { await withCheckedContinuation { waiters.append($0) } }
+            held = true
+            defer {
+                if waiters.isEmpty { held = false }
+                else { waiters.removeFirst().resume() }
+            }
+            try Task.checkCancellation()
+            return try await operation()
+        }
     }
 
     // MARK: - meta.json
@@ -709,7 +778,8 @@ enum DocumentDataStore {
                     return documentAccess.sourceExists(
                         key: key, lastKnownPath: meta.lastKnownPath)
                 }()
-                var notes = files["scratchpad.md"]?.byteSize ?? 0
+                var notes = (files["scratchpad.md"]?.byteSize ?? 0)
+                    + (files[epubAnnotationsFilename]?.byteSize ?? 0)
                 let activeAttachments = try await access.store.list(
                     directory.appendingPathComponent("attachments", isDirectory: true),
                     suffix: nil)
@@ -765,7 +835,8 @@ enum DocumentDataStore {
             out.append(DocumentMetaEntry(
                 key: name,
                 meta: meta,
-                hasUserData: scratchpadExists(forKey: name) || conversationsExist(forKey: name)))
+                hasUserData: scratchpadExists(forKey: name) || conversationsExist(forKey: name)
+                    || fm.fileExists(atPath: readPath(forKey: name, relativeName: epubAnnotationsFilename).path)))
         }
         return out
     }
@@ -804,20 +875,23 @@ enum DocumentDataStore {
                     key: key,
                     meta: meta,
                     hasUserData: fileNames.contains("scratchpad.md")
+                        || fileNames.contains(epubAnnotationsFilename)
                         || fileNames.contains("conversations.json")))
             }
             return entries
         }
     }
 
-    /// scratchpad.md + everything under attachments/ (the note's full footprint).
+    /// Scratchpad, attachments, and durable EPUB annotations.
     static func notesBytes(forKey key: String) -> Int64 {
         fileSize(scratchpadPath(forKey: key)) + directorySize(at: attachmentsDir(forKey: key))
+            + fileSize(readPath(forKey: key, relativeName: epubAnnotationsFilename))
     }
 
     // MARK: - Storage-pane deletes (delete-means-delete, §8)
 
-    /// Delete the note and all its attachments, then prune a now-empty folder.
+    /// Delete the scratchpad and its attachments, NOT EPUB highlights/bookmarks.
+    /// EPUB annotations are deleted explicitly through annotation CRUD.
     /// Uses `WebICloud.removeItem` so an iCloud-EVICTED note (only its
     /// `.scratchpad.md.icloud` placeholder on disk) is truly deleted — a plain
     /// `removeItem` on the materialized path would leave the placeholder, which

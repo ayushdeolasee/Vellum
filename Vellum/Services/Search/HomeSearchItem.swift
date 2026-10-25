@@ -119,11 +119,11 @@ struct HomeSearchItem: Identifiable, Hashable, Sendable {
     let identity: String
     let section: HomeSearchSection
     let kind: DocumentKind
-    let target: HomeSearchTarget
+    var target: HomeSearchTarget
     /// Primary line: the document's own title when it has one.
-    let title: String
+    var title: String
     /// Secondary line: filename for PDFs, host + path for webpages.
-    let subtitle: String
+    var subtitle: String
     /// Trailing metadata line ("12 pages · Yesterday").
     let detail: String
     /// Full-fidelity tooltip (the absolute path / URL).
@@ -144,8 +144,10 @@ struct HomeSearchItem: Identifiable, Hashable, Sendable {
     var integrationProviders: Set<IntegrationProvider> = []
     /// Provider-supplied artwork used by the shared Library row.
     var thumbnailURL: URL? = nil
-    let canRevealInFinder: Bool
-    let haystack: HomeSearchHaystack
+    /// Local publication artwork is never sent through a network image loader.
+    var localCoverURL: URL? = nil
+    var canRevealInFinder: Bool
+    var haystack: HomeSearchHaystack
     /// The `documents/<key>/` folder this item's `meta.json` lives under, when
     /// the source knows it. Renaming needs it and cannot re-derive it: for a
     /// PDF the key is the stamped `/VellumDocId` when there is one, which only
@@ -157,7 +159,13 @@ struct HomeSearchItem: Identifiable, Hashable, Sendable {
     var storageKey: String?
 
     /// Row glyph, matching the icons the previous welcome list used.
-    var systemImage: String { kind == .web ? "globe" : "doc.text" }
+    var systemImage: String {
+        switch kind {
+        case .web: "globe"
+        case .pdf: "doc.text"
+        case .epub: "book.closed"
+        }
+    }
 }
 
 // MARK: - Link detection

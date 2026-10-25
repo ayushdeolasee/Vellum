@@ -31,6 +31,8 @@ struct PositionData: Codable, Equatable, Sendable {
     /// How far below the viewport top (CSS px) the anchor text sat when a
     /// webpage point bookmark was captured. Absent for PDFs and selections.
     var viewportOffset: Double?
+    /// EPUB sidecar anchor; absent in existing PDF/web annotation records.
+    var epubAnchor: EpubTextAnchor? = nil
 
     enum CodingKeys: String, CodingKey {
         case rects
@@ -42,6 +44,7 @@ struct PositionData: Codable, Equatable, Sendable {
         case prefix
         case suffix
         case viewportOffset = "viewport_offset"
+        case epubAnchor = "epub_anchor"
     }
 }
 
@@ -248,6 +251,7 @@ struct PdfTab: Identifiable, Equatable, Sendable {
     var webVisibleBookmarks: [String]
     /// Scroll progression (0...1) through the current EPUB chapter.
     var epubProgression: Double? = nil
+    var epubLocation: EpubLocation? = nil
     var mode: InteractionMode
     /// AI text queued for the next placed note. It deliberately remains live
     /// only: relaunching restores the note tool, never a stale AI reply.

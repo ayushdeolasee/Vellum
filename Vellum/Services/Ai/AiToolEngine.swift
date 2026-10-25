@@ -8,11 +8,55 @@ struct AiToolArguments: Codable, Sendable {
     var y: Double?
     /// Legacy tool argument: true is rejected with guidance to use literal text.
     var isRegex: Bool?
+    var epubAnchor: EpubTextAnchor? = nil
+
+    static func decodeEpubAnchor(_ value: Any?) -> EpubTextAnchor? {
+        guard let value, JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value), data.count <= 32_768
+        else { return nil }
+        return try? JSONDecoder().decode(EpubTextAnchor.self, from: data)
+    }
+
+    static var epubAnchorSchema: [String: Any] { [
+        "type": "object",
+        "description": "EPUB only: exact chapter/passage anchor from context or search. Required for notes; optional for highlights and passage navigation. Never invent offsets.",
+        "properties": [
+            "chapter_href": ["type": "string"], "quote": ["type": "string"],
+            "prefix": ["type": "string"], "suffix": ["type": "string"],
+            "start_utf16": ["type": "integer"], "end_utf16": ["type": "integer"],
+        ],
+        "required": ["chapter_href", "quote", "prefix", "suffix"],
+        "additionalProperties": false,
+    ] }
 }
 
 struct AiToolAction: Codable, Sendable {
     var tool: String
     var args: AiToolArguments
+}
+
+@MainActor
+struct AiEpubToolContext {
+    let metadata: () async throws -> [EpubChapterMetadata]
+    let chapter: (Int) async throws -> EpubChapterText
+    let search: (String, Int) async throws -> EpubSearchResponse
+    let resolve: (EpubTextAnchor) async throws -> EpubTextAnchor?
+    let navigate: (AiEpubCitation) -> Void
+}
+
+/// Model-only EPUB read result. Persisted summaries retain only bounded locators/excerpts.
+struct AiEpubToolResult: Codable, Sendable {
+    var detail: String
+    var text: String? = nil
+    var sources: [AiEpubCitation] = []
+    var chaptersSearched: Int? = nil
+    var truncated: Bool
+
+    func json() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(self), as: UTF8.self)
+    }
 }
 
 /// Immutable document authority and captured services for one provider turn.
@@ -30,6 +74,7 @@ struct AiToolExecutionContext {
     let locate: (Int, String) async -> LocatedText?
     let createAnnotation: (CreateAnnotationInput) async throws -> Annotation
     let navigate: (Int) -> Void
+    var epub: AiEpubToolContext? = nil
 
     func checkCurrent() throws {
         guard !Task.isCancelled, isCurrent() else { throw CancellationError() }
@@ -58,6 +103,7 @@ final class AiToolEngine {
     /// Per-request counters (a fresh engine is created for every `sendMessage`).
     private var writeCount = 0
     private var readCount = 0
+    private var epubSummary: AiToolSummary?
 
     /// Structured, compact summaries of what ran. Raw tool results remain
     /// model-only; the transcript receives only short excerpts and page locators.
@@ -85,6 +131,7 @@ final class AiToolEngine {
         }
         do {
             try context.checkCurrent()
+            epubSummary = nil
             let result = try await execute(action)
             try context.checkCurrent()
             if isRead {
@@ -92,7 +139,8 @@ final class AiToolEngine {
             } else {
                 writeCount += 1
             }
-            if let summary = AiToolSummary.make(action: action, result: result) {
+            if let summary = context.document.kind == .epub
+                ? epubSummary : AiToolSummary.make(action: action, result: result) {
                 displayActions.append(summary)
             }
             return result
@@ -104,6 +152,7 @@ final class AiToolEngine {
     }
 
     private func execute(_ action: AiToolAction) async throws -> String {
+        if context.document.kind == .epub { return try await executeEpub(action) }
         switch action.tool {
         case "getPageText":
             return try await getPageText(pageNumber: action.args.pageNumber)
@@ -184,12 +233,115 @@ final class AiToolEngine {
         }
     }
 
+    private func executeEpub(_ action: AiToolAction) async throws -> String {
+        guard let epub = context.epub, let docId = context.document.docId else {
+            return "Skipped: EPUB reader context is not bound. Reopen the chapter and try again."
+        }
+        let chapterNumber = clampPage(action.args.pageNumber)
+        func citation(_ chapter: EpubChapterMetadata, anchor: EpubTextAnchor? = nil) -> AiEpubCitation? {
+            AiEpubCitation(docId: docId, chapterNumber: chapter.chapterNumber,
+                           chapterTitle: chapter.title, chapterHref: chapter.chapterHref, anchor: anchor).bounded
+        }
+        switch action.tool {
+        case "searchDocument":
+            guard action.args.isRegex != true else { return "Skipped searchDocument: EPUB search is literal, case-sensitive; regex is not supported." }
+            let query = action.args.text ?? ""
+            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  query.utf16.count <= 512 else { return "Skipped searchDocument: use a nonempty literal query of at most 512 UTF-16 units." }
+            context.setActivity(.indexing)
+            let response = try await epub.search(query, 8)
+            try context.checkCurrent()
+            let sources = response.results.prefix(8).compactMap { hit -> AiToolSummary.Source? in
+                let chapter = EpubChapterMetadata(chapterNumber: hit.chapterNumber,
+                    chapterHref: hit.anchor.chapterHref, title: hit.chapterTitle)
+                guard let locator = citation(chapter, anchor: hit.anchor) else { return nil }
+                return .init(page: nil, excerpt: String(hit.snippet.prefix(280)), epubCitation: locator)
+            }
+            let truncated = response.truncated || response.results.count > sources.count
+            let detail = "\(sources.count) passages; \(response.chaptersSearched) chapters searched"
+                + (truncated ? "; truncated — additional matches may exist" : "")
+            epubSummary = AiToolSummary(title: "Searched EPUB for “\(String(query.prefix(120)))”",
+                                       detail: detail, sources: sources)
+            return try AiEpubToolResult(detail: detail, sources: sources.compactMap(\.epubCitation),
+                chaptersSearched: response.chaptersSearched, truncated: truncated).json()
+
+        case "getPageText", "goToPage", "addNote", "addHighlight":
+            let chapters = try await epub.metadata()
+            try context.checkCurrent()
+            guard let chapter = chapters.first(where: { $0.chapterNumber == chapterNumber }) else {
+                return "Skipped: no EPUB chapter \(chapterNumber)."
+            }
+            if action.tool == "getPageText" {
+                context.setActivity(.indexing)
+                let content = try await epub.chapter(chapterNumber - 1)
+                try context.checkCurrent()
+                let text = String(content.text.prefix(Self.maxPageReadCharacters))
+                let excerpt = String(text.prefix(280))
+                let anchor = content.anchor(in: NSRange(location: 0, length: excerpt.utf16.count))
+                let locator = citation(chapter, anchor: anchor)
+                let truncated = text.utf16.count < content.utf16Count
+                let detail = truncated ? "Chapter text truncated at \(Self.maxPageReadCharacters) characters" : "Chapter text"
+                epubSummary = AiToolSummary(title: "Read chapter \(chapterNumber)", detail: detail,
+                    sources: locator.map { [.init(page: nil, excerpt: excerpt, epubCitation: $0)] } ?? [],
+                    destinationEpub: locator)
+                return try AiEpubToolResult(detail: detail, text: text, sources: locator.map { [$0] } ?? [],
+                                           truncated: truncated).json()
+            }
+            var anchor = action.args.epubAnchor
+            if action.tool == "addHighlight", anchor == nil, let quote = action.args.text {
+                anchor = EpubTextAnchor(chapterHref: chapter.chapterHref, quote: quote, prefix: "", suffix: "")
+            }
+            if let candidate = anchor {
+                guard citation(chapter, anchor: candidate) != nil else {
+                    return "Skipped: invalid EPUB anchor or chapter mismatch. Read/search the chapter for an exact passage."
+                }
+                anchor = try await epub.resolve(candidate)
+                try context.checkCurrent()
+                guard anchor != nil else { return "Skipped: EPUB passage is missing or ambiguous. Supply its exact quote with prefix/suffix context." }
+            }
+            guard let locator = citation(chapter, anchor: anchor) else { return "Skipped: invalid EPUB chapter locator." }
+            if action.tool == "goToPage" {
+                try context.checkCurrent()
+                epub.navigate(locator)
+                epubSummary = AiToolSummary(title: "Navigated to chapter \(chapterNumber)", destinationEpub: locator)
+                return try AiEpubToolResult(detail: "Navigated to chapter \(chapterNumber)", sources: [locator], truncated: false).json()
+            }
+            guard let anchor else { return "Skipped \(action.tool): EPUB annotations require an exact epubAnchor. Read/search the chapter first." }
+            let body = action.args.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !body.isEmpty else { return "Skipped \(action.tool): empty text." }
+            var position = PositionData(rects: [], pageWidth: 0, pageHeight: 0, selectedText: anchor.quote)
+            position.epubAnchor = anchor
+            let created = try await context.createAnnotation(CreateAnnotationInput(
+                type: action.tool == "addNote" ? .note : .highlight, pageNumber: chapterNumber,
+                color: action.tool == "addHighlight" ? sanitizeColor(action.args.color) : nil,
+                content: action.tool == "addNote" ? body : nil, positionData: position))
+            try context.checkCurrent()
+            annotations.append(created)
+            let detail = action.tool == "addNote" ? "Added note in chapter \(chapterNumber)" : "Highlighted passage in chapter \(chapterNumber)"
+            epubSummary = AiToolSummary(title: detail, destinationEpub: locator)
+            return try AiEpubToolResult(detail: detail, sources: [locator], truncated: false).json()
+
+        case "getAnnotations":
+            let filtered = annotations.filter { action.args.pageNumber == nil || $0.pageNumber == chapterNumber }
+            let lines = filtered.prefix(50).map { annotation in
+                "- Chapter \(annotation.pageNumber) (\(annotation.type.rawValue))"
+                    + fieldSuffix("quote", annotation.positionData?.epubAnchor?.quote)
+                    + fieldSuffix("note", annotation.content)
+            }
+            let detail = "\(filtered.count) EPUB annotations" + (filtered.count > 50 ? " (showing first 50)" : "")
+            epubSummary = AiToolSummary(title: "Read annotations", detail: detail)
+            return ([detail] + lines).joined(separator: "\n")
+        default:
+            return "Skipped unknown tool: \(action.tool)."
+        }
+    }
+
     // MARK: - Read tools (over in-memory pageTexts)
 
     /// Caps for what a single getPageText call may return: a page read is
     /// bounded so one dense page can't blow the prompt budget, and annotation
     /// echoes are clipped per entry and capped in count (newest kept).
-    static let maxPageReadCharacters = 12_000
+    nonisolated static let maxPageReadCharacters = 12_000
     static let maxAnnotationReadCharacters = 300
     static let maxAnnotationsPerRead = 20
 
@@ -387,7 +539,7 @@ final class AiToolEngine {
         let fallback = total > 0 ? context.currentPage : 1
         guard let value, value.isFinite else { return max(1, fallback) }
         guard total > 0 else { return 1 }
-        return min(total, max(1, Int(value.rounded())))
+        return Int(min(Double(total), max(1, value.rounded())))
     }
 
     private func sanitizeNonNegative(_ value: Double?, fallback: Double) -> Double {

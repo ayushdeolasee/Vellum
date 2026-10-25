@@ -16,6 +16,13 @@ struct SelectionPopover: View {
     let onDictionaryLookup: (String) -> Void
     #endif
     let onClose: () -> Void
+    var onEpubHighlight: ((String) -> Void)? = nil
+    var onEpubNote: ((String) -> Void)? = nil
+    var onEpubAI: (() -> Void)? = nil
+    var onScratchpad: (() -> Void)? = nil
+    var initialNoteDraft: String? = nil
+    var onBeginNote: (() -> Void)? = nil
+    var onNoteDraftChange: ((String) -> Void)? = nil
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
@@ -64,7 +71,9 @@ struct SelectionPopover: View {
 
             if showNoteInput {
                 HStack(spacing: 6) {
-                    TextField("Add a note...", text: $noteText)
+                    TextField("Add a note...", text: Binding(
+                        get: { noteText }, set: { noteText = $0; onNoteDraftChange?($0) }
+                    ))
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 13))
                         .focused($noteFieldFocused)
@@ -72,7 +81,11 @@ struct SelectionPopover: View {
                         #if os(macOS)
                         .onExitCommand { onClose() }
                         #endif
-                        .onAppear { noteFieldFocused = true }
+                        .task {
+                            await Task.yield()
+                            guard !Task.isCancelled else { return }
+                            noteFieldFocused = true
+                        }
 
                     Button("Add", action: handleAddNote)
                         .buttonStyle(.glassProminent)
@@ -81,6 +94,12 @@ struct SelectionPopover: View {
                 .padding(8)
                 .frame(width: min(256, availableWidth ?? 256))
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
+            }
+        }
+        .onAppear {
+            if let initialNoteDraft {
+                noteText = initialNoteDraft
+                showNoteInput = true
             }
         }
     }
@@ -113,6 +132,14 @@ struct SelectionPopover: View {
 
     @ViewBuilder
     private var actionItems: some View {
+        if let onScratchpad {
+            Button { onScratchpad(); onClose() } label: {
+                Image(systemName: "text.quote").frame(width: 24, height: 24).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Quote to scratchpad")
+            .accessibilityLabel("Quote to scratchpad")
+        }
         #if os(iOS)
         // The system callout is suppressed on iPad (it collided with this
         // popover), so copy lives here instead.
@@ -134,6 +161,7 @@ struct SelectionPopover: View {
 
         Button {
             showNoteInput.toggle()
+            if showNoteInput { onBeginNote?() }
         } label: {
             Image(systemName: "plus.bubble")
                 .font(.system(size: 12))
@@ -206,6 +234,16 @@ struct SelectionPopover: View {
     /// (page locator preserved). Mirrors the web viewer's askAiAboutSelection —
     /// the reference sits in the composer until the user opens the AI panel.
     private func handleAskAi() {
+        if let onEpubAI { onEpubAI(); onClose(); return }
+        if let anchor = selection.positionData.epubAnchor {
+            guard let target = aiStore.currentReferenceTarget(), let document = app.document,
+                  let binding = app.activeDocumentBinding else { return }
+            let chapter = selection.pageNumber
+            app.enqueueDocumentPersistence(document: document, generation: binding.generation) { _ in
+                _ = await aiStore.addEpubReference(anchor: anchor, chapterNumber: chapter, target: target)
+            }
+            onClose(); return
+        }
         let text = selection.text.trimmingCharacters(in: .whitespacesAndNewlines)
         onClose()
         guard !text.isEmpty else { return }
@@ -213,6 +251,7 @@ struct SelectionPopover: View {
     }
 
     private func handleHighlight(_ color: String) {
+        if let onEpubHighlight { onEpubHighlight(color); onClose(); return }
         let input = CreateAnnotationInput(
             type: .highlight,
             pageNumber: selection.pageNumber,
@@ -231,6 +270,7 @@ struct SelectionPopover: View {
     private func handleAddNote() {
         let trimmed = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        if let onEpubNote { onEpubNote(trimmed); onClose(); return }
         let input = CreateAnnotationInput(
             type: .note,
             pageNumber: selection.pageNumber,

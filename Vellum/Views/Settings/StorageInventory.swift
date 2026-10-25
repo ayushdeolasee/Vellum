@@ -23,6 +23,9 @@ enum StorageInventory {
         var conversationBytes: Int64
         var cacheBytes: Int64
         var archiveBytes: Int64
+        var originalBookBytes: Int64 = 0
+        var coverBytes: Int64 = 0
+        var catalogBytes: Int64 = 0
 
         /// Sibling storage keys folded into this row: a text-cache (or web) entry
         /// still keyed under sha256(last_known_path) after the document acquired a
@@ -32,7 +35,9 @@ enum StorageInventory {
 
         var id: String { key }
 
-        var totalBytes: Int64 { notesBytes + conversationBytes + cacheBytes + archiveBytes }
+        var totalBytes: Int64 {
+            notesBytes + conversationBytes + cacheBytes + archiveBytes + originalBookBytes + coverBytes + catalogBytes
+        }
         var hasNotes: Bool { notesBytes > 0 }
         var hasConversation: Bool { conversationBytes > 0 }
         var hasCache: Bool { cacheBytes > 0 }
@@ -60,6 +65,7 @@ enum StorageInventory {
         documents: [DocumentDataStore.DocumentDataEntry],
         cacheEntries: [PageTextCacheEntry],
         webEntries: [WebLibrary.SnapshotStorageEntry],
+        bookEntries: [EpubLibraryCatalog.Entry] = [],
         positionLastOpened: [String: Date] = [:],
         sort: SortOrder = .size
     ) -> [DocumentRow] {
@@ -69,6 +75,8 @@ enum StorageInventory {
         for entry in cacheEntries { cacheByKey[entry.pathKey] = entry }
         var webByKey: [String: WebLibrary.SnapshotStorageEntry] = [:]
         for entry in webEntries { webByKey[entry.key] = entry }
+        var bookByKey: [String: EpubLibraryCatalog.Entry] = [:]
+        for entry in bookEntries { bookByKey[entry.record.docId] = entry }
 
         // A PDF that acquired a docId keeps its notes/chat under the docId folder,
         // but a text-cache (or web) entry written before the stamp may still sit
@@ -79,7 +87,8 @@ enum StorageInventory {
         var adoptedByOwner: [String: [String]] = [:]
         var adoptedKeys = Set<String>()
         for (key, doc) in docByKey {
-            guard isLikelyDocId(key), let path = doc.meta?.lastKnownPath, !path.isEmpty else { continue }
+            guard isLikelyDocId(key) || doc.meta?.kind == DocumentKind.epub.rawValue,
+                  let path = doc.meta?.lastKnownPath, !path.isEmpty else { continue }
             let sibling = PageTextCache.pathKey(path)
             guard sibling != key, docByKey[sibling] == nil else { continue }
             guard cacheByKey[sibling] != nil || webByKey[sibling] != nil else { continue }
@@ -87,13 +96,14 @@ enum StorageInventory {
             adoptedKeys.insert(sibling)
         }
 
-        let keys = Set(docByKey.keys).union(cacheByKey.keys).union(webByKey.keys)
+        let keys = Set(docByKey.keys).union(cacheByKey.keys).union(webByKey.keys).union(bookByKey.keys)
         var rows: [DocumentRow] = []
         for key in keys {
             if adoptedKeys.contains(key) { continue }
             let doc = docByKey[key]
             let cache = cacheByKey[key]
             let web = webByKey[key]
+            let book = bookByKey[key]
             let adopted = adoptedByOwner[key] ?? []
 
             let notesBytes = doc?.notesBytes ?? 0
@@ -104,25 +114,28 @@ enum StorageInventory {
                 cacheBytes += cacheByKey[sibling]?.byteSize ?? 0
                 archiveBytes += webByKey[sibling]?.byteSize ?? 0
             }
-            guard notesBytes + conversationBytes + cacheBytes + archiveBytes > 0 else { continue }
+            guard notesBytes + conversationBytes + cacheBytes + archiveBytes + (book?.totalBytes ?? 0) > 0 else { continue }
 
-            let kind = resolveKind(doc: doc, web: web)
+            let kind: DocumentKind = book != nil ? .epub : resolveKind(doc: doc, web: web)
             rows.append(DocumentRow(
                 key: key,
-                title: resolveTitle(doc: doc, cache: cache, web: web, kind: kind),
+                title: doc?.meta?.title ?? book?.record.customTitle ?? book?.record.title ?? resolveTitle(doc: doc, cache: cache, web: web, kind: kind),
                 kind: kind,
                 lastOpened: resolveLastOpened(
                     doc: doc,
                     cache: cache,
                     web: web,
                     position: positionLastOpened[key]),
-                sourceExists: resolveSourceExists(doc: doc, cache: cache, web: web, kind: kind),
-                sourcePath: doc?.meta?.lastKnownPath ?? cache?.sourcePath ?? web?.url,
-                isDocIdKeyed: kind == .web || isLikelyDocId(key),
+                sourceExists: book?.available ?? resolveSourceExists(doc: doc, cache: cache, web: web, kind: kind),
+                sourcePath: book?.fileURL.path ?? doc?.meta?.lastKnownPath ?? cache?.sourcePath ?? web?.url,
+                isDocIdKeyed: kind != .pdf || isLikelyDocId(key),
                 notesBytes: notesBytes,
                 conversationBytes: conversationBytes,
                 cacheBytes: cacheBytes,
                 archiveBytes: archiveBytes,
+                originalBookBytes: book?.originalBytes ?? 0,
+                coverBytes: book?.coverBytes ?? 0,
+                catalogBytes: book?.metadataBytes ?? 0,
                 adoptedKeys: adopted))
         }
         return sorted(rows, by: sort)
@@ -153,7 +166,7 @@ enum StorageInventory {
     static func matches(_ row: DocumentRow, searchText: String) -> Bool {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return true }
-        let kind = row.kind == .web ? "web page" : "pdf"
+        let kind = row.kind == .web ? "web page" : row.kind == .epub ? "epub book" : "pdf"
         return row.title.localizedCaseInsensitiveContains(query)
             || row.sourcePath?.localizedCaseInsensitiveContains(query) == true
             || kind.localizedCaseInsensitiveContains(query)

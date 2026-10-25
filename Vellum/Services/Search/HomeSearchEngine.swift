@@ -62,6 +62,7 @@ actor HomeSearchEngine {
             RecentDocumentsSearchProvider(),
             SavedWebpagesSearchProvider(load: { try await storage.listSaved() }),
             libraryProvider,
+            EpubBooksSearchProvider(),
         ]
     }
 
@@ -195,7 +196,20 @@ actor HomeSearchEngine {
                 merged[item.identity] = item
                 order.append(item.identity)
             } else {
+                if item.kind == .epub, item.id.hasPrefix("books:") {
+                    merged[item.identity]?.title = item.title
+                    merged[item.identity]?.subtitle = item.subtitle
+                    merged[item.identity]?.haystack = item.haystack
+                    merged[item.identity]?.localCoverURL = item.localCoverURL
+                    if case .file(_, let recordedPath) = merged[item.identity]?.target {
+                        merged[item.identity]?.target = .file(path: item.target.openKey, recordedPath: recordedPath)
+                    }
+                    merged[item.identity]?.canRevealInFinder = item.canRevealInFinder
+                }
                 merged[item.identity]?.badges.formUnion(item.badges)
+                if item.kind == .epub, item.id.hasPrefix("books:"), !item.badges.contains(.missing) {
+                    merged[item.identity]?.badges.remove(.missing)
+                }
                 merged[item.identity]?.integrationProviders.formUnion(item.integrationProviders)
                 if merged[item.identity]?.thumbnailURL == nil {
                     merged[item.identity]?.thumbnailURL = item.thumbnailURL

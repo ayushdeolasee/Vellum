@@ -305,7 +305,7 @@ private struct TabItem: View {
                 Button("Rename…", action: onRename)
             }
             Button("Duplicate") { onDuplicate() }
-                .disabled(tab.document?.kind == .pdf)
+                .disabled(tab.document?.kind != .web)
             Button("Move to New Pane") { onMoveToNewPane() }
                 .disabled(appStore.tabs.count < 2)
 
@@ -313,7 +313,7 @@ private struct TabItem: View {
 
             if tab.document?.kind == .web {
                 Button("Copy Link") { copyLink() }
-            } else if tab.document?.kind == .pdf {
+            } else if tab.document?.kind == .pdf || tab.document?.kind == .epub {
                 Button("Reveal in Finder") { revealPdf() }
             }
 

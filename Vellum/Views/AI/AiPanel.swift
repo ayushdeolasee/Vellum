@@ -491,6 +491,7 @@ struct AiPanel: View {
                 SentReferenceChips(
                     references: message.references,
                     onGoToPage: { appStore.goToPage($0) },
+                    onGoToEpub: aiStore.navigateToEpubCitation,
                     // Pixels for an image reference don't live on the message —
                     // they're stripped before it is persisted — so the store
                     // resolves them from this session's cache. nil means "not
@@ -528,7 +529,8 @@ struct AiPanel: View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(summaries) { summary in
-                    AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
+                    AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage,
+                                      onJumpToEpub: aiStore.navigateToEpubCitation)
                 }
             }
             .padding(.top, 6)

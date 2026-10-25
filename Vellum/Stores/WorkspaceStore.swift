@@ -338,7 +338,7 @@ final class WorkspaceStore {
                 WebStorageSettings.resolveICloudRoot()
             }.value
             let openDocuments = root.allLeaves().flatMap { $0.app.tabs }.compactMap(\.document)
-            let openKeys = Set(openDocuments.filter { $0.kind == .pdf }.map {
+            let openKeys = Set(openDocuments.filter { $0.kind != .web }.map {
                 DocumentIdentity.storageKey(for: $0)
             })
             let openWebUrls = Set(openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
@@ -633,6 +633,7 @@ final class WorkspaceStore {
         self.documentAccess = documentAccess
         if let manager = sessions as? DocumentSessionManager {
             manager.webBackend.storage = webLibraryStorage
+            manager.epubBackend.coordinator = webLibraryStorage.coordinator
         }
         let catalog = OpenRouterCatalog()
         let settingsAi = AiStore()
@@ -829,7 +830,8 @@ final class WorkspaceStore {
         ReadingPosition(
             page: max(1, tab.currentPage),
             pageCount: tab.numPages > 0 ? tab.numPages : tab.document?.pageCount,
-            scrollFraction: tab.document?.kind == .epub ? tab.epubProgression : nil)
+            scrollFraction: tab.document?.kind == .epub ? tab.epubProgression : nil,
+            epubLocation: tab.document?.kind == .epub ? tab.epubLocation : nil)
     }
 
     // MARK: - Focus

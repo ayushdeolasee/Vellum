@@ -19,14 +19,15 @@ struct ContinueReadingItem: Identifiable, Hashable, Sendable {
 
     var progressLabel: String {
         guard let position = resume.position else { return "" }
+        let unit = document.kind == .epub ? "Chapter" : "Page"
         if let pageCount = position.pageCount, pageCount > 0 {
-            return "Page \(position.page) of \(pageCount)"
+            return "\(unit) \(position.page) of \(pageCount)"
         }
         if document.kind == .web, let fraction = position.scrollFraction {
             let percent = Int((min(1, max(0, fraction)) * 100).rounded())
             return "\(percent)% read"
         }
-        return position.page > 1 ? "Page \(position.page)" : ""
+        return position.page > 1 ? "\(unit) \(position.page)" : ""
     }
 
     var deviceLabel: String? {
@@ -99,7 +100,8 @@ enum ContinueReadingResolver {
             return keys
 
         case .epub:
-            return []
+            guard let docId = document.storageKey, let key = DocumentKey.epub(docId: docId) else { return [] }
+            return [key]
         }
     }
 }

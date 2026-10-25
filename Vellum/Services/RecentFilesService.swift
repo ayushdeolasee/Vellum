@@ -131,7 +131,10 @@ enum RecentFilesService {
     /// The identity read is bounded to rival/dead-path cases — the common
     /// still-in-place recent never opens the PDF here.
     /// Web entries and dead entries with no docId return their recorded path.
-    static func resolvedPath(for entry: RecentDocument) -> String {
+    static func resolvedPath(for entry: RecentDocument, bookLibrary: URL = EpubLibrary.directory) -> String {
+        if entry.kind == .epub, let docId = entry.docId {
+            return EpubLibraryCatalog.resolve(docId: docId, in: bookLibrary)?.path ?? entry.pdfPath
+        }
         guard entry.kind == .pdf,
               let docId = entry.docId, !docId.isEmpty,
               let meta = DocumentDataStore.loadMeta(forKey: docId)

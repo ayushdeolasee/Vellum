@@ -1,5 +1,41 @@
 import Foundation
 
+/// Stable content identity plus a reflow-independent chapter/passage locator.
+struct AiEpubCitation: Codable, Equatable, Sendable {
+    var docId: String
+    var chapterNumber: Int
+    var chapterTitle: String? = nil
+    var chapterHref: String
+    var anchor: EpubTextAnchor? = nil
+
+    var label: String { "Chapter \(chapterNumber)" }
+
+    /// Never shorten a literal quote: doing so can silently change its target.
+    var bounded: AiEpubCitation? {
+        guard !docId.isEmpty, docId.utf16.count <= 256,
+              (1...100_000).contains(chapterNumber),
+              !chapterHref.isEmpty, chapterHref.utf16.count <= 2_048,
+              !chapterHref.hasPrefix("/"), !chapterHref.contains(":"),
+              !chapterHref.contains("\\"),
+              !chapterHref.split(separator: "/").contains("..") else { return nil }
+        if let anchor {
+            guard anchor.chapterHref == chapterHref,
+                  !anchor.quote.isEmpty, anchor.quote.utf16.count <= 4_096,
+                  anchor.prefix.utf16.count <= 256, anchor.suffix.utf16.count <= 256 else { return nil }
+            switch (anchor.startUTF16, anchor.endUTF16) {
+            case (nil, nil): break
+            case let (start?, end?):
+                guard start >= 0, end > start, end <= 2 * 1024 * 1024,
+                      end - start == anchor.quote.utf16.count else { return nil }
+            default: return nil
+            }
+        }
+        var copy = self
+        copy.chapterTitle = chapterTitle.map { String($0.prefix(256)) }
+        return copy
+    }
+}
+
 /// A compact, persisted account of one document tool used to produce an AI reply.
 ///
 /// Raw tool payloads can contain thousands of characters and are intentionally
@@ -10,11 +46,14 @@ struct AiToolSummary: Codable, Equatable, Identifiable, Sendable {
         var id: String
         var page: Int?
         var excerpt: String
+        var epubCitation: AiEpubCitation? = nil
 
-        init(id: String = UUID().uuidString.lowercased(), page: Int?, excerpt: String) {
+        init(id: String = UUID().uuidString.lowercased(), page: Int?, excerpt: String,
+             epubCitation: AiEpubCitation? = nil) {
             self.id = id
             self.page = page
             self.excerpt = excerpt
+            self.epubCitation = epubCitation
         }
     }
 
@@ -23,19 +62,22 @@ struct AiToolSummary: Codable, Equatable, Identifiable, Sendable {
     var detail: String?
     var sources: [Source]
     var destinationPage: Int?
+    var destinationEpub: AiEpubCitation? = nil
 
     init(
         id: String = UUID().uuidString.lowercased(),
         title: String,
         detail: String? = nil,
         sources: [Source] = [],
-        destinationPage: Int? = nil
+        destinationPage: Int? = nil,
+        destinationEpub: AiEpubCitation? = nil
     ) {
         self.id = id
         self.title = title
         self.detail = detail
         self.sources = sources
         self.destinationPage = destinationPage
+        self.destinationEpub = destinationEpub
     }
 
     /// Fold one executed tool call into the trace shown under the reply.

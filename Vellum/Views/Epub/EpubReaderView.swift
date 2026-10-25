@@ -4,68 +4,95 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
-/// Scrolled, chapter-at-a-time EPUB reader. Book XHTML is served from the
-/// open archive through `EpubResourceSchemeHandler`; book scripts and network
-/// loads are disabled, and the reading location (spine index + progression)
-/// is reported to `AppStore.setEpubLocation`.
+/// A reader owner survives view disappearance until its tasks and resources drain.
 struct EpubReaderView: View {
     let tabId: String
     let document: DocumentInfo
-
-    @Environment(AppStore.self) private var appStore
-    @State private var location: EpubReaderLocation?
-
-    private var session: EpubDocumentSession? {
-        appStore.sessions.documentSession(sessionId: tabId) as? EpubDocumentSession
-    }
+    let isActive: Bool
+    @Environment(AppStore.self) private var app
+    @Environment(AiStore.self) private var ai
+    @Environment(AnnotationStore.self) private var annotations
+    @Environment(ScratchpadStore.self) private var scratchpad
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var reader = EpubReaderController()
 
     var body: some View {
-        if let session {
-            VStack(spacing: 0) {
-                if let location {
-                    EpubReaderBar(
-                        publication: session.publication, chapter: location.chapter,
-                        go: { go(to: $0, fragment: $1) })
-                    Divider()
-                    EpubWebView(
-                        session: session, location: location,
-                        onProgress: { progression in
-                            appStore.setEpubLocation(
-                                tabId: tabId, chapter: location.chapter + 1, progression: progression)
-                        },
-                        onNavigate: { go(to: $0, fragment: $1) })
-                } else {
-                    Color.clear
+        Group {
+            if let session = app.sessions.documentSession(sessionId: tabId) as? EpubDocumentSession {
+                VStack(spacing: 0) {
+                    if let location = reader.location {
+                        HStack(spacing: 0) {
+                            EpubReaderBar(publication: session.publication, chapter: location.chapter,
+                                go: { reader.go(chapter: $0, fragment: $1) })
+                            settingsMenu.padding(.trailing, 12)
+                        }
+                        .disabled(!isActive)
+                        Divider()
+                        EpubReaderSurface(reader: reader, session: session, location: location,
+                            annotations: annotations.annotations, dark: colorScheme == .dark)
+                        if let anchor = reader.selectedAnchor, reader.isCurrent {
+                            SelectionPopover(
+                                selection: PdfTextSelection(text: anchor.quote,
+                                    positionData: EpubReaderController.position(anchor),
+                                    pageNumber: (session.publication.spineIndex(path: anchor.chapterHref) ?? location.chapter) + 1),
+                                onClose: { reader.clearSelection() },
+                                onEpubHighlight: { reader.annotate(type: .highlight, color: $0) },
+                                onEpubNote: { reader.annotate(type: .note, note: $0) },
+                                onEpubAI: { reader.askAI() },
+                                onScratchpad: { reader.quoteToScratchpad() },
+                                initialNoteDraft: reader.selectionNoteDraft?.text,
+                                onBeginNote: { reader.beginSelectionNote() },
+                                onNoteDraftChange: { reader.updateSelectionNoteDraft($0, anchor: anchor) })
+                            .id(anchor)
+                            .padding(8)
+                        }
+                        if let notice = reader.notice {
+                            Text(notice).font(.caption).foregroundStyle(.secondary).padding(8)
+                        }
+                    } else { ProgressView() }
+                }
+                .background(.background)
+                .onAppear {
+                    reader.bind(app: app, ai: ai, annotations: annotations, scratchpad: scratchpad,
+                        session: session, tabId: tabId)
+                    reader.activate(isActive)
+                }
+                .onChange(of: isActive) { _, active in reader.activate(active) }
+                .onChange(of: app.activeDocumentBinding) { _, _ in reader.activate(isActive) }
+                .onDisappear { reader.deactivate() }
+            } else { EpubPendingReaderView(document: document) }
+        }
+        .accessibilityIdentifier("epub.reader")
+    }
+
+    private var settingsMenu: some View {
+        Menu {
+            Text("Font size")
+            ForEach([12.0, 14, 16, 18, 20, 24, 28, 32, 36], id: \.self) { size in
+                Button("\(Int(size)) pt\(reader.settings.fontSize == size ? " ✓" : "")") {
+                    reader.changeSettings(fontSize: size, lineSpacing: reader.settings.lineSpacing)
                 }
             }
-            .background(Color.white)
-            .task(id: tabId) { await restore(session) }
-            .accessibilityIdentifier("epub.reader")
-        } else {
-            EpubPendingReaderView(document: document)
-        }
-    }
-
-    private func restore(_ session: EpubDocumentSession) async {
-        guard location == nil else { return }
-        let tab = appStore.tabs.first { $0.id == tabId }
-        let chapter = min(max(0, (tab?.currentPage ?? 1) - 1), session.publication.spine.count - 1)
-        let progression = await appStore.epubResumeProgression(tabId: tabId)
-        location = EpubReaderLocation(chapter: chapter, progression: progression ?? 0)
-    }
-
-    private func go(to chapter: Int, fragment: String?) {
-        guard let session, session.publication.spine.indices.contains(chapter) else { return }
-        location = EpubReaderLocation(chapter: chapter, progression: 0, fragment: fragment)
-        appStore.setEpubLocation(tabId: tabId, chapter: chapter + 1, progression: 0)
+            Divider()
+            Text("Line spacing")
+            ForEach([1.1, 1.3, 1.6, 1.9, 2.1, 2.4], id: \.self) { spacing in
+                Button("\(spacing.formatted())\(reader.settings.lineSpacing == spacing ? " ✓" : "")") {
+                    reader.changeSettings(fontSize: reader.settings.fontSize, lineSpacing: spacing)
+                }
+            }
+        } label: { Image(systemName: "textformat.size") }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Book typography")
+        .accessibilityIdentifier("epub.settings")
     }
 }
 
 struct EpubReaderLocation: Equatable {
     var chapter: Int
     var progression: Double
-    var fragment: String?
-    /// Distinguishes repeated requests for the same place.
+    var fragment: String? = nil
+    var anchor: EpubTextAnchor? = nil
     var request = UUID()
 }
 
@@ -116,12 +143,10 @@ private struct EpubReaderBar: View {
 
             Button { go(chapter - 1, nil) } label: { Image(systemName: "chevron.left") }
                 .disabled(chapter == 0)
-                .keyboardShortcut("[", modifiers: .command)
                 .help("Previous chapter")
                 .accessibilityIdentifier("epub.previousChapter")
             Button { go(chapter + 1, nil) } label: { Image(systemName: "chevron.right") }
                 .disabled(chapter >= publication.spine.count - 1)
-                .keyboardShortcut("]", modifiers: .command)
                 .help("Next chapter")
                 .accessibilityIdentifier("epub.nextChapter")
         }
@@ -150,151 +175,9 @@ private struct EpubReaderBar: View {
     }
 }
 
-private struct EpubWebView: NSViewRepresentable {
-    let session: EpubDocumentSession
-    let location: EpubReaderLocation
-    let onProgress: (Double) -> Void
-    let onNavigate: (Int, String?) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(session: session) }
-
-    func makeNSView(context: Context) -> EpubChapterWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        configuration.setURLSchemeHandler(context.coordinator.resources, forURLScheme: EpubResourceSchemeHandler.scheme)
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
-        let controller = configuration.userContentController
-        controller.addUserScript(WKUserScript(
-            source: Self.readerScript, injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true, in: .defaultClient))
-        controller.add(context.coordinator, contentWorld: .defaultClient, name: "epubReader")
-        let webView = EpubChapterWebView(frame: .zero, configuration: configuration)
-        webView.navigationDelegate = context.coordinator
-        webView.setAccessibilityIdentifier("epub.content")
-        return webView
-    }
-
-    func updateNSView(_ webView: EpubChapterWebView, context: Context) {
-        context.coordinator.parent = self
-        webView.onChapterStep = { step in
-            let chapter = location.chapter + step
-            guard session.publication.spine.indices.contains(chapter) else { return }
-            onNavigate(chapter, nil)
-        }
-        context.coordinator.show(location, in: webView)
-    }
-
-    static func dismantleNSView(_ webView: EpubChapterWebView, coordinator: Coordinator) {
-        webView.removeKeyMonitor()
-        webView.onChapterStep = nil
-        webView.configuration.userContentController.removeAllScriptMessageHandlers()
-        webView.stopLoading()
-        coordinator.resources.cancelAll()
-    }
-
-    @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-        let resources: EpubResourceSchemeHandler
-        var parent: EpubWebView?
-        private var shown: UUID?
-        private var pending: EpubReaderLocation?
-
-        init(session: EpubDocumentSession) {
-            resources = EpubResourceSchemeHandler(session: session)
-        }
-
-        private var publication: EpubPublication { resources.session.publication }
-
-        func show(_ location: EpubReaderLocation, in webView: WKWebView) {
-            guard shown != location.request else { return }
-            shown = location.request
-            pending = location
-            let url = EpubResourceSchemeHandler.url(for: publication.spine[location.chapter].path)
-            if webView.url?.path == url.path, webView.isLoading == false {
-                applyPending(in: webView)
-            } else {
-                webView.load(URLRequest(url: url))
-            }
-        }
-
-        private func applyPending(in webView: WKWebView) {
-            guard let pending else { return }
-            self.pending = nil
-            let script: String
-            if let fragment = pending.fragment,
-               let data = try? JSONEncoder().encode(fragment), let literal = String(data: data, encoding: .utf8) {
-                script = "window.__vellumEpubReveal(\(literal))"
-            } else {
-                script = "window.__vellumEpubRestore(\(min(1, max(0, pending.progression))))"
-            }
-            webView.evaluateJavaScript(script, in: nil, in: .defaultClient) { _ in }
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            applyPending(in: webView)
-        }
-
-        func webView(
-            _ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-            decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
-        ) {
-            guard let url = action.request.url else { return decisionHandler(.cancel) }
-            if url.scheme == EpubResourceSchemeHandler.scheme {
-                guard action.navigationType == .linkActivated, action.targetFrame?.isMainFrame != false else {
-                    return decisionHandler(.allow)
-                }
-                decisionHandler(.cancel)
-                let path = EpubResourceSchemeHandler.archivePath(for: url)
-                if let chapter = path.flatMap({ publication.spineIndex(path: $0) }) {
-                    parent?.onNavigate(chapter, url.fragment)
-                }
-                return
-            }
-            decisionHandler(.cancel)
-            if action.navigationType == .linkActivated, ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-
-        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any], body["type"] as? String == "progress",
-                  let value = body["value"] as? Double, value.isFinite else { return }
-            parent?.onProgress(min(1, max(0, value)))
-        }
-    }
-
-    private static let readerScript = """
-    (() => {
-      const style = document.createElement('style');
-      style.textContent = `
-        :root { color-scheme: light; }
-        html { -webkit-text-size-adjust: 100%; background: #fff; }
-        body { max-width: 40em; margin: 0 auto !important; padding: 2.5em 2em 5em !important;
-               font-size: 18px; line-height: 1.6; color: #1d1d1f; }
-        img, svg, video { max-width: 100%; height: auto; }
-        pre { white-space: pre-wrap; }`;
-      (document.head || document.documentElement).appendChild(style);
-      const scrollable = () => Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-      let timer = null;
-      const report = () => {
-        const height = scrollable();
-        window.webkit.messageHandlers.epubReader.postMessage({
-          type: 'progress', value: height > 0 ? Math.min(1, window.scrollY / height) : 0 });
-      };
-      window.addEventListener('scroll', () => { clearTimeout(timer); timer = setTimeout(report, 300); },
-                              { passive: true });
-      window.__vellumEpubRestore = (fraction) => { window.scrollTo(0, scrollable() * fraction); };
-      window.__vellumEpubReveal = (id) => {
-        const target = document.getElementById(id) || document.getElementsByName(id)[0];
-        if (target) { target.scrollIntoView(); } else { window.scrollTo(0, 0); }
-        report();
-      };
-    })();
-    """
-}
-
 final class EpubChapterWebView: WKWebView {
     var onChapterStep: ((Int) -> Void)?
+    var readerActive = true
     private var keyMonitor: Any?
 
     override func viewDidMoveToWindow() {
@@ -313,7 +196,7 @@ final class EpubChapterWebView: WKWebView {
     }
 
     func handleChapterShortcut(_ event: NSEvent) -> Bool {
-        if let window, event.window === window, window.attachedSheet == nil,
+        if readerActive, let window, event.window === window, window.attachedSheet == nil,
            let responder = window.firstResponder as? NSView,
            responder === self || responder.isDescendant(of: self),
            event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
@@ -341,6 +224,7 @@ final class EpubResourceSchemeHandler: NSObject, WKURLSchemeHandler {
 
     let session: EpubDocumentSession
     private var active: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private var cancelled: [Task<Void, Never>] = []
 
     init(session: EpubDocumentSession) {
         self.session = session
@@ -396,12 +280,21 @@ final class EpubResourceSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
-        active.removeValue(forKey: ObjectIdentifier(task))?.cancel()
+        if let task = active.removeValue(forKey: ObjectIdentifier(task)) {
+            task.cancel(); cancelled.append(task)
+        }
     }
 
     func cancelAll() {
         active.values.forEach { $0.cancel() }
+        cancelled.append(contentsOf: active.values)
         active.removeAll()
+    }
+
+    func drain() async {
+        cancelAll()
+        for task in cancelled { await task.value }
+        cancelled.removeAll()
     }
 }
 #endif
