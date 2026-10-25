@@ -7,8 +7,12 @@ import WebKit
 final class EpubReaderController {
     private(set) var location: EpubReaderLocation?
     private(set) var selection: EpubTextAnchor?
-    private(set) var selectionNoteDraft: EpubSelectionNoteDraft?
-    var selectedAnchor: EpubTextAnchor? { selectionNoteDraft?.anchor ?? selection }
+    private var selectionNoteDrafts: [EpubTextAnchor: String] = [:]
+    var selectedAnchor: EpubTextAnchor? { selection }
+    var selectionNoteDraft: EpubSelectionNoteDraft? {
+        guard let selection, let text = selectionNoteDrafts[selection] else { return nil }
+        return EpubSelectionNoteDraft(anchor: selection, text: text)
+    }
     private(set) var unresolved: Set<String> = []
     var notice: String?
     var settings = EpubReaderSettings.load()
@@ -82,7 +86,8 @@ final class EpubReaderController {
     }
 
     func deactivate() {
-        active = false; activation = UUID(); selection = nil
+        active = false; activation = UUID()
+        if selectionNoteDraft == nil { selection = nil }
         searchGeneration = UUID(); tasks.values.forEach { $0.cancel() }
         if let binding {
             if registeredAI { ai?.unregisterEpubSession(binding: binding); registeredAI = false }
@@ -138,7 +143,7 @@ final class EpubReaderController {
         switch message.type {
         case "progress": progress(message)
         case "selection":
-            if selectionNoteDraft == nil { selection = message.anchor }
+            if message.anchor != nil || selectionNoteDraft == nil { selection = message.anchor }
         case "annotation":
             guard let id = message.id, annotations?.annotations.contains(where: { $0.id == id }) == true else { return }
             annotations?.selectAnnotation(id, scrollIntoView: false)
@@ -202,15 +207,18 @@ final class EpubReaderController {
 
     func beginSelectionNote() {
         guard isCurrent, selectionNoteDraft == nil, let anchor = selection else { return }
-        selectionNoteDraft = EpubSelectionNoteDraft(anchor: anchor, text: "")
+        selectionNoteDrafts[anchor] = ""
     }
 
-    func updateSelectionNoteDraft(_ text: String) {
-        guard isCurrent, selectionNoteDraft != nil else { return }
-        selectionNoteDraft?.text = text
+    func updateSelectionNoteDraft(_ text: String, anchor: EpubTextAnchor) {
+        guard isCurrent, selectionNoteDrafts[anchor] != nil else { return }
+        selectionNoteDrafts[anchor] = text
     }
 
-    func clearSelection() { selection = nil; selectionNoteDraft = nil }
+    func clearSelection() {
+        if let selection { selectionNoteDrafts.removeValue(forKey: selection) }
+        selection = nil
+    }
 
     private func clearSearch() {
         searchGeneration = UUID(); searchTask?.cancel(); searchTask = nil

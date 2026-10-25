@@ -42,7 +42,8 @@ struct EpubReaderView: View {
                                 onScratchpad: { reader.quoteToScratchpad() },
                                 initialNoteDraft: reader.selectionNoteDraft?.text,
                                 onBeginNote: { reader.beginSelectionNote() },
-                                onNoteDraftChange: { reader.updateSelectionNoteDraft($0) })
+                                onNoteDraftChange: { reader.updateSelectionNoteDraft($0, anchor: anchor) })
+                            .id(anchor)
                             .padding(8)
                         }
                         if let notice = reader.notice {
