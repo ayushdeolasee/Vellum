@@ -161,6 +161,44 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Losing WebKit selection to the note editor does not dismiss the captured passage")
+    func selectionFocusTransfer() async throws {
+        let messages = DOMMessages()
+        try await withDOM("<html><body><p>Passage for a note</p></body></html>", messages: messages) { view in
+            _ = try await js(view, """
+            (()=>{const r=document.createRange();r.selectNodeContents(document.querySelector('p'));
+            getSelection().removeAllRanges();getSelection().addRange(r);
+            document.dispatchEvent(new Event('selectionchange'));
+            setTimeout(()=>window.webkit.messageHandlers.epubReader.postMessage({checkpoint:'selected'}),0);})()
+            """)
+            try await messages.wait(for: "selected")
+            #expect(messages.selections.last?["anchor"] is [String: Any])
+            messages.bodies.removeAll()
+            _ = try await js(view, """
+            getSelection().removeAllRanges();
+            document.dispatchEvent(new Event('selectionchange'));
+            setTimeout(()=>window.webkit.messageHandlers.epubReader.postMessage({checkpoint:'blurred'}),0);
+            """)
+            try await messages.wait(for: "blurred")
+            #expect(messages.selections.isEmpty)
+            _ = try await js(view, """
+            document.dispatchEvent(new Event('pointerup'));
+            window.webkit.messageHandlers.epubReader.postMessage({checkpoint:'clicked'});
+            void 0;
+            """)
+            try await messages.wait(for: "clicked")
+            #expect(messages.selections.last?["anchor"] is NSNull)
+            messages.bodies.removeAll()
+            _ = try await js(view, """
+            document.dispatchEvent(new Event('keyup'));
+            window.webkit.messageHandlers.epubReader.postMessage({checkpoint:'keyed'});
+            void 0;
+            """)
+            try await messages.wait(for: "keyed")
+            #expect(messages.selections.last?["anchor"] is NSNull)
+        }
+    }
+
     @Test("Quote viewport survives typography, resize and chapter reload; stale messages cannot move a new visit")
     func reflow() async throws {
         let paragraphs = (0..<100).map { "<p>Paragraph \($0) contains a unique passage for reflow with enough words to wrap across lines.</p>" }.joined()
@@ -300,16 +338,22 @@ struct EpubReaderIntegrationTests {
         return result.value
     }
 
-    private func withDOM(_ html: String, loadURL: URL? = nil, body: (WKWebView) async throws -> Void) async throws {
+    private func withDOM(_ html: String, loadURL: URL? = nil, messages: DOMMessages? = nil,
+                         body: (WKWebView) async throws -> Void) async throws {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
         let namespaced = html.replacingOccurrences(of: "<html>", with: "<html xmlns=\"http://www.w3.org/1999/xhtml\">")
         config.setURLSchemeHandler(DOMDocument(data: Data(namespaced.utf8)), forURLScheme: EpubResourceSchemeHandler.scheme)
         config.userContentController.addUserScript(WKUserScript(source: EpubReaderJavaScript.source,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+        if let messages { config.userContentController.add(messages, contentWorld: .defaultClient, name: "epubReader") }
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 700, height: 480), configuration: config)
         let load = DOMLoad(); view.navigationDelegate = load
-        defer { view.stopLoading(); view.navigationDelegate = nil; view.configuration.userContentController.removeAllUserScripts() }
+        defer {
+            view.stopLoading(); view.navigationDelegate = nil
+            view.configuration.userContentController.removeAllUserScripts()
+            view.configuration.userContentController.removeAllScriptMessageHandlers()
+        }
         view.load(URLRequest(url: loadURL ?? EpubResourceSchemeHandler.url(for: href)))
         try await load.wait()
         _ = try await js(view, configure())
@@ -318,6 +362,23 @@ struct EpubReaderIntegrationTests {
 }
 
 private struct ScriptValue: @unchecked Sendable { let value: Any? }
+
+@MainActor private final class DOMMessages: NSObject, WKScriptMessageHandler {
+    var bodies: [[String: Any]] = []
+    var selections: [[String: Any]] { bodies.filter { $0["type"] as? String == "selection" } }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let body = message.body as? [String: Any] { bodies.append(body) }
+    }
+
+    func wait(for checkpoint: String) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !bodies.contains(where: { $0["checkpoint"] as? String == checkpoint }), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(bodies.contains { $0["checkpoint"] as? String == checkpoint })
+    }
+}
 
 @MainActor private final class DOMDocument: NSObject, WKURLSchemeHandler {
     let data: Data

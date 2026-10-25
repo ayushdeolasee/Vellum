@@ -216,7 +216,14 @@ enum EpubReaderJavaScript {
       }
       const schedule=()=>{clearTimeout(timer);timer=setTimeout(report,200);};
       window.addEventListener('scroll',schedule,{passive:true});
-      document.addEventListener('selectionchange',()=>{ if (config?.active) post('selection',{anchor:selection()}); });
+      document.addEventListener('selectionchange',()=>{
+        const anchor=selection();
+        // WebKit also clears its selection when focus moves to the note editor.
+        if (anchor) post('selection',{anchor});
+      });
+      const finishSelection=()=>post('selection',{anchor:selection()});
+      document.addEventListener('pointerup',finishSelection);
+      document.addEventListener('keyup',finishSelection);
       let resizeTimer;
       window.addEventListener('resize',()=>{
         const saved=viewport; clearTimeout(resizeTimer);
