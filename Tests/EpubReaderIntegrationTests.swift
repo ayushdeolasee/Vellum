@@ -199,6 +199,43 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Pencil ranges produce durable quotes and handwriting markers survive reflow")
+    func pencilRangeAndHandwritingMarker() async throws {
+        let html = "<html><body><p>Alpha bravo charlie delta echo</p></body></html>"
+        let text = try EpubTextExtractor.extract(xhtml: Data(html.utf8), chapterHref: href)
+        let expected = try #require(text.anchor(in: NSRange(location: 0, length: 6)))
+        let messages = DOMMessages()
+        try await withDOM(html, messages: messages) { view in
+            _ = try await js(view, """
+            (()=>{const n=document.querySelector('p').firstChild,r=document.createRange();
+            r.setStart(n,0);r.setEnd(n,1);const a=r.getBoundingClientRect();
+            r.setStart(n,5);r.setEnd(n,6);const b=r.getBoundingClientRect();
+            window.__vellumEpub.pencil('begin',a.left,a.top+a.height/2);
+            window.__vellumEpub.pencil('end',b.right,b.top+b.height/2);
+            window.webkit.messageHandlers.epubReader.postMessage({checkpoint:'pencilled'});})()
+            """)
+            try await messages.wait(for: "pencilled")
+            let message = try #require(messages.bodies.first { $0["type"] as? String == "pencilHighlight" })
+            let anchor = try #require(message["anchor"] as? [String: Any])
+            let decoded = try JSONDecoder().decode(EpubTextAnchor.self,
+                from: JSONSerialization.data(withJSONObject: anchor))
+            #expect(decoded == expected)
+            let marks = "[{id:'ink:test',anchor:\(EpubReaderJavaScript.literal(expected)),handwriting:true}]"
+            _ = try await js(view, "window.__vellumEpub.annotations(\(marks))")
+            #expect(try await js(view, "document.querySelector('button[aria-label=\"Open passage handwriting\"]')!==null") as? Bool == true)
+            _ = try await js(view, configure(font: 30, spacing: 2.1))
+            view.setFrameSize(NSSize(width: 400, height: 500))
+            _ = try await js(view, """
+            window.__vellumEpub.annotations(\(marks));
+            document.querySelector('button[aria-label="Open passage handwriting"]').click();
+            window.webkit.messageHandlers.epubReader.postMessage({checkpoint:'opened'}); void 0;
+            """)
+            try await messages.wait(for: "opened")
+            #expect(messages.bodies.contains { $0["type"] as? String == "annotation" && $0["id"] as? String == "ink:test" })
+            #expect(try await js(view, "window.__vellumEpub.text()") as? String == text.text)
+        }
+    }
+
     @Test("Quote viewport survives typography, resize and chapter reload; stale messages cannot move a new visit")
     func reflow() async throws {
         let paragraphs = (0..<100).map { "<p>Paragraph \($0) contains a unique passage for reflow with enough words to wrap across lines.</p>" }.joined()

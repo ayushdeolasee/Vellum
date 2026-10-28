@@ -1,5 +1,7 @@
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
 import Foundation
 import Observation
@@ -582,6 +584,10 @@ final class WorkspaceStore {
             let webInkSucceeded = await runtime.webInk.flushPendingInkAndReportSuccess()
             inkSucceeded = pdfInkSucceeded && webInkSucceeded && inkSucceeded
         }
+        for pane in root.allLeaves() {
+            let epubSucceeded = await pane.app.flushEpubReaders()
+            inkSucceeded = epubSucceeded && inkSucceeded
+        }
         return inkSucceeded
     }
 
@@ -692,8 +698,9 @@ final class WorkspaceStore {
             await previous?.value
             await restoreFromDisk()
             #if os(iOS)
+            let supportsEpub = UIDevice.current.userInterfaceIdiom == .pad
             let imported = await Task.detached(priority: .userInitiated) {
-                DocumentImport.importPickedResult(incoming)
+                DocumentImport.importPickedResult(incoming, supportsEpub: supportsEpub)
             }.value
             let app = focusedPane.app
             guard !imported.paths.isEmpty else {
@@ -765,8 +772,9 @@ final class WorkspaceStore {
                 guard root.allLeaves().contains(where: { $0.app === app }) else { break }
                 if url.isFileURL {
                     #if os(iOS)
+                    let supportsEpub = UIDevice.current.userInterfaceIdiom == .pad
                     let imported = await Task.detached(priority: .userInitiated) {
-                        DocumentImport.importPickedResult([url])
+                        DocumentImport.importPickedResult([url], supportsEpub: supportsEpub)
                     }.value
                     errors.append(contentsOf: imported.errors)
                     guard !imported.paths.isEmpty,

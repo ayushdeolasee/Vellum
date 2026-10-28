@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import UniformTypeIdentifiers
+import UIKit
 
 /// iOS document intake. Files chosen from the Files app / iCloud are external and
 /// security-scoped; Vellum writes annotations and reading metadata back into the
@@ -25,11 +26,14 @@ enum DocumentImport {
     /// pass. `exportedAs` rather than `filenameExtension:` because the app
     /// declares both custom types itself (Info-iOS.plist): the lookup is
     /// deterministic instead of returning nil until LaunchServices catches up.
-    static let openableTypes: [UTType] = [
-        .pdf,
+    @MainActor static var openableTypes: [UTType] { openableTypes(includeEpub: UIDevice.current.userInterfaceIdiom == .pad) }
+
+    static func openableTypes(includeEpub: Bool) -> [UTType] {
+        [.pdf,
         UTType(exportedAs: "com.vellum.webarchive"),
         UTType(exportedAs: "com.vellum.bundle"),
-    ]
+        ] + (includeEpub ? [.epub] : [])
+    }
 
     /// Resolve a stored recent-document path to a file that exists *now*.
     ///
@@ -51,13 +55,13 @@ enum DocumentImport {
     /// local library is opened in place (except a `.vellum`, which is a
     /// container to unpack, not a document to keep open). Name collisions get a
     /// numeric suffix so two different source files never clobber each other.
-    static func importPicked(_ urls: [URL]) -> [String] {
-        importPickedResult(urls).paths
+    static func importPicked(_ urls: [URL], supportsEpub: Bool = false) -> [String] {
+        importPickedResult(urls, supportsEpub: supportsEpub).paths
     }
 
     /// Keep copy failures alongside successful paths so system opens can report
     /// a partial import without discarding the documents that did copy.
-    static func importPickedResult(_ urls: [URL]) -> (paths: [String], errors: [String]) {
+    static func importPickedResult(_ urls: [URL], supportsEpub: Bool = false) -> (paths: [String], errors: [String]) {
         // Keep filename selection and copying together across concurrent opens.
         importLock.lock()
         defer { importLock.unlock() }
@@ -65,6 +69,15 @@ enum DocumentImport {
         var paths: [String] = []
         var errors: [String] = []
         for url in urls {
+            if url.pathExtension.lowercased() == "epub" {
+                guard supportsEpub else {
+                    errors.append("EPUB reading is currently available on iPad and Mac.")
+                    continue
+                }
+                do { paths.append(try EpubLibrary.importBook(at: url).path) }
+                catch { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+                continue
+            }
             if isLocalLibraryURL(url), !isBundle(url) {
                 paths.append(url.path)
                 continue

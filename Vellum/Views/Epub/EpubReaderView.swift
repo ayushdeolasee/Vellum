@@ -1,5 +1,9 @@
+#if os(macOS) || os(iOS)
 #if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
@@ -24,12 +28,16 @@ struct EpubReaderView: View {
                         HStack(spacing: 0) {
                             EpubReaderBar(publication: session.publication, chapter: location.chapter,
                                 go: { reader.go(chapter: $0, fragment: $1) })
+                            #if os(iOS)
+                            EpubReaderTools_iOS(reader: reader)
+                            #endif
                             settingsMenu.padding(.trailing, 12)
                         }
                         .disabled(!isActive)
                         Divider()
                         EpubReaderSurface(reader: reader, session: session, location: location,
-                            annotations: annotations.annotations, dark: colorScheme == .dark)
+                            annotations: annotations.annotations, dark: colorScheme == .dark,
+                            handwritingNotes: reader.handwritingNotes, pencilHighlighting: reader.pencilHighlighting)
                         if let anchor = reader.selectedAnchor, reader.isCurrent {
                             SelectionPopover(
                                 selection: PdfTextSelection(text: anchor.quote,
@@ -40,13 +48,14 @@ struct EpubReaderView: View {
                                 onEpubNote: { reader.annotate(type: .note, note: $0) },
                                 onEpubAI: { reader.askAI() },
                                 onScratchpad: { reader.quoteToScratchpad() },
+                                onHandwriting: handwritingAction(for: anchor),
                                 initialNoteDraft: reader.selectionNoteDraft?.text,
                                 onBeginNote: { reader.beginSelectionNote() },
                                 onNoteDraftChange: { reader.updateSelectionNoteDraft($0, anchor: anchor) })
                             .id(anchor)
                             .padding(8)
                         }
-                        if let notice = reader.notice {
+                        if let notice = readerNotice {
                             Text(notice).font(.caption).foregroundStyle(.secondary).padding(8)
                         }
                     } else { ProgressView() }
@@ -80,11 +89,34 @@ struct EpubReaderView: View {
                     reader.changeSettings(fontSize: reader.settings.fontSize, lineSpacing: spacing)
                 }
             }
-        } label: { Image(systemName: "textformat.size") }
+        } label: {
+            Image(systemName: "textformat.size")
+                #if os(iOS)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+                #endif
+        }
+        #if os(macOS)
         .menuStyle(.borderlessButton)
+        #endif
         .fixedSize()
         .help("Book typography")
         .accessibilityIdentifier("epub.settings")
+    }
+
+    private func handwritingAction(for anchor: EpubTextAnchor) -> (() -> Void)? {
+        #if os(iOS)
+        { reader.clearSelection(); reader.run { await reader.handwriting.create(anchor: anchor) } }
+        #else
+        nil
+        #endif
+    }
+
+    private var readerNotice: String? {
+        #if os(iOS)
+        reader.handwriting.notice ?? reader.notice
+        #else
+        reader.notice
+        #endif
     }
 }
 
@@ -127,7 +159,9 @@ private struct EpubReaderBar: View {
             } label: {
                 Label("Contents", systemImage: "list.bullet")
             }
+            #if os(macOS)
             .menuStyle(.borderlessButton)
+            #endif
             .fixedSize()
             .accessibilityIdentifier("epub.contents")
 
@@ -141,11 +175,21 @@ private struct EpubReaderBar: View {
                 .foregroundStyle(.secondary)
             Spacer()
 
-            Button { go(chapter - 1, nil) } label: { Image(systemName: "chevron.left") }
+            Button { go(chapter - 1, nil) } label: {
+                Image(systemName: "chevron.left")
+                    #if os(iOS)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+                    #endif
+            }
                 .disabled(chapter == 0)
                 .help("Previous chapter")
                 .accessibilityIdentifier("epub.previousChapter")
-            Button { go(chapter + 1, nil) } label: { Image(systemName: "chevron.right") }
+            Button { go(chapter + 1, nil) } label: {
+                Image(systemName: "chevron.right")
+                    #if os(iOS)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+                    #endif
+            }
                 .disabled(chapter >= publication.spine.count - 1)
                 .help("Next chapter")
                 .accessibilityIdentifier("epub.nextChapter")
@@ -175,6 +219,7 @@ private struct EpubReaderBar: View {
     }
 }
 
+#if os(macOS)
 final class EpubChapterWebView: WKWebView {
     var onChapterStep: ((Int) -> Void)?
     var readerActive = true
@@ -210,6 +255,13 @@ final class EpubChapterWebView: WKWebView {
         return false
     }
 }
+#else
+final class EpubChapterWebView: WKWebView {
+    var onChapterStep: ((Int) -> Void)?
+    var readerActive = true
+    func removeKeyMonitor() {}
+}
+#endif
 
 /// Serves archive resources of one open book under
 /// `vellum-epub://book/<archive path>`, with a CSP that keeps book content

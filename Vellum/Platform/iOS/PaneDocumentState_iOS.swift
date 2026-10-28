@@ -19,6 +19,9 @@ struct PaneDocumentState_iOS: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .onAppear {
+                pane.ai.epubCitationNavigationHandler = { [weak app] citation in app?.routeEpubCitation(citation) }
+            }
             .task(id: documentIdentity) { await loadDocumentState() }
             .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
                 guard app.document != nil else { return }

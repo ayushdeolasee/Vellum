@@ -42,6 +42,7 @@ struct PaneView_iOS: View {
     /// ink live on `LiveTabRuntime`, never on this disposable pane view.
     private var activeInkHost: (any InkPaletteHost)? {
         guard let tabId = app.activeTabId, let document = app.document else { return nil }
+        guard document.kind != .epub else { return nil }
         let runtime = workspace.liveTabRuntime(for: tabId)
         return document.kind == .web ? runtime.webInk : runtime.ink
     }
@@ -157,7 +158,9 @@ struct PaneView_iOS: View {
     @ViewBuilder
     private func reader(ink: any InkPaletteHost) -> some View {
             VStack(spacing: 0) {
-                PdfToolbar_iOS(ink: ink)
+                if app.document?.kind != .epub {
+                    PdfToolbar_iOS(ink: ink)
+                }
 
                 if app.findVisible {
                     FindBar()

@@ -13,13 +13,17 @@ struct SelectionPopover: View {
     let selection: PdfTextSelection
     var availableWidth: CGFloat? = nil
     #if os(iOS)
-    let onDictionaryLookup: (String) -> Void
+    var onDictionaryLookup: (String) -> Void = { text in
+        DocumentPickerCoordinator_iOS.topViewController()?.present(
+            UIReferenceLibraryViewController(term: text), animated: true)
+    }
     #endif
     let onClose: () -> Void
     var onEpubHighlight: ((String) -> Void)? = nil
     var onEpubNote: ((String) -> Void)? = nil
     var onEpubAI: (() -> Void)? = nil
     var onScratchpad: (() -> Void)? = nil
+    var onHandwriting: (() -> Void)? = nil
     var initialNoteDraft: String? = nil
     var onBeginNote: (() -> Void)? = nil
     var onNoteDraftChange: ((String) -> Void)? = nil
@@ -132,6 +136,15 @@ struct SelectionPopover: View {
 
     @ViewBuilder
     private var actionItems: some View {
+        if let onHandwriting {
+            Button(action: onHandwriting) {
+                Image(systemName: "pencil.tip")
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Handwrite at selected passage")
+            .accessibilityIdentifier("epub.selection.handwrite")
+        }
         if let onScratchpad {
             Button { onScratchpad(); onClose() } label: {
                 Image(systemName: "text.quote").frame(width: 24, height: 24).contentShape(Rectangle())

@@ -89,6 +89,12 @@ private struct LiveTabHost_iOS: View {
                 if document.kind == .web {
                     WebViewerView_iOS(
                         tabId: tabId, document: document, isActive: isActive, runtime: runtime)
+                } else if document.kind == .epub {
+                    if UIDevice.current.userInterfaceIdiom == .pad {
+                        EpubReaderView(tabId: tabId, document: document, isActive: isActive)
+                    } else {
+                        EpubPendingReaderView(document: document)
+                    }
                 } else {
                     PdfViewerView_iOS(
                         tabId: tabId, documentInfo: document, isActive: isActive, runtime: runtime)

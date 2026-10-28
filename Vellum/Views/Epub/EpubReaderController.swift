@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import Foundation
 import Observation
 import WebKit
@@ -34,6 +34,18 @@ final class EpubReaderController {
     private var activation = UUID()
     private var registeredAI = false
     private let handlerToken = UUID()
+    #if os(iOS)
+    let handwriting = EpubHandwritingController_iOS()
+    #endif
+    var pencilHighlighting = false
+    var pencilHighlightColor = WorkspaceStore.storedDefaultHighlightColor()
+    var handwritingNotes: [EpubHandwritingNote] {
+        #if os(iOS)
+        handwriting.notes
+        #else
+        []
+        #endif
+    }
 
     var isCurrent: Bool {
         active && binding != nil && app?.activeDocumentBinding == binding
@@ -44,6 +56,9 @@ final class EpubReaderController {
         guard binding == nil, let binding = app.documentBinding(for: tabId) else { return }
         self.app = app; self.ai = ai; self.annotations = annotations; self.scratchpad = scratchpad
         self.session = session; self.binding = binding
+        #if os(iOS)
+        handwriting.bind(session: session)
+        #endif
         app.registerEpubReader(binding: binding, deactivate: { [weak self] in self?.deactivate() },
             drain: { [self] in await drain() }, close: { [self] in await close() })
     }
@@ -53,6 +68,9 @@ final class EpubReaderController {
             deactivate(); return
         }
         active = true
+        #if os(iOS)
+        handwriting.readerActive = true
+        #endif
         if !registeredAI { registeredAI = ai?.registerEpubSession(session, binding: binding) == true }
         app.epubHandlerOwner = binding
         app.epubHandlerToken = handlerToken
@@ -87,6 +105,10 @@ final class EpubReaderController {
 
     func deactivate() {
         active = false; activation = UUID()
+        #if os(iOS)
+        handwriting.readerActive = false
+        handwriting.isPresented = false
+        #endif
         if selectionNoteDraft == nil { selection = nil }
         searchGeneration = UUID(); tasks.values.forEach { $0.cancel() }
         if let binding {
@@ -103,16 +125,22 @@ final class EpubReaderController {
     }
 
     /// Reader work may join persistence but never awaits tab teardown itself.
-    func drain() async {
+    @discardableResult func drain() async -> Bool {
         while !tasks.isEmpty { for task in Array(tasks.values) { await task.value } }
         await ai?.awaitCancelledRequests()
+        #if os(iOS)
+        return await handwriting.flushPendingInkAndWait()
+        #else
+        return true
+        #endif
     }
 
-    func close() async {
+    @discardableResult func close() async -> Bool {
         deactivate()
-        await drain()
+        guard await drain() else { return false }
         await drainResources?()
         webView = nil
+        return true
     }
 
     func run(_ work: @escaping @MainActor () async -> Void) {
@@ -141,15 +169,28 @@ final class EpubReaderController {
         guard isCurrent, let location, let session, message.token == location.request.uuidString,
               message.href == session.publication.spine[location.chapter].path else { return }
         switch message.type {
+        #if os(iOS)
+        case "pencilHighlight":
+            guard pencilHighlighting, let anchor = message.anchor else { return }
+            selection = anchor
+            annotate(type: .highlight, color: pencilHighlightColor)
+        #endif
         case "progress": progress(message)
         case "selection":
             if message.anchor != nil || selectionNoteDraft == nil { selection = message.anchor }
         case "annotation":
+            #if os(iOS)
+            if let id = message.id, id.hasPrefix("ink:"),
+               let note = handwriting.notes.first(where: { "ink:" + $0.id == id }) {
+                run { [self] in await handwriting.open(note) }
+                return
+            }
+            #endif
             guard let id = message.id, annotations?.annotations.contains(where: { $0.id == id }) == true else { return }
             annotations?.selectAnnotation(id, scrollIntoView: false)
             app?.workspace?.revealSidebarTab(.annotations)
         case "unresolved":
-            unresolved = Set(message.unresolved ?? [])
+            unresolved = Set((message.unresolved ?? []).filter { !$0.hasPrefix("ink:") })
             annotations?.unresolvedEpubAnnotationIds = unresolved
         case "unresolvedLocation": notice = "This passage could not be located unambiguously. Showing the saved chapter position."
         default: break

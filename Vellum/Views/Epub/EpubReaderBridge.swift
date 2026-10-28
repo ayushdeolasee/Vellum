@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import Foundation
 
 struct EpubReaderSettings: Equatable, Codable {
@@ -39,10 +39,14 @@ struct EpubReaderMessage: Decodable {
               let data = try? JSONSerialization.data(withJSONObject: body), data.count <= 64 * 1024,
               let message = try? JSONDecoder().decode(Self.self, from: data),
               message.token == token, message.href == href,
-              ["progress", "selection", "annotation", "unresolved", "unresolvedLocation"].contains(message.type),
+              ["progress", "selection", "annotation", "unresolved", "unresolvedLocation", "pencilHighlight"].contains(message.type),
               message.value.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
               message.id.map({ $0.utf16.count <= 256 }) ?? true,
-              message.unresolved.map({ $0.count <= 500 && $0.allSatisfy { $0.utf16.count <= 256 } }) ?? true
+              message.unresolved.map({ ids in
+                  ids.count <= 1000 && ids.filter { !$0.hasPrefix("ink:") }.count <= 500
+                      && ids.filter { $0.hasPrefix("ink:") }.count <= 500
+                      && ids.allSatisfy { $0.utf16.count <= 256 }
+              }) ?? true
         else { return nil }
         if let anchor = message.anchor {
             guard anchor.chapterHref == href,
@@ -51,6 +55,7 @@ struct EpubReaderMessage: Decodable {
         }
         if message.type == "progress", message.value == nil { return nil }
         if message.type == "annotation", message.id == nil { return nil }
+        if message.type == "pencilHighlight", message.anchor == nil { return nil }
         return message
     }
 }
@@ -167,6 +172,24 @@ enum EpubReaderJavaScript {
         const r=s.getRangeAt(0); if (!document.body.contains(r.commonAncestorContainer)) return null;
         return anchor(offsetAt(r.startContainer,r.startOffset,false),offsetAt(r.endContainer,r.endOffset,true));
       }
+      let pencilStart = {value:null};
+      function pencil(phase,x,y) {
+        if (!config?.active) return;
+        if (phase==='cancel') { pencilStart.value=null; return; }
+        const caret=document.caretRangeFromPoint(x,y);
+        if (!caret || !document.body.contains(caret.startContainer)) return;
+        const point=offsetAt(caret.startContainer,caret.startOffset,false);
+        if (phase==='begin') { pencilStart.value=point; return; }
+        if (pencilStart.value===null) return;
+        const start=Math.min(pencilStart.value,point), end=Math.max(pencilStart.value,point);
+        const r=range(start,end), a=anchor(start,end);
+        if (r && a) { const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); }
+        if (phase==='end') {
+          pencilStart.value=null;
+          if (a) post('pencilHighlight',{anchor:a});
+          window.getSelection()?.removeAllRanges();
+        }
+      }
       const scrollable = () => Math.max(0,document.documentElement.scrollHeight-innerHeight);
       function visible() {
         const m=index();
@@ -197,12 +220,22 @@ enum EpubReaderJavaScript {
         restoring=false; viewport=snapshot(); paint(); report();
       }
       function paint() {
-        if (!overlay) { overlay=element('div'); overlay.setAttribute('aria-hidden','true');
+        if (!overlay) { overlay=element('div'); overlay.setAttribute('aria-label','Passage annotations');
           Object.assign(overlay.style,{position:'absolute',top:'0',left:'0',width:'0',height:'0',pointerEvents:'none',zIndex:'2147483646'});
           document.documentElement.appendChild(overlay); }
         overlay.replaceChildren(); const unresolved=[];
         for (const a of annotations) {
           const r=resolve(a.anchor); if (!r) { unresolved.push(a.id); continue; }
+          if (a.handwriting) {
+            const rect=r.getBoundingClientRect(), mark=element('button'); mark.type='button';
+            mark.textContent='✎'; mark.setAttribute('aria-label','Open passage handwriting');
+            Object.assign(mark.style,{position:'absolute',left:Math.max(2,rect.left+scrollX-30)+'px',
+              top:(rect.top+scrollY)+'px',width:'28px',height:'28px',fontSize:'22px',padding:'0',
+              border:'0',borderRadius:'6px',background:'#e4e2fa',color:'#45418f',
+              pointerEvents:config?.active?'auto':'none',cursor:'pointer'});
+            mark.addEventListener('click',()=>post('annotation',{id:a.id})); overlay.appendChild(mark);
+            continue;
+          }
           for (const rect of Array.from(r.getClientRects()).slice(0,500)) {
             const mark=element('button'); mark.type='button'; mark.setAttribute('aria-label','Open annotation');
             const color=/^#[0-9a-fA-F]{6}$/.test(a.color || '')?a.color:'#fef08a';
@@ -240,8 +273,8 @@ enum EpubReaderJavaScript {
           // Inherited controls retain publisher headings, emphasis, images and layout.
           if (saved) restore(saved);
         },
-        restore, selection, snapshot,
-        annotations(items) { annotations=items.slice(0,500); paint(); },
+        restore, selection, snapshot, pencil,
+        annotations(items) { annotations=items.slice(0,1000); paint(); },
         text:()=>index().text, resolve:a=>!!resolve(a),
         dispose() { config=null; clearTimeout(timer);clearTimeout(resizeTimer);overlay?.remove(); }
       };
