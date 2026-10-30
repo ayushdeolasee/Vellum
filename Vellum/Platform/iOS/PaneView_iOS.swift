@@ -168,7 +168,7 @@ struct PaneView_iOS: View {
 
                 LiveTabStack_iOS(app: app)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea(edges: .bottom)
+                .ignoresSafeArea(app.document?.kind == .epub ? .container : .all, edges: .bottom)
                 .overlay(alignment: .bottomTrailing) { readLaterNotice }
             }
     }

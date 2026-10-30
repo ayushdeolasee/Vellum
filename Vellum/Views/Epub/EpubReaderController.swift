@@ -247,8 +247,11 @@ final class EpubReaderController {
     }
 
     func beginSelectionNote() {
-        guard isCurrent, selectionNoteDraft == nil, let anchor = selection else { return }
-        selectionNoteDrafts[anchor] = ""
+        guard isCurrent, let anchor = selection else { return }
+        if selectionNoteDrafts[anchor] == nil { selectionNoteDrafts[anchor] = "" }
+        #if os(iOS)
+        webView?.endEditing(true)
+        #endif
     }
 
     func updateSelectionNoteDraft(_ text: String, anchor: EpubTextAnchor) {

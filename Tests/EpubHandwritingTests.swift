@@ -274,6 +274,65 @@ struct EpubHandwritingTests {
         }
     }
 
+    @Test("Native note entry releases WebKit focus after capturing its draft and preserves passage targeting")
+    func noteFocusHandoff() async throws {
+        try await environment { first, _, _ in
+            let manager = DocumentSessionManager()
+            let workspace = WorkspaceStore(sessions: manager,
+                positions: DocumentPositionService(storage: InMemoryPositionStorage()))
+            let pane = workspace.focusedPane
+            await pane.app.openFile(path: first.book.path)
+            let binding = try #require(pane.app.activeDocumentBinding)
+            let session = try #require(manager.documentSession(sessionId: binding.tabId) as? EpubDocumentSession)
+            let reader = EpubReaderController()
+            reader.bind(app: pane.app, ai: pane.ai, annotations: pane.annotations,
+                scratchpad: pane.scratchpad, session: session, tabId: binding.tabId)
+            reader.activate(true)
+            #expect(await reader.drain())
+            let anchor = try await passage(session)
+            let request = try #require(reader.location?.request.uuidString)
+            let href = anchor.chapterHref
+            func selection(_ anchor: EpubTextAnchor?) -> EpubReaderMessage {
+                EpubReaderMessage(type: "selection", token: request, href: href,
+                    value: nil, anchor: anchor, id: nil, unresolved: nil)
+            }
+            let webView = NoteFocusWebView()
+            webView.onEndEditing = { reader.receive(selection(nil)) }
+            reader.webView = webView
+            reader.receive(selection(anchor))
+            reader.beginSelectionNote()
+            #expect(webView.endEditingCount == 1)
+            #expect(reader.selectedAnchor == anchor && reader.selectionNoteDraft?.text == "")
+            reader.updateSelectionNoteDraft("iPad draft A with spaces", anchor: anchor)
+            reader.beginSelectionNote()
+            #expect(webView.endEditingCount == 2)
+            #expect(reader.selectionNoteDraft?.text == "iPad draft A with spaces")
+            let text = try await session.chapterText(spineIndex: 0)
+            let other = try #require(text.anchor(in: NSRange(location: 1, length: 1)))
+            reader.receive(selection(other))
+            #expect(reader.selectedAnchor == other && reader.selectionNoteDraft == nil)
+            reader.receive(selection(anchor))
+            #expect(reader.selectionNoteDraft?.text == "iPad draft A with spaces")
+            reader.deactivate()
+            reader.beginSelectionNote()
+            #expect(webView.endEditingCount == 2)
+            await pane.app.closeFile()
+            #expect(await workspace.tabTeardowns.awaitAll())
+            await workspace.awaitMaintenance()
+        }
+    }
+
+    private final class NoteFocusWebView: WKWebView {
+        var endEditingCount = 0
+        var onEndEditing: (() -> Void)?
+
+        override func endEditing(_ force: Bool) -> Bool {
+            endEditingCount += 1
+            onEndEditing?()
+            return super.endEditing(force)
+        }
+    }
+
     @Test("Background and tab-close barriers drain drawings; failed close retains the reader for retry")
     func readerLifecycle() async throws {
         try await environment { first, _, _ in
