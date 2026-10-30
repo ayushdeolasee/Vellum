@@ -68,6 +68,7 @@ struct EpubReaderSurface: EpubViewRepresentable {
     let reader: EpubReaderController
     let session: EpubDocumentSession
     let location: EpubReaderLocation
+    let settings: EpubReaderSettings
     let annotations: [Annotation]
     let dark: Bool
     let palette: ThemePalette
@@ -227,7 +228,7 @@ struct EpubReaderSurface: EpubViewRepresentable {
             guard let parent, shown == parent.location.request,
                   loadGate.isLoaded(path: href, viewURL: view.url) else { return }
             let config = EpubReaderJavaScript.literal(Configuration(token: parent.location.request.uuidString, href: href,
-                active: parent.reader.isCurrent, settings: parent.reader.settings, dark: parent.dark,
+                active: parent.reader.isCurrent, settings: parent.settings, dark: parent.dark,
                 colors: EpubReaderCSSColors(palette: parent.palette)))
             var script = ""
             if config != configurationJSON { configurationJSON = config; script += "window.__vellumEpub?.configure(\(config));" }

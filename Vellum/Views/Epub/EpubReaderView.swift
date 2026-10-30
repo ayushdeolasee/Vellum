@@ -27,7 +27,8 @@ struct EpubReaderView: View {
                 VStack(spacing: 0) {
                     if let location = reader.location {
                         EpubReaderSurface(reader: reader, session: session, location: location,
-                            annotations: annotations.annotations, dark: colorScheme == .dark, palette: palette,
+                            settings: reader.settings, annotations: annotations.annotations,
+                            dark: colorScheme == .dark, palette: palette,
                             handwritingNotes: reader.handwritingNotes, pencilHighlighting: reader.pencilHighlighting)
                         if let anchor = reader.selectedAnchor, reader.isCurrent {
                             SelectionPopover(
