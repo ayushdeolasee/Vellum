@@ -2,8 +2,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// iPad reading chrome: a touch-first Liquid Glass toolbar (page nav, zoom, find,
-// note tool, bookmark, sidebar, more), a tab strip, and the sidebar content —
+// iPad reading chrome: a touch-first Liquid Glass toolbar (page nav, book or
+// zoom controls, reader tools, sidebar, more), a tab strip, and sidebar content —
 // the iPad analogue of the macOS VellumToolbar / TabBarView. Tap targets are
 // 44pt; low-frequency file actions collect in a "More" menu.
 
@@ -38,11 +38,11 @@ struct PdfToolbar_iOS: View {
 
 
     private var isWeb: Bool { appStore.document?.kind == .web }
+    private var isEpub: Bool { appStore.document?.kind == .epub }
+    private var epubReader: EpubReaderController? { appStore.activeEpubReader }
     // The pods have fixed 44pt targets, so when the sidebar squeezes the row
-    // the lowest-value pods yield instead of clipping at the edges: the zoom
-    // pod first (pinch still works for PDFs and web pages; More keeps the
-    // commands), then the page-step chevrons (the page field still jumps
-    // anywhere).
+    // the lower-priority pods yield instead of clipping: book/zoom first (More
+    // keeps the commands), then page-step chevrons (the jump button still works).
     private var showZoomPod: Bool { toolbarWidth == 0 || toolbarWidth >= 800 }
     // DELIBERATE DIVERGENCE FROM macOS (#115 review, #129 packet 7 §2.10 G5).
     // The Mac toolbar splits `[< >]` and `[1 / N]` into two separate glass
@@ -50,18 +50,18 @@ struct PdfToolbar_iOS: View {
     //
     //  * cost. A second capsule spends ~16pt on its own horizontal padding plus
     //    the inter-pod gap, in a row that already has to shed the zoom pod at
-    //    740pt and these very chevrons at 590pt. Mouse-sized 32pt targets can
+    //    800pt and these very chevrons at 650pt. Mouse-sized 32pt targets can
     //    afford the split; 44pt ones cannot.
     //  * meaning. The Mac's page indicator is an inline editable text field —
     //    a control in its own right. The iPad's is a *tap target that opens the
     //    jump alert*, i.e. a third way to do exactly what the two chevrons
     //    beside it do, so it belongs in their cluster.
     //
-    // When the chevrons drop out below 590pt the pod degrades to `[1/N]`, which
-    // is still the same one semantic cluster — "page navigation".
+    // When the chevrons drop out below 650pt the pod degrades to `[1/N]`, which
+    // is still the same one semantic cluster — page or chapter navigation.
     private var showPageChevrons: Bool { toolbarWidth == 0 || toolbarWidth >= 650 }
     // Narrowest tier: when a split pane is squeezed by the open inspector, fold
-    // the find/note/ink/bookmark pod into the More menu so the trailing
+    // the find/reader-tools/bookmark pod into the More menu so the trailing
     // sidebar-toggle + More pod always fits inside the pane instead of being
     // pushed under (and clipped by) the sidebar where it can't be tapped.
     private var showActionsPod: Bool { toolbarWidth == 0 || toolbarWidth >= 550 }
@@ -115,15 +115,21 @@ struct PdfToolbar_iOS: View {
                     }
                 }
             } else {
-                GlassToolPod(label: "Page navigation") {
+                GlassToolPod(label: isEpub ? "Chapter navigation" : "Page navigation") {
                     if showPageChevrons {
-                        GlassToolButton(system: "chevron.left", label: "Previous page") {
+                        GlassToolButton(
+                            system: "chevron.left",
+                            label: isEpub ? "Previous chapter" : "Previous page"
+                        ) {
                             appStore.goToPage(appStore.currentPage - 1)
                         }
                     }
                     pageField
                     if showPageChevrons {
-                        GlassToolButton(system: "chevron.right", label: "Next page") {
+                        GlassToolButton(
+                            system: "chevron.right",
+                            label: isEpub ? "Next chapter" : "Next page"
+                        ) {
                             appStore.goToPage(appStore.currentPage + 1)
                         }
                     }
@@ -131,28 +137,35 @@ struct PdfToolbar_iOS: View {
             }
 
             if showZoomPod {
-                GlassToolPod(label: "Zoom controls") {
-                    GlassToolButton(system: "minus.magnifyingglass", label: "Zoom out") {
-                        appStore.zoomOut()
+                if isEpub, let epubReader {
+                    GlassToolPod(label: "Book") {
+                        EpubContentsMenu_iOS(reader: epubReader)
+                        EpubTypographyMenu_iOS(reader: epubReader)
                     }
-                    Button {
-                        appStore.setZoom(1.0)
-                        appStore.zoomToHandler?(1.0)
-                    } label: {
-                        Text("\(Int((appStore.zoom * 100).rounded()))%")
-                            .font(.system(size: 14, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(palette.foreground)
-                            .frame(minWidth: 52, minHeight: 44)
-                            .contentShape(Rectangle())
-                    }
-                    // Label-width pill (`width: nil`): this slot is 52-72pt wide
-                    // depending on how many digits the zoom has, so a fixed 40pt
-                    // capsule would sit visibly narrower than its own text.
-                    .buttonStyle(ToolbarPressStyle(width: nil))
-                    .accessibilityLabel("Reset zoom to 100%")
-                    GlassToolButton(system: "plus.magnifyingglass", label: "Zoom in") {
-                        appStore.zoomIn()
+                } else if !isEpub {
+                    GlassToolPod(label: "Zoom controls") {
+                        GlassToolButton(system: "minus.magnifyingglass", label: "Zoom out") {
+                            appStore.zoomOut()
+                        }
+                        Button {
+                            appStore.setZoom(1.0)
+                            appStore.zoomToHandler?(1.0)
+                        } label: {
+                            Text("\(Int((appStore.zoom * 100).rounded()))%")
+                                .font(.system(size: 14, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(palette.foreground)
+                                .frame(minWidth: 52, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        // Label-width pill (`width: nil`): this slot is 52-72pt wide
+                        // depending on how many digits the zoom has, so a fixed 40pt
+                        // capsule would sit visibly narrower than its own text.
+                        .buttonStyle(ToolbarPressStyle(width: nil))
+                        .accessibilityLabel("Reset zoom to 100%")
+                        GlassToolButton(system: "plus.magnifyingglass", label: "Zoom in") {
+                            appStore.zoomIn()
+                        }
                     }
                 }
             }
@@ -160,28 +173,42 @@ struct PdfToolbar_iOS: View {
             Spacer(minLength: 4)
 
             if showActionsPod {
-                GlassToolPod(label: "Annotation tools") {
+                GlassToolPod(label: isEpub ? "Reader tools" : "Annotation tools") {
                     GlassToolButton(system: "magnifyingglass", label: "Find") {
                         appStore.findVisible ? appStore.hideFind() : appStore.showFind()
                     }
-                    GlassToolButton(
-                        system: "note.text", label: "Sticky note tool",
-                        active: appStore.mode == .note
-                    ) {
-                        ink.isActive = false
-                        appStore.setMode(appStore.mode == .note ? .view : .note)
-                    }
-                    GlassToolButton(
-                        system: "pencil.tip.crop.circle", label: "Apple Pencil ink",
-                        active: ink.isActive && ink.toolState.tool != .textHighlight
-                    ) {
-                        togglePencilTool(.pen)
-                    }
-                    GlassToolButton(
-                        system: "character.cursor.ibeam", label: "Highlight text with Apple Pencil",
-                        active: ink.isActive && ink.toolState.tool == .textHighlight
-                    ) {
-                        togglePencilTool(.textHighlight)
+                    if isEpub {
+                        if let epubReader {
+                            GlassToolButton(
+                                system: "character.cursor.ibeam", label: "Pencil text highlighting",
+                                active: epubReader.pencilHighlighting
+                            ) {
+                                epubReader.pencilHighlighting.toggle()
+                            }
+                            GlassToolButton(system: "pencil.tip.crop.circle", label: "Passage handwriting") {
+                                epubReader.handwriting.listPresented = true
+                            }
+                        }
+                    } else {
+                        GlassToolButton(
+                            system: "note.text", label: "Sticky note tool",
+                            active: appStore.mode == .note
+                        ) {
+                            ink.isActive = false
+                            appStore.setMode(appStore.mode == .note ? .view : .note)
+                        }
+                        GlassToolButton(
+                            system: "pencil.tip.crop.circle", label: "Apple Pencil ink",
+                            active: ink.isActive && ink.toolState.tool != .textHighlight
+                        ) {
+                            togglePencilTool(.pen)
+                        }
+                        GlassToolButton(
+                            system: "character.cursor.ibeam", label: "Highlight text with Apple Pencil",
+                            active: ink.isActive && ink.toolState.tool == .textHighlight
+                        ) {
+                            togglePencilTool(.textHighlight)
+                        }
                     }
                     GlassToolButton(
                         system: isBookmarked ? "bookmark.fill" : "bookmark",
@@ -211,13 +238,13 @@ struct PdfToolbar_iOS: View {
         } action: { width in
             toolbarWidth = width
         }
-        .alert("Go to page", isPresented: $showPageJump) {
-            TextField("Page", text: $pageFieldText)
+        .alert(isEpub ? "Go to chapter" : "Go to page", isPresented: $showPageJump) {
+            TextField(isEpub ? "Chapter" : "Page", text: $pageFieldText)
                 .keyboardType(.numberPad)
             Button("Go", action: commitPageField)
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Enter a page number (1–\(appStore.numPages)).")
+            Text("Enter a \(isEpub ? "chapter" : "page") number (1–\(appStore.numPages)).")
         }
         .alert("Export Failed", isPresented: $exportActions.showExportError) {
             Button("OK", role: .cancel) { }
@@ -274,7 +301,8 @@ struct PdfToolbar_iOS: View {
         // Label-width pill: four-digit page counts widen this slot well past
         // the 40pt icon pill.
         .buttonStyle(ToolbarPressStyle(width: nil))
-        .accessibilityLabel("Page \(appStore.currentPage) of \(appStore.numPages). Tap to jump.")
+        .accessibilityLabel(
+            "\(isEpub ? "Chapter" : "Page") \(appStore.currentPage) of \(appStore.numPages). Tap to jump.")
     }
 
     private func togglePencilTool(_ tool: InkTool) {
@@ -304,34 +332,54 @@ struct PdfToolbar_iOS: View {
             .accessibilityIdentifier("toolbar.help")
             Divider()
             // When the pane is too narrow to show the actions pod, its controls
-            // live here so Find / Note / Ink / Bookmark stay reachable.
+            // live here so Find / reader tools / Bookmark stay reachable.
             if !showActionsPod {
                 Button {
                     appStore.findVisible ? appStore.hideFind() : appStore.showFind()
                 } label: { Label("Find", systemImage: "magnifyingglass") }
-                Button {
-                    ink.isActive = false
-                    appStore.setMode(appStore.mode == .note ? .view : .note)
-                } label: {
-                    Label(
-                        appStore.mode == .note ? "Exit Sticky Note Tool" : "Sticky Note",
-                        systemImage: "note.text")
-                }
-                Button {
-                    togglePencilTool(.pen)
-                } label: {
-                    Label(
-                        ink.isActive && ink.toolState.tool != .textHighlight
-                            ? "Exit Apple Pencil Ink" : "Apple Pencil Ink",
-                        systemImage: "pencil.tip.crop.circle")
-                }
-                Button {
-                    togglePencilTool(.textHighlight)
-                } label: {
-                    Label(
-                        ink.isActive && ink.toolState.tool == .textHighlight
-                            ? "Exit Apple Pencil Text Highlighting" : "Highlight Text with Apple Pencil",
-                        systemImage: "character.cursor.ibeam")
+                if isEpub {
+                    if let epubReader {
+                        Button {
+                            epubReader.pencilHighlighting.toggle()
+                        } label: {
+                            Label(
+                                epubReader.pencilHighlighting
+                                    ? "Stop Pencil Text Highlighting" : "Pencil Text Highlighting",
+                                systemImage: "character.cursor.ibeam")
+                        }
+                        Button {
+                            epubReader.handwriting.listPresented = true
+                        } label: {
+                            Label(
+                                "Passage Handwriting (\(epubReader.handwriting.notes.count))",
+                                systemImage: "pencil.tip.crop.circle")
+                        }
+                    }
+                } else {
+                    Button {
+                        ink.isActive = false
+                        appStore.setMode(appStore.mode == .note ? .view : .note)
+                    } label: {
+                        Label(
+                            appStore.mode == .note ? "Exit Sticky Note Tool" : "Sticky Note",
+                            systemImage: "note.text")
+                    }
+                    Button {
+                        togglePencilTool(.pen)
+                    } label: {
+                        Label(
+                            ink.isActive && ink.toolState.tool != .textHighlight
+                                ? "Exit Apple Pencil Ink" : "Apple Pencil Ink",
+                            systemImage: "pencil.tip.crop.circle")
+                    }
+                    Button {
+                        togglePencilTool(.textHighlight)
+                    } label: {
+                        Label(
+                            ink.isActive && ink.toolState.tool == .textHighlight
+                                ? "Exit Apple Pencil Text Highlighting" : "Highlight Text with Apple Pencil",
+                            systemImage: "character.cursor.ibeam")
+                    }
                 }
                 Button {
                     Task { await annotationStore.toggleBookmark() }
@@ -342,7 +390,30 @@ struct PdfToolbar_iOS: View {
                 }
                 Divider()
             }
-            if !isWeb {
+            if isEpub, let epubReader {
+                Menu {
+                    ForEach(HIGHLIGHT_COLORS, id: \.value) { color in
+                        Button {
+                            epubReader.pencilHighlightColor = color.value
+                            epubReader.pencilHighlighting = true
+                        } label: {
+                            Label(
+                                color.name,
+                                systemImage: color.value == epubReader.pencilHighlightColor ? "checkmark" : "circle")
+                        }
+                    }
+                } label: {
+                    Label("Pencil Highlight Color", systemImage: "highlighter")
+                }
+                Button {
+                    guard let anchor = epubReader.selectedAnchor else { return }
+                    epubReader.run { await epubReader.handwriting.create(anchor: anchor) }
+                } label: {
+                    Label("Handwrite at Selected Passage", systemImage: "pencil.tip.crop.circle.badge.plus")
+                }
+                .disabled(epubReader.selectedAnchor == nil || epubReader.handwriting.isLoading)
+            }
+            if !isWeb && !isEpub {
                 Button {
                     if let id = appStore.activeTabId {
                         Task { try? await appStore.sessions.saveFile(sessionId: id) }
@@ -375,14 +446,18 @@ struct PdfToolbar_iOS: View {
             // Mac's "Export Vellum Bundle with Notes…" — it reads better in a
             // compact iPad menu — but the accessibility identifier is identical
             // so shared automation matches.
-            if appStore.document != nil {
+            if appStore.document != nil && !isEpub {
                 Button { showExportBundle = true } label: {
                     Label("Export with Notes…", systemImage: "arrow.up.doc")
                 }
                 .disabled(exportActions.exportingBundle)
                 .accessibilityIdentifier("toolbar.exportWithNotes")
             }
-            if !showZoomPod {
+            if !showZoomPod, isEpub, let epubReader {
+                Divider()
+                EpubContentsMenu_iOS(reader: epubReader)
+                EpubTypographyMenu_iOS(reader: epubReader)
+            } else if !showZoomPod, !isEpub {
                 Divider()
                 Button { appStore.zoomIn() } label: {
                     Label("Zoom In", systemImage: "plus.magnifyingglass")
@@ -494,6 +569,103 @@ struct ExportBundleSheet_iOS: View {
             }
         }
         .presentationDetents([.medium])
+    }
+}
+
+private struct EpubContentsMenu_iOS: View {
+    let reader: EpubReaderController
+    @Environment(\.palette) private var palette
+
+    private var publication: EpubPublication? { reader.session?.publication }
+
+    var body: some View {
+        if let publication {
+            Menu {
+                if publication.toc.isEmpty {
+                    ForEach(publication.spine.indices, id: \.self) { index in
+                        chapterButton("Chapter \(index + 1)", target: index, fragment: nil)
+                    }
+                } else {
+                    tocItems(publication.toc, publication: publication)
+                }
+            } label: {
+                menuLabel("Contents", system: "list.bullet")
+            }
+            .buttonStyle(ToolbarPressStyle())
+            .accessibilityIdentifier("epub.contents")
+        }
+    }
+
+    private func tocItems(_ entries: [EpubPublication.TocEntry], publication: EpubPublication) -> AnyView {
+        AnyView(ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+            let target = entry.path.flatMap { publication.spineIndex(path: $0) }
+            if entry.children.isEmpty {
+                chapterButton(entry.title, target: target, fragment: entry.fragment)
+            } else {
+                Menu(entry.title) {
+                    if let target {
+                        chapterButton(entry.title, target: target, fragment: entry.fragment)
+                        Divider()
+                    }
+                    tocItems(entry.children, publication: publication)
+                }
+            }
+        })
+    }
+
+    private func chapterButton(_ title: String, target: Int?, fragment: String?) -> some View {
+        Button {
+            if let target { reader.go(chapter: target, fragment: fragment) }
+        } label: {
+            HStack {
+                Text(title)
+                if target == reader.location?.chapter {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+        .disabled(target == nil)
+    }
+
+    private func menuLabel(_ title: String, system: String) -> some View {
+        Label(title, systemImage: system)
+            .labelStyle(.iconOnly)
+            .font(.system(size: 18, weight: .medium))
+            .foregroundStyle(palette.foreground)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+    }
+}
+
+private struct EpubTypographyMenu_iOS: View {
+    let reader: EpubReaderController
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        Menu {
+            Text("Font size")
+            ForEach([12.0, 14, 16, 18, 20, 24, 28, 32, 36], id: \.self) { size in
+                Button("\(Int(size)) pt\(reader.settings.fontSize == size ? " ✓" : "")") {
+                    reader.changeSettings(fontSize: size, lineSpacing: reader.settings.lineSpacing)
+                }
+            }
+            Divider()
+            Text("Line spacing")
+            ForEach([1.1, 1.3, 1.6, 1.9, 2.1, 2.4], id: \.self) { spacing in
+                Button("\(spacing.formatted())\(reader.settings.lineSpacing == spacing ? " ✓" : "")") {
+                    reader.changeSettings(fontSize: reader.settings.fontSize, lineSpacing: spacing)
+                }
+            }
+        } label: {
+            Label("Typography", systemImage: "textformat.size")
+                .labelStyle(.iconOnly)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(palette.foreground)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(ToolbarPressStyle())
+        .accessibilityIdentifier("epub.settings")
     }
 }
 

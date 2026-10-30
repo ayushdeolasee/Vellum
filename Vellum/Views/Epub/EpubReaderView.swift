@@ -18,6 +18,7 @@ struct EpubReaderView: View {
     @Environment(AnnotationStore.self) private var annotations
     @Environment(ScratchpadStore.self) private var scratchpad
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.palette) private var palette
     @State private var reader = EpubReaderController()
 
     var body: some View {
@@ -25,18 +26,8 @@ struct EpubReaderView: View {
             if let session = app.sessions.documentSession(sessionId: tabId) as? EpubDocumentSession {
                 VStack(spacing: 0) {
                     if let location = reader.location {
-                        HStack(spacing: 0) {
-                            EpubReaderBar(publication: session.publication, chapter: location.chapter,
-                                go: { reader.go(chapter: $0, fragment: $1) })
-                            #if os(iOS)
-                            EpubReaderTools_iOS(reader: reader)
-                            #endif
-                            settingsMenu.padding(.trailing, 12)
-                        }
-                        .disabled(!isActive)
-                        Divider()
                         EpubReaderSurface(reader: reader, session: session, location: location,
-                            annotations: annotations.annotations, dark: colorScheme == .dark,
+                            annotations: annotations.annotations, dark: colorScheme == .dark, palette: palette,
                             handwritingNotes: reader.handwritingNotes, pencilHighlighting: reader.pencilHighlighting)
                         if let anchor = reader.selectedAnchor, reader.isCurrent {
                             SelectionPopover(
@@ -55,12 +46,23 @@ struct EpubReaderView: View {
                             .id(anchor)
                             .padding(8)
                         }
-                        if let notice = readerNotice {
-                            Text(notice).font(.caption).foregroundStyle(.secondary).padding(8)
-                        }
-                    } else { ProgressView() }
+                    } else {
+                        statusView(Text("Loading book…").foregroundStyle(palette.mutedForeground))
+                    }
                 }
-                .background(.background)
+                #if os(iOS)
+                .background { EpubReaderTools_iOS(reader: reader) }
+                #endif
+                .background(palette.well)
+                .overlay(alignment: .bottomTrailing) {
+                    if let notice = readerNotice {
+                        FloatingNotice(
+                            message: notice, progress: nil, isActive: false, accessibilityID: "epub.notice",
+                            dismiss: dismissReaderNotice
+                        )
+                        .padding(16)
+                    }
+                }
                 .onAppear {
                     reader.bind(app: app, ai: ai, annotations: annotations, scratchpad: scratchpad,
                         session: session, tabId: tabId)
@@ -74,33 +76,19 @@ struct EpubReaderView: View {
         .accessibilityIdentifier("epub.reader")
     }
 
-    private var settingsMenu: some View {
-        Menu {
-            Text("Font size")
-            ForEach([12.0, 14, 16, 18, 20, 24, 28, 32, 36], id: \.self) { size in
-                Button("\(Int(size)) pt\(reader.settings.fontSize == size ? " ✓" : "")") {
-                    reader.changeSettings(fontSize: size, lineSpacing: reader.settings.lineSpacing)
-                }
-            }
-            Divider()
-            Text("Line spacing")
-            ForEach([1.1, 1.3, 1.6, 1.9, 2.1, 2.4], id: \.self) { spacing in
-                Button("\(spacing.formatted())\(reader.settings.lineSpacing == spacing ? " ✓" : "")") {
-                    reader.changeSettings(fontSize: reader.settings.fontSize, lineSpacing: spacing)
-                }
-            }
-        } label: {
-            Image(systemName: "textformat.size")
-                #if os(iOS)
-                .frame(width: 44, height: 44).contentShape(Rectangle())
-                #endif
+    private func statusView(_ label: Text) -> some View {
+        ZStack {
+            palette.muted
+            label.font(.system(size: 14))
         }
-        #if os(macOS)
-        .menuStyle(.borderlessButton)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func dismissReaderNotice() {
+        reader.notice = nil
+        #if os(iOS)
+        reader.handwriting.notice = nil
         #endif
-        .fixedSize()
-        .help("Book typography")
-        .accessibilityIdentifier("epub.settings")
     }
 
     private func handwritingAction(for anchor: EpubTextAnchor) -> (() -> Void)? {
@@ -126,97 +114,6 @@ struct EpubReaderLocation: Equatable {
     var fragment: String? = nil
     var anchor: EpubTextAnchor? = nil
     var request = UUID()
-}
-
-private struct EpubReaderBar: View {
-    let publication: EpubPublication
-    let chapter: Int
-    let go: (Int, String?) -> Void
-
-    private var chapterTitle: String {
-        let path = publication.spine[chapter].path
-        return Self.title(for: path, in: publication.toc) ?? "Chapter \(chapter + 1)"
-    }
-
-    private static func title(for path: String, in entries: [EpubPublication.TocEntry]) -> String? {
-        for entry in entries {
-            if entry.path == path { return entry.title }
-            if let nested = title(for: path, in: entry.children) { return nested }
-        }
-        return nil
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Menu {
-                if publication.toc.isEmpty {
-                    ForEach(publication.spine.indices, id: \.self) { index in
-                        Button("Chapter \(index + 1)") { go(index, nil) }
-                    }
-                } else {
-                    tocItems(publication.toc)
-                }
-            } label: {
-                Label("Contents", systemImage: "list.bullet")
-            }
-            #if os(macOS)
-            .menuStyle(.borderlessButton)
-            #endif
-            .fixedSize()
-            .accessibilityIdentifier("epub.contents")
-
-            Spacer()
-            Text(chapterTitle)
-                .font(.callout.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Text("\(chapter + 1) of \(publication.spine.count)")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Spacer()
-
-            Button { go(chapter - 1, nil) } label: {
-                Image(systemName: "chevron.left")
-                    #if os(iOS)
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
-                    #endif
-            }
-                .disabled(chapter == 0)
-                .help("Previous chapter")
-                .accessibilityIdentifier("epub.previousChapter")
-            Button { go(chapter + 1, nil) } label: {
-                Image(systemName: "chevron.right")
-                    #if os(iOS)
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
-                    #endif
-            }
-                .disabled(chapter >= publication.spine.count - 1)
-                .help("Next chapter")
-                .accessibilityIdentifier("epub.nextChapter")
-        }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.bar)
-    }
-
-    private func tocItems(_ entries: [EpubPublication.TocEntry]) -> AnyView {
-        AnyView(ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-            let target = entry.path.flatMap { publication.spineIndex(path: $0) }
-            if entry.children.isEmpty {
-                Button(entry.title) { if let target { go(target, entry.fragment) } }
-                    .disabled(target == nil)
-            } else {
-                Menu(entry.title) {
-                    if let target {
-                        Button(entry.title) { go(target, entry.fragment) }
-                        Divider()
-                    }
-                    tocItems(entry.children)
-                }
-            }
-        })
-    }
 }
 
 #if os(macOS)

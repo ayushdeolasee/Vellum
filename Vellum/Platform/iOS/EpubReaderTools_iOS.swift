@@ -3,54 +3,31 @@ import SwiftUI
 
 struct EpubReaderTools_iOS: View {
     let reader: EpubReaderController
-    @Environment(AppStore.self) private var app
-    @State private var showNotes = false
     @State private var deleting: EpubHandwritingNote?
     private var ink: EpubHandwritingController_iOS { reader.handwriting }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Menu {
-                Button(reader.pencilHighlighting ? "Stop Pencil Highlighting" : "Pencil Text Highlighting") {
-                    reader.pencilHighlighting.toggle()
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+            .sheet(isPresented: Binding(get: { ink.listPresented || ink.isPresented }, set: { shown in
+                if !shown {
+                    ink.listPresented = false; ink.isPresented = false
+                    reader.run { _ = await ink.flushPendingInkAndWait() }
                 }
-                ForEach(HIGHLIGHT_COLORS, id: \.value) { color in
-                    Button(color.name) { reader.pencilHighlightColor = color.value; reader.pencilHighlighting = true }
-                }
-                Divider()
-                Button("Find in Book", systemImage: "magnifyingglass") { app.showFind() }
-                Button("Handwrite at Selected Passage", systemImage: "pencil.tip.crop.circle.badge.plus") {
-                    guard let anchor = reader.selectedAnchor else { return }
-                    reader.run { await ink.create(anchor: anchor) }
-                }
-                .disabled(reader.selectedAnchor == nil || ink.isLoading)
-                Button("Handwriting (\(ink.notes.count))", systemImage: "note.text") { showNotes = true }
-                Button("Annotations", systemImage: "sidebar.right") { app.workspace?.revealSidebarTab(.annotations) }
-            } label: {
-                Image(systemName: reader.pencilHighlighting ? "highlighter" : "pencil.tip")
-                    .foregroundStyle(reader.pencilHighlighting ? Color.accentColor : Color.primary)
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
-            }
-            .accessibilityLabel("Pencil and passage handwriting")
-            .accessibilityIdentifier("epub.pencil.tools")
-        }
-        .sheet(isPresented: Binding(get: { showNotes || ink.isPresented }, set: { shown in
-            if !shown {
-                showNotes = false; ink.isPresented = false
-                reader.run { _ = await ink.flushPendingInkAndWait() }
-            }
-        })) {
-            if ink.isPresented {
-                EpubHandwritingSheet_iOS(ink: ink) {
-                    reader.run {
-                        if await ink.flushPendingInkAndWait() { ink.isPresented = false; showNotes = false }
+            })) {
+                if ink.isPresented {
+                    EpubHandwritingSheet_iOS(ink: ink) {
+                        reader.run {
+                            if await ink.flushPendingInkAndWait() { ink.isPresented = false; ink.listPresented = false }
+                        }
                     }
+                } else {
+                    notesList
                 }
-            } else {
-                notesList
             }
-        }
-        .onChange(of: reader.isCurrent) { _, current in if !current { showNotes = false } }
+            .onChange(of: reader.isCurrent) { _, current in if !current { ink.listPresented = false } }
     }
 
     private var notesList: some View {
@@ -74,7 +51,7 @@ struct EpubReaderTools_iOS: View {
                         HStack {
                             Button("Go to Passage") {
                                 guard let chapter = reader.session?.publication.spineIndex(path: note.anchor.chapterHref) else { return }
-                                showNotes = false
+                                ink.listPresented = false
                                 reader.go(chapter: chapter, anchor: note.anchor)
                             }
                             .disabled(ink.unresolved.contains(note.id))
@@ -92,7 +69,7 @@ struct EpubReaderTools_iOS: View {
                 }
             }
             .navigationTitle("Handwriting")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showNotes = false } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { ink.listPresented = false } } }
             .confirmationDialog("Delete this handwritten note?", isPresented: Binding(
                 get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("Delete Note", role: .destructive) {

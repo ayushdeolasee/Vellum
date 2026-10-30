@@ -388,7 +388,7 @@ struct EpubReaderIntegrationTests {
     }
 
     private func configure(font: Double = 18, spacing: Double = 1.6) -> String {
-        "window.__vellumEpub.configure({token:'test',href:'\(href)',active:true,dark:false,settings:{fontSize:\(font),lineSpacing:\(spacing)}})"
+        "window.__vellumEpub.configure({token:'test',href:'\(href)',active:true,dark:false,settings:{fontSize:\(font),lineSpacing:\(spacing)},colors:{well:'rgb(245, 245, 245)',surface:'rgb(255, 255, 255)',foreground:'rgb(30, 30, 30)',primary:'rgb(0, 90, 200)',border:'rgb(220, 220, 220)'}})"
     }
 
     private func js(_ view: WKWebView, _ code: String) async throws -> Any? {

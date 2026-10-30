@@ -72,6 +72,7 @@ final class EpubReaderController {
         handwriting.readerActive = true
         #endif
         if !registeredAI { registeredAI = ai?.registerEpubSession(session, binding: binding) == true }
+        app.activeEpubReader = self
         app.epubHandlerOwner = binding
         app.epubHandlerToken = handlerToken
         app.scrollToPageHandler = { [weak self] page in self?.go(chapter: page - 1) }
@@ -108,12 +109,14 @@ final class EpubReaderController {
         #if os(iOS)
         handwriting.readerActive = false
         handwriting.isPresented = false
+        handwriting.listPresented = false
         #endif
         if selectionNoteDraft == nil { selection = nil }
         searchGeneration = UUID(); tasks.values.forEach { $0.cancel() }
         if let binding {
             if registeredAI { ai?.unregisterEpubSession(binding: binding); registeredAI = false }
             if app?.epubHandlerOwner == binding, app?.epubHandlerToken == handlerToken {
+                app?.activeEpubReader = nil
                 app?.epubHandlerOwner = nil
                 app?.epubHandlerToken = nil
                 app?.scrollToPageHandler = nil; app?.scrollToEpubAnchorHandler = nil

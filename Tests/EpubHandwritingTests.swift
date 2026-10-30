@@ -45,6 +45,60 @@ struct EpubHandwritingTests {
         return try #require(text.anchor(in: NSRange(location: 0, length: min(4, text.utf16Count))))
     }
 
+    @Test("Active EPUB reader ownership cannot be cleared by a stale reader")
+    func activeReaderOwnership() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("epub-reader-owner-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let oldRoot = DocumentDataStore.rootDirectoryOverride
+        let oldBooks = EpubLibrary.directoryOverride
+        let oldWeb = WebLibrary.storeDirOverride
+        DocumentDataStore.rootDirectoryOverride = root.appendingPathComponent("documents")
+        EpubLibrary.directoryOverride = root.appendingPathComponent("Books")
+        WebLibrary.storeDirOverride = root.appendingPathComponent("web")
+        defer {
+            DocumentDataStore.rootDirectoryOverride = oldRoot
+            EpubLibrary.directoryOverride = oldBooks
+            WebLibrary.storeDirOverride = oldWeb
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let file = try EpubFixture.epub2().write(to: root.appendingPathComponent("book.epub"))
+        let manager = DocumentSessionManager()
+        let positions = DocumentPositionService(storage: InMemoryPositionStorage())
+        let workspace = WorkspaceStore(sessions: manager, positions: positions)
+        let app = workspace.focusedPane.app
+        let ai = AiStore(settings: AiSettings())
+        ai.app = app
+        let annotations = AnnotationStore(app: app)
+        let scratchpad = ScratchpadStore()
+        await app.openFile(path: file.path)
+        let binding = try #require(app.activeDocumentBinding)
+        let session = try #require(manager.documentSession(sessionId: binding.tabId) as? EpubDocumentSession)
+
+        let reader = EpubReaderController()
+        reader.bind(app: app, ai: ai, annotations: annotations, scratchpad: scratchpad,
+            session: session, tabId: binding.tabId)
+        reader.activate(true)
+        #expect(app.activeEpubReader === reader)
+        reader.deactivate()
+        #expect(app.activeEpubReader == nil)
+
+        reader.activate(true)
+        let replacement = EpubReaderController()
+        replacement.bind(app: app, ai: ai, annotations: annotations, scratchpad: scratchpad,
+            session: session, tabId: binding.tabId)
+        replacement.activate(true)
+        #expect(app.activeEpubReader === replacement)
+        reader.deactivate()
+        #expect(app.activeEpubReader === replacement)
+
+        replacement.deactivate()
+        #expect(app.activeEpubReader == nil)
+        await app.closeFile()
+        await app.awaitPendingTabTeardowns()
+        await positions.flush()
+    }
+
     @Test("Drawing and fixed sheet survive a moved original without changing archive bytes")
     func roundTripAndIdentity() async throws {
         try await environment { first, second, root in

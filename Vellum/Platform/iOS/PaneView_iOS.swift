@@ -147,7 +147,7 @@ struct PaneView_iOS: View {
             // The chrome stays OUTSIDE the per-tab ZStack: the tab strip,
             // toolbar and find bar are pane-scoped and read the pane's active
             // projection. Only the viewer is multiplexed.
-            reader(ink: activeInkHost ?? InkController_iOS())
+        reader(ink: activeInkHost ?? InkController_iOS())
         }
     }
 
@@ -158,9 +158,7 @@ struct PaneView_iOS: View {
     @ViewBuilder
     private func reader(ink: any InkPaletteHost) -> some View {
             VStack(spacing: 0) {
-                if app.document?.kind != .epub {
-                    PdfToolbar_iOS(ink: ink)
-                }
+                PdfToolbar_iOS(ink: ink)
 
                 if app.findVisible {
                     FindBar()

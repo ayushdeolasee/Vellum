@@ -361,6 +361,7 @@ final class AppStore {
     var scrollToPageHandler: ((Int) -> Void)?
     var scrollToEpubAnchorHandler: ((EpubTextAnchor?, Int) -> Void)?
     var referenceEpubAnnotationHandler: ((Annotation) -> Void)?
+    weak var activeEpubReader: EpubReaderController?
     var epubHandlerOwner: DocumentBinding?
     var epubHandlerToken: UUID?
     private struct EpubReaderOwner {

@@ -70,6 +70,7 @@ struct EpubReaderSurface: EpubViewRepresentable {
     let location: EpubReaderLocation
     let annotations: [Annotation]
     let dark: Bool
+    let palette: ThemePalette
     var handwritingNotes: [EpubHandwritingNote] = []
     var pencilHighlighting = false
 
@@ -215,6 +216,7 @@ struct EpubReaderSurface: EpubViewRepresentable {
         private struct Configuration: Encodable {
             let token: String; let href: String; let active: Bool
             let settings: EpubReaderSettings; let dark: Bool
+            let colors: EpubReaderCSSColors
         }
         private struct Passage: Encodable { let anchor: EpubTextAnchor?; let progression: Double; let fragment: String? }
         private struct Mark: Encodable {
@@ -225,7 +227,8 @@ struct EpubReaderSurface: EpubViewRepresentable {
             guard let parent, shown == parent.location.request,
                   loadGate.isLoaded(path: href, viewURL: view.url) else { return }
             let config = EpubReaderJavaScript.literal(Configuration(token: parent.location.request.uuidString, href: href,
-                active: parent.reader.isCurrent, settings: parent.reader.settings, dark: parent.dark))
+                active: parent.reader.isCurrent, settings: parent.reader.settings, dark: parent.dark,
+                colors: EpubReaderCSSColors(palette: parent.palette)))
             var script = ""
             if config != configurationJSON { configurationJSON = config; script += "window.__vellumEpub?.configure(\(config));" }
             var marks = parent.annotations.filter { $0.pageNumber == parent.location.chapter + 1 }
@@ -301,6 +304,46 @@ struct EpubReaderSurface: EpubViewRepresentable {
                     href: href, docId: resources.session.info.docId ?? "") else { return }
             parent.reader.receive(message)
         }
+    }
+}
+
+private struct EpubReaderCSSColors: Encodable {
+    let well: String
+    let surface: String
+    let foreground: String
+    let primary: String
+    let border: String
+
+    init(palette: ThemePalette) {
+        well = palette.well.cssRGB
+        surface = palette.surface.cssRGB
+        foreground = palette.foreground.cssRGB
+        primary = palette.primary.cssRGB
+        border = palette.border.cssRGB
+    }
+}
+
+private extension Color {
+    var cssRGB: String {
+        #if os(macOS)
+        let color = NSColor(self).usingColorSpace(.sRGB) ?? .black
+        return String(
+            format: "rgb(%d, %d, %d)",
+            Int((color.redComponent * 255).rounded()),
+            Int((color.greenComponent * 255).rounded()),
+            Int((color.blueComponent * 255).rounded()))
+        #else
+        let color = UIColor(self)
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: nil)
+        return String(
+            format: "rgb(%d, %d, %d)",
+            Int((red * 255).rounded()),
+            Int((green * 255).rounded()),
+            Int((blue * 255).rounded()))
+        #endif
     }
 }
 #endif

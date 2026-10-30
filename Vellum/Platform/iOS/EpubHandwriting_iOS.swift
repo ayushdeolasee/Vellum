@@ -14,6 +14,7 @@ final class EpubHandwritingController_iOS: NSObject, InkPaletteHost, PKCanvasVie
     private(set) var isLoading = false
     var isActive = true
     var isPresented = false
+    var listPresented = false
     var readerActive = true
     var notice: String?
     private var session: EpubDocumentSession?

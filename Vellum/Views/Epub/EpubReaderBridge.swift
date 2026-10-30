@@ -81,12 +81,15 @@ enum EpubReaderJavaScript {
       let annotations = [], overlay = null;
       const element = name => document.createElementNS('http://www.w3.org/1999/xhtml', name);
       const style = element('style');
-      style.textContent = `html { -webkit-text-size-adjust:100%; }
-        body { max-width:44em; margin:0 auto !important; padding:2.5em 2em 5em !important; }
+      style.textContent = `html { -webkit-text-size-adjust:100%; background:var(--vellum-epub-well) !important;
+          color:var(--vellum-epub-foreground) !important; }
+        body { box-sizing:border-box; max-width:44em; min-height:100vh; margin:0 auto !important;
+          padding:2.5em 2em 5em !important; background:var(--vellum-epub-surface) !important;
+          color:var(--vellum-epub-foreground) !important; border:1px solid var(--vellum-epub-border);
+          box-shadow:0 1px 8px rgb(0 0 0 / 10%); }
+        a { color:var(--vellum-epub-primary) !important; }
         img,svg,video { max-width:100%; height:auto; } pre { white-space:pre-wrap; }
-        html[data-vellum-dark] { background:#1c1c1e !important; color:#eee !important; color-scheme:dark; }
-        html[data-vellum-dark] body { background:transparent !important; color:#eee !important; }
-        html[data-vellum-dark] a { color:#9bc6ff; }`;
+        html[data-vellum-dark] { color-scheme:dark; }`;
       (document.head || document.documentElement).appendChild(style);
       const post = (type, extra = {}) => {
         if (!config || !config.active) return;
@@ -268,6 +271,11 @@ enum EpubReaderJavaScript {
           const saved=config && snapshot(); config=c;
           document.documentElement.toggleAttribute('data-vellum-dark',c.dark);
           document.documentElement.style.colorScheme=c.dark?'dark':'light';
+          document.documentElement.style.setProperty('--vellum-epub-well',c.colors.well);
+          document.documentElement.style.setProperty('--vellum-epub-surface',c.colors.surface);
+          document.documentElement.style.setProperty('--vellum-epub-foreground',c.colors.foreground);
+          document.documentElement.style.setProperty('--vellum-epub-primary',c.colors.primary);
+          document.documentElement.style.setProperty('--vellum-epub-border',c.colors.border);
           document.body.style.setProperty('font-size',c.settings.fontSize+'px','important');
           document.body.style.setProperty('line-height',String(c.settings.lineSpacing),'important');
           // Inherited controls retain publisher headings, emphasis, images and layout.
