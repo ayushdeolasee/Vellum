@@ -1,7 +1,17 @@
+#if os(macOS) || os(iOS)
 #if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import SwiftUI
 import WebKit
+
+#if os(macOS)
+typealias EpubViewRepresentable = NSViewRepresentable
+#else
+typealias EpubViewRepresentable = UIViewRepresentable
+#endif
 
 /// A navigation is allowed to finish only for the document load that requested
 /// it; a chapter href alone cannot distinguish successive visits to one chapter.
@@ -54,16 +64,30 @@ enum EpubReaderLinkRouter {
     }
 }
 
-struct EpubReaderSurface: NSViewRepresentable {
+struct EpubReaderSurface: EpubViewRepresentable {
     let reader: EpubReaderController
     let session: EpubDocumentSession
     let location: EpubReaderLocation
+    let settings: EpubReaderSettings
     let annotations: [Annotation]
     let dark: Bool
+    let palette: ThemePalette
+    var handwritingNotes: [EpubHandwritingNote] = []
+    var pencilHighlighting = false
 
     func makeCoordinator() -> Coordinator { Coordinator(session: session) }
 
-    func makeNSView(context: Context) -> EpubChapterWebView {
+    #if os(macOS)
+    func makeNSView(context: Context) -> EpubChapterWebView { makeView(context: context) }
+    func updateNSView(_ view: EpubChapterWebView, context: Context) { updateView(view, context: context) }
+    static func dismantleNSView(_ view: EpubChapterWebView, coordinator: Coordinator) { dismantleView(view, coordinator: coordinator) }
+    #else
+    func makeUIView(context: Context) -> EpubChapterWebView { makeView(context: context) }
+    func updateUIView(_ view: EpubChapterWebView, context: Context) { updateView(view, context: context) }
+    static func dismantleUIView(_ view: EpubChapterWebView, coordinator: Coordinator) { dismantleView(view, coordinator: coordinator) }
+    #endif
+
+    private func makeView(context: Context) -> EpubChapterWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
@@ -73,16 +97,35 @@ struct EpubReaderSurface: NSViewRepresentable {
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: "epubReader")
         let view = EpubChapterWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
+        #if os(macOS)
         view.setAccessibilityIdentifier("epub.content")
+        #else
+        view.accessibilityIdentifier = "epub.content"
+        #endif
         reader.webView = view
         let resources = context.coordinator.resources
         reader.drainResources = { await resources.drain() }
+        #if os(iOS)
+        let pencil = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pencilDragged(_:)))
+        pencil.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+        pencil.maximumNumberOfTouches = 1
+        pencil.isEnabled = false
+        view.addGestureRecognizer(pencil)
+        context.coordinator.pencil = pencil
+        context.coordinator.scrollTouchTypes = view.scrollView.panGestureRecognizer.allowedTouchTypes
+        #endif
         return view
     }
 
-    func updateNSView(_ view: EpubChapterWebView, context: Context) {
+    private func updateView(_ view: EpubChapterWebView, context: Context) {
         context.coordinator.parent = self
         view.readerActive = reader.isCurrent
+        #if os(iOS)
+        let highlighting = pencilHighlighting && reader.isCurrent
+        context.coordinator.pencil?.isEnabled = highlighting
+        view.scrollView.panGestureRecognizer.allowedTouchTypes = highlighting
+            ? [NSNumber(value: UITouch.TouchType.direct.rawValue)] : context.coordinator.scrollTouchTypes
+        #endif
         view.onChapterStep = { step in
             guard reader.isCurrent else { return }
             reader.go(chapter: location.chapter + step)
@@ -90,7 +133,7 @@ struct EpubReaderSurface: NSViewRepresentable {
         context.coordinator.show(in: view)
     }
 
-    static func dismantleNSView(_ view: EpubChapterWebView, coordinator: Coordinator) {
+    private static func dismantleView(_ view: EpubChapterWebView, coordinator: Coordinator) {
         view.readerActive = false; view.removeKeyMonitor(); view.onChapterStep = nil
         view.configuration.userContentController.removeAllScriptMessageHandlers()
         coordinator.invalidateLoad()
@@ -110,7 +153,37 @@ struct EpubReaderSurface: NSViewRepresentable {
         private var pending = false
         private var configurationJSON = ""
         private var annotationJSON = ""
-        var openExternalURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+        var openExternalURL: (URL) -> Void = {
+            #if os(macOS)
+            NSWorkspace.shared.open($0)
+            #else
+            UIApplication.shared.open($0)
+            #endif
+        }
+        #if os(iOS)
+        var pencil: UIPanGestureRecognizer?
+        var scrollTouchTypes: [NSNumber] = []
+
+        @objc func pencilDragged(_ gesture: UIPanGestureRecognizer) {
+            guard let parent, parent.reader.isCurrent, parent.reader.pencilHighlighting,
+                  parent.location.request == parent.reader.location?.request,
+                  let view = parent.reader.webView, view === gesture.view,
+                  loadGate.isLoaded(path: href, viewURL: view.url) else { return }
+            var point = gesture.location(in: view)
+            let phase: String
+            switch gesture.state {
+            case .began:
+                let translation = gesture.translation(in: view)
+                point.x -= translation.x; point.y -= translation.y
+                phase = "begin"
+            case .changed: phase = "move"
+            case .ended: phase = "end"
+            default: phase = "cancel"
+            }
+            view.evaluateJavaScript("window.__vellumEpub?.pencil('\(phase)',\(point.x),\(point.y));",
+                in: nil, in: .defaultClient) { _ in }
+        }
+        #endif
         init(session: EpubDocumentSession) { resources = EpubResourceSchemeHandler(session: session) }
 
         func invalidateLoad() {
@@ -144,22 +217,31 @@ struct EpubReaderSurface: NSViewRepresentable {
         private struct Configuration: Encodable {
             let token: String; let href: String; let active: Bool
             let settings: EpubReaderSettings; let dark: Bool
+            let colors: EpubReaderCSSColors
         }
         private struct Passage: Encodable { let anchor: EpubTextAnchor?; let progression: Double; let fragment: String? }
-        private struct Mark: Encodable { let id: String; let anchor: EpubTextAnchor; let color: String? }
+        private struct Mark: Encodable {
+            let id: String; let anchor: EpubTextAnchor; let color: String?; var handwriting = false
+        }
 
         private func synchronize(_ view: WKWebView) {
             guard let parent, shown == parent.location.request,
                   loadGate.isLoaded(path: href, viewURL: view.url) else { return }
             let config = EpubReaderJavaScript.literal(Configuration(token: parent.location.request.uuidString, href: href,
-                active: parent.reader.isCurrent, settings: parent.reader.settings, dark: parent.dark))
+                active: parent.reader.isCurrent, settings: parent.settings, dark: parent.dark,
+                colors: EpubReaderCSSColors(palette: parent.palette)))
             var script = ""
             if config != configurationJSON { configurationJSON = config; script += "window.__vellumEpub?.configure(\(config));" }
-            let marks = parent.annotations.filter { $0.pageNumber == parent.location.chapter + 1 }
+            var marks = parent.annotations.filter { $0.pageNumber == parent.location.chapter + 1 }
                 .prefix(500).compactMap { annotation -> Mark? in
                     guard let anchor = annotation.positionData?.epubAnchor else { return nil }
                     return Mark(id: annotation.id, anchor: anchor, color: annotation.color)
                 }
+            #if os(iOS)
+            marks += parent.handwritingNotes.filter { $0.anchor.chapterHref == href }.prefix(500).map {
+                Mark(id: "ink:" + $0.id, anchor: $0.anchor, color: nil, handwriting: true)
+            }
+            #endif
             let encodedMarks = EpubReaderJavaScript.literal(marks)
             if encodedMarks != annotationJSON { annotationJSON = encodedMarks; script += "window.__vellumEpub?.annotations(\(encodedMarks));" }
             if pending {
@@ -223,6 +305,46 @@ struct EpubReaderSurface: NSViewRepresentable {
                     href: href, docId: resources.session.info.docId ?? "") else { return }
             parent.reader.receive(message)
         }
+    }
+}
+
+private struct EpubReaderCSSColors: Encodable {
+    let well: String
+    let surface: String
+    let foreground: String
+    let primary: String
+    let border: String
+
+    init(palette: ThemePalette) {
+        well = palette.well.cssRGB
+        surface = palette.surface.cssRGB
+        foreground = palette.foreground.cssRGB
+        primary = palette.primary.cssRGB
+        border = palette.border.cssRGB
+    }
+}
+
+private extension Color {
+    var cssRGB: String {
+        #if os(macOS)
+        let color = NSColor(self).usingColorSpace(.sRGB) ?? .black
+        return String(
+            format: "rgb(%d, %d, %d)",
+            Int((color.redComponent * 255).rounded()),
+            Int((color.greenComponent * 255).rounded()),
+            Int((color.blueComponent * 255).rounded()))
+        #else
+        let color = UIColor(self)
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: nil)
+        return String(
+            format: "rgb(%d, %d, %d)",
+            Int((red * 255).rounded()),
+            Int((green * 255).rounded()),
+            Int((blue * 255).rounded()))
+        #endif
     }
 }
 #endif

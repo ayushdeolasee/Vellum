@@ -9,6 +9,7 @@ struct VellumToolbar: ToolbarContent {
     @Environment(AppStore.self) private var appStore
 
     private var isWeb: Bool { appStore.document?.kind == .web }
+    private var isEpub: Bool { appStore.document?.kind == .epub }
     private var hasDocument: Bool { appStore.document != nil }
 
     // Three stable regions, shared by PDF and web tabs so nothing familiar
@@ -46,6 +47,13 @@ struct VellumToolbar: ToolbarContent {
                     ZoomControls()
                 }
             }
+        } else if appStore.document?.kind == .epub, let reader = appStore.activeEpubReader {
+            ToolbarItemGroup(placement: .navigation) {
+                ControlGroup {
+                    EpubContentsMenu(reader: reader)
+                    EpubTypographyMenu(reader: reader)
+                }
+            }
         }
 
         // CENTER — quiet title/address, genuinely centered and not pretending
@@ -61,7 +69,7 @@ struct VellumToolbar: ToolbarContent {
         if hasDocument {
             ToolbarItemGroup {
                 BookmarkButton()
-                NoteToolToggle()
+                if !isEpub { NoteToolToggle() }
             }
             ToolbarSpacer(.fixed)
             ToolbarItem {
@@ -159,6 +167,7 @@ private struct WebHistoryButtons: View {
 private struct PageControls: View {
     @Environment(AppStore.self) private var appStore
 
+    private var isEpub: Bool { appStore.document?.kind == .epub }
     @State private var pageInput = "1"
     @FocusState private var fieldFocused: Bool
 
@@ -167,19 +176,23 @@ private struct PageControls: View {
             Button {
                 appStore.goToPage(appStore.currentPage - 1)
             } label: {
-                Label("Previous page", systemImage: "chevron.left")
+                Label(isEpub ? "Previous chapter" : "Previous page", systemImage: "chevron.left")
             }
             .disabled(appStore.currentPage <= 1)
-            .help("Previous page — or type a page number in the field")
+            .help(isEpub
+                ? "Previous chapter — or type a chapter number in the field"
+                : "Previous page — or type a page number in the field")
             .accessibilityIdentifier("toolbar.previousPage")
 
             Button {
                 appStore.goToPage(appStore.currentPage + 1)
             } label: {
-                Label("Next page", systemImage: "chevron.right")
+                Label(isEpub ? "Next chapter" : "Next page", systemImage: "chevron.right")
             }
             .disabled(appStore.currentPage >= appStore.numPages)
-            .help("Next page — or type a page number in the field")
+            .help(isEpub
+                ? "Next chapter — or type a chapter number in the field"
+                : "Next page — or type a page number in the field")
             .accessibilityIdentifier("toolbar.nextPage")
         }
 
@@ -196,7 +209,7 @@ private struct PageControls: View {
                     if !focused { commitPageInput() }
                 }
                 .frame(width: 44)
-                .accessibilityLabel("Page number")
+                .accessibilityLabel(isEpub ? "Chapter number" : "Page number")
                 .accessibilityIdentifier("toolbar.pageField")
             Text("/ \(appStore.numPages)")
                 .monospacedDigit()
@@ -221,6 +234,93 @@ private struct PageControls: View {
             return
         }
         appStore.goToPage(page)
+    }
+}
+
+private struct EpubContentsMenu: View {
+    let reader: EpubReaderController
+
+    private var publication: EpubPublication? { reader.session?.publication }
+
+    var body: some View {
+        if let publication {
+            Menu {
+                if publication.toc.isEmpty {
+                    ForEach(publication.spine.indices, id: \.self) { index in
+                        chapterButton("Chapter \(index + 1)", target: index, fragment: nil)
+                    }
+                } else {
+                    tocItems(publication.toc, publication: publication)
+                }
+            } label: {
+                Image(systemName: "list.bullet")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Table of contents")
+            .accessibilityLabel("Contents")
+            .accessibilityIdentifier("epub.contents")
+        }
+    }
+
+    private func tocItems(_ entries: [EpubPublication.TocEntry], publication: EpubPublication) -> AnyView {
+        AnyView(ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+            let target = entry.path.flatMap { publication.spineIndex(path: $0) }
+            if entry.children.isEmpty {
+                chapterButton(entry.title, target: target, fragment: entry.fragment)
+            } else {
+                Menu(entry.title) {
+                    if let target {
+                        chapterButton(entry.title, target: target, fragment: entry.fragment)
+                        Divider()
+                    }
+                    tocItems(entry.children, publication: publication)
+                }
+            }
+        })
+    }
+
+    private func chapterButton(_ title: String, target: Int?, fragment: String?) -> some View {
+        Button {
+            if let target { reader.go(chapter: target, fragment: fragment) }
+        } label: {
+            HStack {
+                Text(title)
+                if target == reader.location?.chapter {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+        .disabled(target == nil)
+    }
+}
+
+private struct EpubTypographyMenu: View {
+    let reader: EpubReaderController
+
+    var body: some View {
+        Menu {
+            Text("Font size")
+            ForEach([12.0, 14, 16, 18, 20, 24, 28, 32, 36], id: \.self) { size in
+                Button("\(Int(size)) pt\(reader.settings.fontSize == size ? " ✓" : "")") {
+                    reader.changeSettings(fontSize: size, lineSpacing: reader.settings.lineSpacing)
+                }
+            }
+            Divider()
+            Text("Line spacing")
+            ForEach([1.1, 1.3, 1.6, 1.9, 2.1, 2.4], id: \.self) { spacing in
+                Button("\(spacing.formatted())\(reader.settings.lineSpacing == spacing ? " ✓" : "")") {
+                    reader.changeSettings(fontSize: reader.settings.fontSize, lineSpacing: spacing)
+                }
+            }
+        } label: {
+            Image(systemName: "textformat.size")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Book typography")
+        .accessibilityLabel("Typography")
+        .accessibilityIdentifier("epub.settings")
     }
 }
 

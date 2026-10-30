@@ -42,6 +42,7 @@ struct PaneView_iOS: View {
     /// ink live on `LiveTabRuntime`, never on this disposable pane view.
     private var activeInkHost: (any InkPaletteHost)? {
         guard let tabId = app.activeTabId, let document = app.document else { return nil }
+        guard document.kind != .epub else { return nil }
         let runtime = workspace.liveTabRuntime(for: tabId)
         return document.kind == .web ? runtime.webInk : runtime.ink
     }
@@ -146,7 +147,7 @@ struct PaneView_iOS: View {
             // The chrome stays OUTSIDE the per-tab ZStack: the tab strip,
             // toolbar and find bar are pane-scoped and read the pane's active
             // projection. Only the viewer is multiplexed.
-            reader(ink: activeInkHost ?? InkController_iOS())
+        reader(ink: activeInkHost ?? InkController_iOS())
         }
     }
 
@@ -165,7 +166,7 @@ struct PaneView_iOS: View {
 
                 LiveTabStack_iOS(app: app)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea(edges: .bottom)
+                .ignoresSafeArea(app.document?.kind == .epub ? .container : .all, edges: .bottom)
                 .overlay(alignment: .bottomTrailing) { readLaterNotice }
             }
     }

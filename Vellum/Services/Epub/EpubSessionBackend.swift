@@ -90,6 +90,7 @@ final class EpubDocumentSession: DocumentSession {
     private var isClosed = false
     private var isClosing = false
     private let storage: EpubAnnotationStorage
+    private let handwriting: EpubHandwritingStorage
     private let textIndex: EpubTextIndex
     private struct Operation {
         let mutation: Bool
@@ -116,6 +117,7 @@ final class EpubDocumentSession: DocumentSession {
             docId: book.docId,
             titleIsUserDefined: titleOverride == nil ? nil : true)
         storage = EpubAnnotationStorage(document: info, coordinator: coordinator)
+        handwriting = EpubHandwritingStorage(document: info, coordinator: coordinator)
         textIndex = EpubTextIndex(book: book, limits: textLimits)
     }
 
@@ -227,6 +229,33 @@ final class EpubDocumentSession: DocumentSession {
     func search(query: String, limit: Int = 100) async throws -> EpubSearchResponse {
         let index = textIndex
         return try await perform { try await index.search(query: query, limit: limit) }
+    }
+
+    func handwritingNotes() async throws -> [EpubHandwritingNote] {
+        let handwriting = handwriting
+        return try await perform { try await handwriting.notes() }
+    }
+
+    /// Existing unresolved anchors remain editable; reattachment validates separately.
+    func saveHandwriting(_ note: EpubHandwritingNote) async throws {
+        let handwriting = handwriting
+        let index = textIndex
+        try await perform(mutation: true) {
+            let previous = try await handwriting.notes().first { $0.id == note.id }
+            var note = note
+            if previous?.anchor != note.anchor {
+                guard let canonical = try await index.resolve(note.anchor, validatingRange: true) else {
+                    throw EpubAnnotationError.invalidAnchor
+                }
+                note.anchor = canonical
+            }
+            try await handwriting.save(note)
+        }
+    }
+
+    func deleteHandwriting(id: String) async throws {
+        let handwriting = handwriting
+        try await perform(mutation: true) { try await handwriting.delete(id: id) }
     }
 
     private nonisolated static func validatedPosition(

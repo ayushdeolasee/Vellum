@@ -197,6 +197,7 @@ enum DocumentDataStore {
     }
 
     static let epubAnnotationsFilename = "epub-annotations.json"
+    static let epubHandwritingFilename = "epub-handwriting.json"
     private static let annotationLane = AnnotationLane()
 
     /// The complete read/modify/replace stays in one process-wide lane, including
@@ -206,17 +207,33 @@ enum DocumentDataStore {
         coordinator: StorageCoordinator?,
         _ mutate: @escaping @Sendable (Data?) throws -> (Data?, T)
     ) async throws -> T {
+        try await withEpubSidecar(document: document, coordinator: coordinator,
+            filename: epubAnnotationsFilename, mutate)
+    }
+
+    static func withEpubHandwriting<T: Sendable>(
+        document: DocumentInfo, coordinator: StorageCoordinator?,
+        _ mutate: @escaping @Sendable (Data?) throws -> (Data?, T)
+    ) async throws -> T {
+        try await withEpubSidecar(document: document, coordinator: coordinator,
+            filename: epubHandwritingFilename, mutate)
+    }
+
+    private static func withEpubSidecar<T: Sendable>(
+        document: DocumentInfo, coordinator: StorageCoordinator?, filename: String,
+        _ mutate: @escaping @Sendable (Data?) throws -> (Data?, T)
+    ) async throws -> T {
         try await annotationLane.run {
             let key = DocumentIdentity.storageKey(for: document)
             let operation: @Sendable (Access) async throws -> T = { access in
                 try Task.checkCancellation()
                 let original = try await readData(
-                    forKey: key, relativeName: epubAnnotationsFilename, access: access)
+                    forKey: key, relativeName: filename, access: access)
                 let (replacement, result) = try mutate(original)
                 if let replacement, replacement != original {
                     try Task.checkCancellation()
                     let directory = documentDir(forKey: key, root: access.documentsRoot)
-                    let destination = directory.appendingPathComponent(epubAnnotationsFilename)
+                    let destination = directory.appendingPathComponent(filename)
                     // Refuse unavailable active bytes even when a local fallback was read.
                     let active = try await access.store.read(destination)
                     guard active == nil || active == original else { throw LibraryFileError.retryable }
@@ -780,6 +797,7 @@ enum DocumentDataStore {
                 }()
                 var notes = (files["scratchpad.md"]?.byteSize ?? 0)
                     + (files[epubAnnotationsFilename]?.byteSize ?? 0)
+                    + (files[epubHandwritingFilename]?.byteSize ?? 0)
                 let activeAttachments = try await access.store.list(
                     directory.appendingPathComponent("attachments", isDirectory: true),
                     suffix: nil)
@@ -836,7 +854,8 @@ enum DocumentDataStore {
                 key: name,
                 meta: meta,
                 hasUserData: scratchpadExists(forKey: name) || conversationsExist(forKey: name)
-                    || fm.fileExists(atPath: readPath(forKey: name, relativeName: epubAnnotationsFilename).path)))
+                    || fm.fileExists(atPath: readPath(forKey: name, relativeName: epubAnnotationsFilename).path)
+                    || fm.fileExists(atPath: readPath(forKey: name, relativeName: epubHandwritingFilename).path)))
         }
         return out
     }
@@ -876,6 +895,7 @@ enum DocumentDataStore {
                     meta: meta,
                     hasUserData: fileNames.contains("scratchpad.md")
                         || fileNames.contains(epubAnnotationsFilename)
+                        || fileNames.contains(epubHandwritingFilename)
                         || fileNames.contains("conversations.json")))
             }
             return entries
@@ -886,6 +906,7 @@ enum DocumentDataStore {
     static func notesBytes(forKey key: String) -> Int64 {
         fileSize(scratchpadPath(forKey: key)) + directorySize(at: attachmentsDir(forKey: key))
             + fileSize(readPath(forKey: key, relativeName: epubAnnotationsFilename))
+            + fileSize(readPath(forKey: key, relativeName: epubHandwritingFilename))
     }
 
     // MARK: - Storage-pane deletes (delete-means-delete, §8)

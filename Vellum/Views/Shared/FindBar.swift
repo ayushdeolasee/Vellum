@@ -67,6 +67,8 @@ struct FindBar: View {
                 .onSubmit { app.findNext() }
                 .accessibilityLabel("Find in document")
                 #if os(iOS)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
                 .frame(minHeight: 44)
                 #endif
         }

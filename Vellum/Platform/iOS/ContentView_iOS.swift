@@ -102,7 +102,7 @@ struct ContentView_iOS: View {
                 isImporting = true
                 defer { isImporting = false }
                 let paths = await Task.detached(priority: .userInitiated) {
-                    DocumentImport.importPicked(urls)
+                    DocumentImport.importPicked(urls, supportsEpub: true)
                 }.value
                 guard !paths.isEmpty else { return }
                 await app.openFiles(paths: paths)
@@ -121,7 +121,7 @@ struct ContentView_iOS: View {
         }
         guard let path = ProcessInfo.processInfo.environment["VELLUM_AUTOOPEN_PDF"],
               FileManager.default.fileExists(atPath: path) else { return }
-        let paths = DocumentImport.importPicked([URL(fileURLWithPath: path)])
+        let paths = DocumentImport.importPicked([URL(fileURLWithPath: path)], supportsEpub: true)
         guard !paths.isEmpty else { return }
         await app.openFiles(paths: paths)
         await autoSplitForTesting()

@@ -361,14 +361,14 @@ final class AppStore {
     var scrollToPageHandler: ((Int) -> Void)?
     var scrollToEpubAnchorHandler: ((EpubTextAnchor?, Int) -> Void)?
     var referenceEpubAnnotationHandler: ((Annotation) -> Void)?
+    weak var activeEpubReader: EpubReaderController?
     var epubHandlerOwner: DocumentBinding?
     var epubHandlerToken: UUID?
-    #if os(macOS)
     private struct EpubReaderOwner {
         let binding: DocumentBinding
         let deactivate: () -> Void
-        let drain: () async -> Void
-        let close: () async -> Void
+        let drain: () async -> Bool
+        let close: () async -> Bool
     }
     @ObservationIgnored private var epubReaders: [String: EpubReaderOwner] = [:]
     @ObservationIgnored private var epubCitationTask: Task<Void, Never>?
@@ -377,7 +377,7 @@ final class AppStore {
     private var pendingEpubCitation: AiEpubCitation?
 
     func registerEpubReader(binding: DocumentBinding, deactivate: @escaping () -> Void,
-                            drain: @escaping () async -> Void, close: @escaping () async -> Void) {
+                            drain: @escaping () async -> Bool, close: @escaping () async -> Bool) {
         guard documentBinding(for: binding.tabId) == binding else { return }
         let previous = epubReaders[binding.tabId]
         epubReaders[binding.tabId] = EpubReaderOwner(binding: binding, deactivate: deactivate, drain: drain, close: close)
@@ -385,7 +385,7 @@ final class AppStore {
             previous.deactivate()
             // Re-mount/eviction retains the old owner until its cancelled tasks drain.
             if let document = tab(id: binding.tabId)?.document {
-                enqueueDocumentPersistence(document: document, generation: previous.binding.generation) { _ in await previous.close() }
+                teardowns.registerReleaseFlush(document: document) { await previous.close() }
             }
         }
     }
@@ -456,7 +456,6 @@ final class AppStore {
             }
         }
     }
-    #endif
     /// Registered by the web viewer: scroll to a text-anchored web position;
     /// returns whether the anchor was found (window.__scrollToWebPosition).
     var scrollToWebPositionHandler: ((PositionData, Int) -> Bool)?
@@ -2136,9 +2135,7 @@ final class AppStore {
     }
 
     private func applyActiveState(from tab: PdfTab) {
-        #if os(macOS)
         if activeTabId != tab.id, let activeTabId { epubReaders[activeTabId]?.deactivate() }
-        #endif
         findTruncated = false
         // Note-placement state travels with the tab. Find state does too now,
         // so the incoming tab's query is restored below rather than reset here.
@@ -2166,9 +2163,7 @@ final class AppStore {
     }
 
     private func applyEmptyActiveState() {
-        #if os(macOS)
         if let activeTabId { epubReaders[activeTabId]?.deactivate() }
-        #endif
         resetFindState()
         pendingNoteContent = nil
         // No tab on screen here, so this pane pins nothing.
@@ -2218,15 +2213,22 @@ final class AppStore {
     }
 
     func flushPendingPositionRecords() async {
-        #if os(macOS)
         await epubCitationTask?.value
         for task in cancelledEpubCitationTasks { await task.value }
         cancelledEpubCitationTasks.removeAll()
-        for owner in Array(epubReaders.values) { await owner.drain() }
-        #endif
+        _ = await flushEpubReaders()
         if let positionRecordTask {
             await positionRecordTask.value
         }
+    }
+
+    func flushEpubReaders() async -> Bool {
+        var succeeded = true
+        for owner in Array(epubReaders.values) {
+            let saved = await owner.drain()
+            succeeded = saved && succeeded
+        }
+        return succeeded
     }
 
     func containsOpenDocument(key: DocumentKey, excludingTabIds: Set<String> = []) -> Bool {
@@ -2249,10 +2251,8 @@ final class AppStore {
     }
 
     private func registerTeardown(for tab: PdfTab, markDocumentClosed: Bool) {
-        #if os(macOS)
         let epubReader = epubReaders.removeValue(forKey: tab.id)
         epubReader?.deactivate()
-        #endif
         sessions.invalidatePendingOpen(sessionId: tab.id)
         let pendingPositionRecordTask = positionRecordTask
         pendingPositionRecords[tab.id] = nil
@@ -2272,9 +2272,6 @@ final class AppStore {
             document: closingDocument,
             generation: tab.documentBindingGeneration,
             task: Task { [weak workspace] in
-                #if os(macOS)
-                await epubReader?.close()
-                #endif
                 await workspace?.awaitMaintenance()
                 for task in pendingPersistence { await task.value }
                 await pendingPositionRecordTask?.value
@@ -2295,7 +2292,14 @@ final class AppStore {
                     runtime.boundDocument = durableDocument
                     workspace?.removeLiveTabRuntime(for: tabId)
                     teardowns.registerReleaseFlush(document: durableDocument) {
+                        guard await epubReader?.close() != false else { return false }
                         guard await runtime.awaitReleasedInk() else { return false }
+                        try? await sessions.closeFile(sessionId: tabId)
+                        return true
+                    }
+                } else if let epubReader {
+                    teardowns.registerReleaseFlush(document: durableDocument) {
+                        guard await epubReader.close() else { return false }
                         try? await sessions.closeFile(sessionId: tabId)
                         return true
                     }
@@ -2303,6 +2307,7 @@ final class AppStore {
                     try? await sessions.closeFile(sessionId: tabId)
                 }
                 #else
+                _ = await epubReader?.close()
                 try? await sessions.closeFile(sessionId: tabId)
                 workspace?.removeLiveTabRuntime(for: tabId)
                 #endif
