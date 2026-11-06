@@ -246,6 +246,10 @@ struct WebViewerView: View {
             guard isActive else { return }
             controller.applyZoom(zoom)
         }
+        .onChange(of: document.webNavigationURL) {
+            guard isActive else { return }
+            controller.updateNavigationAddress(document)
+        }
         .onChange(of: isActive) { _, active in
             guard active else {
                 controller.deactivate()
@@ -425,6 +429,7 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private weak var runtime: LiveTabRuntime?
     @ObservationIgnored private var mountTabId: String?
     @ObservationIgnored private var mountDocument: DocumentInfo?
+    @ObservationIgnored private var appliedNavigationAddress: String?
     @ObservationIgnored private var attached = false
     @ObservationIgnored private var mountGeneration = UUID()
     /// True once this controller has ever built and loaded its `WKWebView`. The
@@ -532,6 +537,7 @@ final class WebViewerController: NSObject {
             // while this tab was inactive; ask the preserved page for a fresh
             // snapshot so extraction and viewport state catch up.
             post("request-init")
+            updateNavigationAddress(document)
             return
         }
         attached = true
@@ -541,7 +547,8 @@ final class WebViewerController: NSObject {
         activateSharedHandlers()
 
         guard document.kind == .web else { return }
-        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: document.pdfPath)))
+        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(
+            for: document.webNavigationURL ?? document.pdfPath)))
     }
 
     /// Whether this controller is still bound to a live, loaded page. A warm tab
@@ -1656,8 +1663,25 @@ final class WebViewerController: NSObject {
             self.pendingNavUrl = rebound.pdfPath
             self.outgoingNavUrl = outgoing
             self.initCount = 0
+            self.appliedNavigationAddress = nil
             self.webView.load(
-                URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
+                URLRequest(url: VellumWebSchemeHandler.proxyUrl(
+                    for: rebound.webNavigationURL ?? rebound.pdfPath)))
+        }
+    }
+
+    func updateNavigationAddress(_ document: DocumentInfo) {
+        guard document.pdfPath == mountDocument?.pdfPath else { return }
+        mountDocument = document
+        guard initCount > 0, let address = document.webNavigationURL,
+              address != appliedNavigationAddress else { return }
+        let fragment = URLComponents(string: address)?.percentEncodedFragment
+        let shouldClear = appliedNavigationAddress != nil && fragment == nil
+        appliedNavigationAddress = address
+        if fragment != nil || shouldClear,
+           let data = try? JSONEncoder().encode(fragment.map { "#" + $0 } ?? ""),
+           let literal = String(data: data, encoding: .utf8) {
+            Self.setLocationHash(literal, in: webView)
         }
     }
 
@@ -1720,8 +1744,10 @@ final class WebViewerController: NSObject {
                     self.pendingNavUrl = rebound.pdfPath
                     self.outgoingNavUrl = nil
                     self.initCount = 0
+                    self.appliedNavigationAddress = nil
                     self.webView.load(
-                        URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
+                        URLRequest(url: VellumWebSchemeHandler.proxyUrl(
+                            for: rebound.webNavigationURL ?? rebound.pdfPath)))
                 } else {
                     self.post("request-init")
                 }
@@ -1769,10 +1795,11 @@ final class WebViewerController: NSObject {
         if restoredUrl != currentDoc.pdfPath {
             restoredUrl = currentDoc.pdfPath
             let target = app.currentPage
-            if target > 1 {
+            if target > 1, URL(string: currentDoc.webNavigationURL ?? "")?.fragment == nil {
                 post("scroll-to-page", ["page": target])
             }
         }
+        updateNavigationAddress(currentDoc)
     }
 
     private func handleSelection(_ data: [String: Any], app: AppStore) {
@@ -1967,7 +1994,9 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
         } else {
             processReloadedUrl = doc.pdfPath
             initCount = 0
-            webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
+            appliedNavigationAddress = nil
+            webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(
+                for: doc.webNavigationURL ?? doc.pdfPath)))
         }
     }
 
@@ -1988,6 +2017,7 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
         // The fallback itself failing must not loop.
         guard webView.url?.host != VellumWebSchemeHandler.snapshotHost else { return }
         initCount = 0
+        appliedNavigationAddress = nil
         webView.load(URLRequest(
             url: schemeHandler.snapshotUrl(forKey: WebLibrary.pageKey(doc.pdfPath))))
     }
