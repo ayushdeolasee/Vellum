@@ -97,6 +97,9 @@ enum ContinueReadingResolver {
                 keys.insert(.pdf(stableIdentifier: storageKey))
             }
             return keys
+
+        case .epub:
+            return []
         }
     }
 }

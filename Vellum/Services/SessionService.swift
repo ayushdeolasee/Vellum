@@ -30,6 +30,7 @@ protocol SessionService: AnyObject {
     func openFile(path: String, sessionId: String) async throws -> DocumentInfo
     func openWebDocument(url: String, sessionId: String) async throws -> DocumentInfo
     func openVellumwebFile(path: String, sessionId: String) async throws -> DocumentInfo
+    func openEpubFile(path: String, sessionId: String) async throws -> DocumentInfo
     func saveFile(sessionId: String) async throws
     func closeFile(sessionId: String) async throws
     func readPdfBytes(sessionId: String) async throws -> Data
@@ -60,6 +61,9 @@ protocol SessionService: AnyObject {
 extension SessionService {
     func documentSession(sessionId: String) -> (any DocumentSession)? { nil }
     func invalidatePendingOpen(sessionId: String) {}
+    func openEpubFile(path: String, sessionId: String) async throws -> DocumentInfo {
+        throw SessionServiceError.invalidDocument("EPUB books are not supported here")
+    }
 }
 
 extension Notification.Name {

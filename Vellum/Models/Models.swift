@@ -121,10 +121,11 @@ struct UpdateAnnotationInput: Sendable {
 enum DocumentKind: String, Codable, Sendable {
     case pdf
     case web
+    case epub
 }
 
 struct DocumentInfo: Codable, Equatable, Sendable {
-    /// "pdf" for files on disk, "web" for proxied webpages.
+    /// "pdf" for files on disk, "web" for proxied webpages, "epub" for books.
     var kind: DocumentKind
     /// Generic document URI: a filesystem path for PDFs, a normalized URL for
     /// webpages. The name is kept for compatibility with stored data keyed on it.
@@ -135,7 +136,7 @@ struct DocumentInfo: Codable, Equatable, Sendable {
     /// Stable cross-session document identity. PDFs: the /VellumDocId UUID
     /// stamped into the Info dictionary, nil until a mutation (or
     /// ensureDocumentId) lazily stamps it. Web docs: the sha256 URL hash, set at
-    /// open. Class-B/C stores resolve their storage key from this via
+    /// open. EPUBs: the sha256 of the book's bytes, set at open. Class-B/C stores resolve their storage key from this via
     /// DocumentIdentity.
     var docId: String? = nil
     /// Security-scoped bookmark for `pdfPath` (PDFs only), minted the moment the
