@@ -303,6 +303,13 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.plainPreview("**bold** text"), "bold text")
     }
 
+    func testPlainPreviewUsesLinkLabels() {
+        XCTAssertEqual(MarkdownParser.plainPreview("See [Docs](https://example.com)"), "See Docs")
+        XCTAssertEqual(MarkdownParser.plainPreview("[**Docs**](https://example.com/a_(b))"), "Docs")
+        XCTAssertEqual(MarkdownParser.plainPreview("[](https://example.com)"), "")
+        XCTAssertEqual(MarkdownParser.plainPreview("[Docs](https://example.com"), "[Docs](https://example.com")
+    }
+
     func testPlainPreviewPreservesCurrency() {
         // Currency preserved — fails before the step-2 fix, which routes
         // plainPreview's math stripping through MathRenderer.segments.
