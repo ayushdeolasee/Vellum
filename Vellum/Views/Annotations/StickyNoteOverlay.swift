@@ -244,6 +244,7 @@ struct StickyNoteOverlay: View {
                             mathMaxWidth: 192
                         )
                             .foregroundStyle(dark ? Amber.a100 : Amber.a900)
+                            .allowsHitTesting(false)
                     } else {
                         Text("Click to add note...")
                             .font(.system(size: 14))

@@ -344,6 +344,7 @@ private struct AnnotationRow: View {
                                 .font(.system(size: fontSize))
                         } else {
                             MarkdownMessage(content: content, textColor: palette.foreground, baseSize: fontSize)
+                                .allowsHitTesting(false)
                         }
                     }
                         .foregroundStyle(palette.foreground)
