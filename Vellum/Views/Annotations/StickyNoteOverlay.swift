@@ -81,7 +81,7 @@ struct StickyNoteOverlay: View {
                 .font(.system(size: 12))
                 .foregroundStyle(dark ? Amber.a400 : Amber.a600)
             if let content {
-                Text(content)
+                Text(MarkdownParser.plainPreview(content))
                     .font(.system(size: 12))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -111,7 +111,7 @@ struct StickyNoteOverlay: View {
         )
         .scaleEffect(pillHovering ? 1.05 : 1)
         .onHover { pillHovering = $0 }
-        .help(content ?? "Empty note - click to edit, drag to move")
+        .help(content.map(MarkdownParser.plainPreview) ?? "Empty note - click to edit, drag to move")
         #if os(macOS)
         .pointerStyle(isDragging ? .grabActive : .grabIdle)
         #endif
@@ -238,8 +238,11 @@ struct StickyNoteOverlay: View {
             } else {
                 Group {
                     if let content {
-                        Text(content)
-                            .font(.system(size: 14))
+                        MarkdownMessage(
+                            content: content,
+                            textColor: dark ? Amber.a100 : Amber.a900,
+                            mathMaxWidth: 192
+                        )
                             .foregroundStyle(dark ? Amber.a100 : Amber.a900)
                     } else {
                         Text("Click to add note...")

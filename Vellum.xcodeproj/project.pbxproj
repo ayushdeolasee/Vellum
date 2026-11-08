@@ -645,6 +645,7 @@
 		D529B1BD4F7B9FA1E791246F /* PageTextPersister.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504DC8725E6198531EC21429 /* PageTextPersister.swift */; };
 		D558820DF2F7C8B0247E7487 /* PhoneHome_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C9BE797AE8229E8D9218ED7 /* PhoneHome_iOS.swift */; };
 		D59076BDD8BE7DC9FE7C31C2 /* ReadLaterPrefetchPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD7FB935E884BD7E0ACC7F2 /* ReadLaterPrefetchPlanner.swift */; };
+		D5B2CDAC6898F29FDAB0BC1C /* MarkdownParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */; };
 		D5F586434585D55B08108B40 /* StorageSettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB83E31DAAFDC48C15F2F130 /* StorageSettingsTab.swift */; };
 		D60910465B35CE134EBAF4A5 /* ScratchpadDrop_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B13375C9AB108CE6FC48786B /* ScratchpadDrop_macOS.swift */; };
 		D64BF423C2774096CC911A39 /* PositionResumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80D1F0FECE8BA3793B43B42C /* PositionResumeTests.swift */; };
@@ -2338,14 +2339,14 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				15BDAAE9AA57BC95F9AD6FBB /* Vellum */,
 				B6F72C0F8B7E5879E563183C /* VellumMac */,
 				F57521B3D2FD598CC03D1745 /* VellumMacShare */,
 				C247656B78D40FAEC04A795B /* VellumMacTests */,
-				51B6918A47669C318959750C /* VellumMacWidgets */,
-				A2777796A94ECB5D3412C2DE /* VellumShare */,
 				65E775B7223FE8550067535A /* VellumTests */,
+				15BDAAE9AA57BC95F9AD6FBB /* Vellum */,
+				A2777796A94ECB5D3412C2DE /* VellumShare */,
 				28AB06FA6634E009DA9B6034 /* VellumWidgets */,
+				51B6918A47669C318959750C /* VellumMacWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -2786,6 +2787,7 @@
 				6D471798D0195D7D153CB1A1 /* DocumentActionsTests.swift in Sources */,
 				9033E11592AF76E1B9E32114 /* FakeSyncedContainer.swift in Sources */,
 				5E4689891BF4419809DD57AF /* HomeDropTests.swift in Sources */,
+				D5B2CDAC6898F29FDAB0BC1C /* MarkdownParserTests.swift in Sources */,
 				EDEA6E3022E09A620D3BC395 /* PdfSearchTests.swift in Sources */,
 				A166F385754680A7B2DAC538 /* ReleaseIsolationTests.swift in Sources */,
 				44D261051D7E8718BB8843F9 /* StorageIsolationTrait.swift in Sources */,

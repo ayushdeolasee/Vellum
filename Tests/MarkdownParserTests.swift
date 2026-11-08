@@ -7,6 +7,15 @@ import XCTest
 /// currency-vs-math `$` handling (see advisor-plans/011).
 final class MarkdownParserTests: XCTestCase {
 
+    func testEmptyPageNote() {
+        XCTAssertEqual(MarkdownParser.parse(""), [])
+        XCTAssertEqual(MarkdownParser.plainPreview(""), "")
+    }
+
+    func testUnclosedPageNoteCodeFencePreservesDraftText() {
+        XCTAssertEqual(MarkdownParser.parse("```swift\nlet value = 1"), [.code("let value = 1")])
+    }
+
     // MARK: - Blocks: headings
 
     func testHeadings() {

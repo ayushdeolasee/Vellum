@@ -338,8 +338,14 @@ private struct AnnotationRow: View {
                         #endif
                         .padding(.top, 4)
                 } else if let content = annotation.content, !content.isEmpty {
-                    Text(content)
-                        .font(.system(size: fontSize))
+                    Group {
+                        if annotation.type == .bookmark {
+                            Text(content)
+                                .font(.system(size: fontSize))
+                        } else {
+                            MarkdownMessage(content: content, textColor: palette.foreground, baseSize: fontSize)
+                        }
+                    }
                         .foregroundStyle(palette.foreground)
                         .lineLimit(3)
                         .padding(.top, 4)
