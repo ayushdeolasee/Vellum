@@ -52,8 +52,7 @@ struct AnnotationSidebar: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: editFieldFocused) { wasFocused, isFocused in
-            guard wasFocused, !isFocused, let editingId,
-                  annotationStore.annotations.first(where: { $0.id == editingId })?.type == .bookmark
+            guard wasFocused, !isFocused, let editingId
             else { return }
             saveEdit(editingId)
         }
@@ -317,14 +316,13 @@ private struct AnnotationRow: View {
                 }
 
                 if editing {
-                    TextField(
-                        "", text: $editText,
-                        prompt: annotation.type == .bookmark ? Text("Add a title…") : nil
-                    )
+                    editField
                         .textFieldStyle(.plain)
                         .font(.system(size: fontSize))
+                        .foregroundStyle(palette.foreground)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
+                        .padding(.vertical, annotation.type == .bookmark ? 2 : 8)
                         .background(palette.muted)
                         .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
                         .overlay {
@@ -332,7 +330,6 @@ private struct AnnotationRow: View {
                                 .strokeBorder(palette.primary, lineWidth: 1)
                         }
                         .focused(editFieldFocused)
-                        .onSubmit(onSaveEdit)
                         #if os(macOS)
                         .onExitCommand(perform: onCancelEdit)
                         #endif
@@ -422,6 +419,22 @@ private struct AnnotationRow: View {
                        action: onStartEdit)
             }
             Button("Delete", role: .destructive, action: onDelete)
+        }
+    }
+
+    @ViewBuilder
+    private var editField: some View {
+        if annotation.type == .bookmark {
+            TextField("", text: $editText, prompt: Text("Add a title…"))
+                .onSubmit(onSaveEdit)
+        } else {
+            TextField("", text: $editText, axis: .vertical)
+                .lineLimit(3...10)
+                .onKeyPress { press in
+                    guard press.key == .return, !press.modifiers.contains(.shift) else { return .ignored }
+                    onSaveEdit()
+                    return .handled
+                }
         }
     }
 
