@@ -1,4 +1,7 @@
 import XCTest
+#if os(macOS)
+import AppKit
+#endif
 @testable import Vellum
 
 /// Pins the current behavior of `MarkdownParser.parse` and
@@ -340,3 +343,46 @@ final class MarkdownParserTests: XCTestCase {
     // `MathRenderer.codeSpanRanges`, which packet 7 §2.5 has not landed yet.
     // Packet 5 §I.2 owns only the `testLists` change above.
 }
+
+#if os(macOS)
+@MainActor
+final class SidebarNoteEditingTests: XCTestCase {
+    private func key(_ code: UInt16, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+            windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+            isARepeat: false, keyCode: code)!
+    }
+
+    func testModifiedReturnInsertsAtCursorWithoutReplacingDraft() {
+        for modifiers in [NSEvent.ModifierFlags.shift, .option] {
+            let editor = SidebarNoteTextView()
+            editor.string = "FirstSecond"
+            editor.setSelectedRange(NSRange(location: 5, length: 0))
+            editor.keyDown(with: key(36, modifiers: modifiers))
+            XCTAssertEqual(editor.string, "First\nSecond")
+            XCTAssertEqual(editor.selectedRange(), NSRange(location: 6, length: 0))
+        }
+    }
+
+    func testModifiedReturnWorksInEmptyDraft() {
+        let editor = SidebarNoteTextView()
+        editor.keyDown(with: key(36, modifiers: .shift))
+        XCTAssertEqual(editor.string, "\n")
+    }
+
+    func testReturnSavesAndEscapeCancelsWithoutChangingDraft() {
+        let editor = SidebarNoteTextView()
+        editor.string = "# Draft\nSecond line"
+        var saves = 0
+        var cancels = 0
+        editor.onSave = { saves += 1 }
+        editor.onCancel = { cancels += 1 }
+        editor.keyDown(with: key(36))
+        editor.keyDown(with: key(53))
+        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(cancels, 1)
+        XCTAssertEqual(editor.string, "# Draft\nSecond line")
+    }
+}
+#endif
