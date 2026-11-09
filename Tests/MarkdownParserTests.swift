@@ -1,6 +1,7 @@
 import XCTest
 #if os(macOS)
 import AppKit
+import SwiftUI
 #endif
 @testable import Vellum
 
@@ -347,25 +348,31 @@ final class MarkdownParserTests: XCTestCase {
 #if os(macOS)
 @MainActor
 final class SidebarNoteEditingTests: XCTestCase {
-    func testLongDraftWrapsWithinVisibleClipWidth() throws {
-        let scrollView = SidebarNoteScrollView(frame: NSRect(x: 0, y: 0, width: 150, height: 70))
-        scrollView.hasVerticalScroller = true
-        scrollView.scrollerStyle = .legacy
-        let editor = SidebarNoteTextView(frame: NSRect(x: 0, y: 0, width: 240, height: 400))
-        editor.isHorizontallyResizable = false
-        editor.textContainer?.widthTracksTextView = false
-        editor.textContainerInset = NSSize(width: 4, height: 0)
-        editor.font = .systemFont(ofSize: 14)
-        editor.string = "Some `inline code` and [Docs](https://example.com/very/long/link/destination) "
-        scrollView.documentView = editor
-        scrollView.tile()
-        scrollView.updateWrappingWidth()
-        let container = try XCTUnwrap(editor.textContainer)
-        let layout = try XCTUnwrap(editor.layoutManager)
-        layout.ensureLayout(for: container)
-        XCTAssertEqual(editor.frame.width, scrollView.contentView.bounds.width)
-        XCTAssertLessThanOrEqual(layout.usedRect(for: container).width, scrollView.contentView.bounds.width - 8)
-        XCTAssertGreaterThan(layout.usedRect(for: container).height, layout.defaultLineHeight(for: editor.font!))
+    func testLongDraftWrapsWithinVisibleClipWidth() {
+        let editor = SidebarNoteEditor(
+            text: .constant("Some `inline code` and [Docs](https://example.com/very/long/link/destination) "),
+            isFocused: .constant(false), fontSize: 14, onSave: {}, onCancel: {})
+        let coordinator = editor.makeCoordinator()
+        let size = coordinator.measure(width: 150, scrollerStyle: .legacy, inset: NSSize(width: 4, height: 0), padding: 5)
+        let visibleWidth = 150 - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) - 8
+        XCTAssertEqual(coordinator.measurementContainer.containerSize.width, visibleWidth)
+        XCTAssertLessThanOrEqual(coordinator.measurementLayout.usedRect(for: coordinator.measurementContainer).width, visibleWidth)
+        XCTAssertGreaterThan(size.height, coordinator.measurementLayout.defaultLineHeight(for: .systemFont(ofSize: 14)))
+    }
+
+    func testHostedEditorCanLayoutRepeatedly() {
+        let editor = SidebarNoteEditor(
+            text: .constant(String(repeating: "Long draft with `code` and a link destination. ", count: 12)),
+            isFocused: .constant(false), fontSize: 14, onSave: {}, onCancel: {})
+        let host = NSHostingView(rootView: editor.frame(width: 150))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 150, height: 220), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        host.needsLayout = true
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
     }
 
     private func key(_ code: UInt16, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
