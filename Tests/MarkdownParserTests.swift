@@ -347,6 +347,27 @@ final class MarkdownParserTests: XCTestCase {
 #if os(macOS)
 @MainActor
 final class SidebarNoteEditingTests: XCTestCase {
+    func testLongDraftWrapsWithinVisibleClipWidth() throws {
+        let scrollView = SidebarNoteScrollView(frame: NSRect(x: 0, y: 0, width: 150, height: 70))
+        scrollView.hasVerticalScroller = true
+        scrollView.scrollerStyle = .legacy
+        let editor = SidebarNoteTextView(frame: NSRect(x: 0, y: 0, width: 240, height: 400))
+        editor.isHorizontallyResizable = false
+        editor.textContainer?.widthTracksTextView = false
+        editor.textContainerInset = NSSize(width: 4, height: 0)
+        editor.font = .systemFont(ofSize: 14)
+        editor.string = "Some `inline code` and [Docs](https://example.com/very/long/link/destination) "
+        scrollView.documentView = editor
+        scrollView.tile()
+        scrollView.updateWrappingWidth()
+        let container = try XCTUnwrap(editor.textContainer)
+        let layout = try XCTUnwrap(editor.layoutManager)
+        layout.ensureLayout(for: container)
+        XCTAssertEqual(editor.frame.width, scrollView.contentView.bounds.width)
+        XCTAssertLessThanOrEqual(layout.usedRect(for: container).width, scrollView.contentView.bounds.width - 8)
+        XCTAssertGreaterThan(layout.usedRect(for: container).height, layout.defaultLineHeight(for: editor.font!))
+    }
+
     private func key(_ code: UInt16, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,

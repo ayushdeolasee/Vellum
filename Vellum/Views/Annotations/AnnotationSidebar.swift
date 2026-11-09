@@ -507,7 +507,7 @@ private struct SidebarNoteEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = SidebarNoteScrollView()
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
@@ -518,8 +518,7 @@ private struct SidebarNoteEditor: NSViewRepresentable {
         editor.isHorizontallyResizable = false
         editor.isVerticallyResizable = true
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        editor.autoresizingMask = [.width]
-        editor.textContainer?.widthTracksTextView = true
+        editor.textContainer?.widthTracksTextView = false
         editor.textContainerInset = .zero
         editor.delegate = context.coordinator
         scrollView.documentView = editor
@@ -547,7 +546,9 @@ private struct SidebarNoteEditor: NSViewRepresentable {
               let container = editor.textContainer, let layout = editor.layoutManager,
               let font = editor.font else { return nil }
         let width = proposal.width ?? 240
-        container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        nsView.setFrameSize(NSSize(width: width, height: nsView.frame.height))
+        nsView.tile()
+        (nsView as? SidebarNoteScrollView)?.updateWrappingWidth()
         layout.ensureLayout(for: container)
         let lineHeight = layout.defaultLineHeight(for: font)
         let height = max(layout.usedRect(for: container).height, layout.extraLineFragmentRect.maxY)
@@ -563,6 +564,25 @@ private struct SidebarNoteEditor: NSViewRepresentable {
         }
         func textDidBeginEditing(_ notification: Notification) { parent.isFocused = true }
         func textDidEndEditing(_ notification: Notification) { parent.isFocused = false }
+    }
+}
+
+final class SidebarNoteScrollView: NSScrollView {
+    override func layout() {
+        super.layout()
+        updateWrappingWidth()
+    }
+
+    func updateWrappingWidth() {
+        guard let editor = documentView as? NSTextView, let container = editor.textContainer else { return }
+        let width = max(1, contentView.bounds.width)
+        if editor.frame.width != width {
+            editor.setFrameSize(NSSize(width: width, height: editor.frame.height))
+        }
+        let containerWidth = max(1, width - editor.textContainerInset.width * 2)
+        if container.containerSize.width != containerWidth {
+            container.containerSize = NSSize(width: containerWidth, height: CGFloat.greatestFiniteMagnitude)
+        }
     }
 }
 
