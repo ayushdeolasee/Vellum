@@ -1,25 +1,37 @@
 #if os(macOS) || os(iOS)
 import Foundation
 
+enum EpubReaderLayout: String, Codable, CaseIterable {
+    case scroll
+    case paged
+}
+
 struct EpubReaderSettings: Equatable, Codable {
+    static let layoutKey = "epub.layout"
+
     var fontSize: Double
     var lineSpacing: Double
+    var layout: EpubReaderLayout
 
-    init(fontSize: Double = 18, lineSpacing: Double = 1.6) {
+    init(fontSize: Double = 18, lineSpacing: Double = 1.6, layout: EpubReaderLayout = .scroll) {
         self.fontSize = fontSize.isFinite ? min(36, max(12, fontSize)) : 18
         self.lineSpacing = lineSpacing.isFinite ? min(2.4, max(1.1, lineSpacing)) : 1.6
+        self.layout = layout
     }
 
     static func load() -> Self {
         let defaults = AppDefaults.current
         return Self(fontSize: defaults.object(forKey: "epub.fontSize") as? Double ?? 18,
-                    lineSpacing: defaults.object(forKey: "epub.lineSpacing") as? Double ?? 1.6)
+                    lineSpacing: defaults.object(forKey: "epub.lineSpacing") as? Double ?? 1.6,
+                    layout: defaults.string(forKey: layoutKey).flatMap(EpubReaderLayout.init(rawValue:)) ?? .scroll)
     }
 
     func save() {
-        let bounded = Self(fontSize: fontSize, lineSpacing: lineSpacing)
-        AppDefaults.current.set(bounded.fontSize, forKey: "epub.fontSize")
-        AppDefaults.current.set(bounded.lineSpacing, forKey: "epub.lineSpacing")
+        let bounded = Self(fontSize: fontSize, lineSpacing: lineSpacing, layout: layout)
+        let defaults = AppDefaults.current
+        defaults.set(bounded.fontSize, forKey: "epub.fontSize")
+        defaults.set(bounded.lineSpacing, forKey: "epub.lineSpacing")
+        defaults.set(bounded.layout.rawValue, forKey: Self.layoutKey)
     }
 }
 
@@ -33,14 +45,25 @@ struct EpubReaderMessage: Decodable {
     let anchor: EpubTextAnchor?
     let id: String?
     let unresolved: [String]?
+    let page: Int?
+    let pageCount: Int?
+    let step: Int?
+
+    init(type: String, token: String, href: String, value: Double?, anchor: EpubTextAnchor?,
+         id: String?, unresolved: [String]?, page: Int? = nil, pageCount: Int? = nil, step: Int? = nil) {
+        self.type = type; self.token = token; self.href = href; self.value = value
+        self.anchor = anchor; self.id = id; self.unresolved = unresolved
+        self.page = page; self.pageCount = pageCount; self.step = step
+    }
 
     static func decode(_ body: Any, token: String, href: String, docId: String) -> Self? {
         guard JSONSerialization.isValidJSONObject(body),
               let data = try? JSONSerialization.data(withJSONObject: body), data.count <= 64 * 1024,
               let message = try? JSONDecoder().decode(Self.self, from: data),
               message.token == token, message.href == href,
-              ["progress", "selection", "annotation", "unresolved", "unresolvedLocation", "pencilHighlight"].contains(message.type),
+              ["progress", "selection", "annotation", "unresolved", "unresolvedLocation", "pencilHighlight", "edge"].contains(message.type),
               message.value.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
+              message.pageCount.map({ (1...100_000).contains($0) }) ?? true,
               message.id.map({ $0.utf16.count <= 256 }) ?? true,
               message.unresolved.map({ ids in
                   ids.count <= 1000 && ids.filter { !$0.hasPrefix("ink:") }.count <= 500
@@ -48,6 +71,10 @@ struct EpubReaderMessage: Decodable {
                       && ids.allSatisfy { $0.utf16.count <= 256 }
               }) ?? true
         else { return nil }
+        if let page = message.page {
+            guard let pageCount = message.pageCount, page >= 0, page < pageCount else { return nil }
+        } else if message.pageCount != nil { return nil }
+        if message.type == "edge", message.step != -1 && message.step != 1 { return nil }
         if let anchor = message.anchor {
             guard anchor.chapterHref == href,
                   AiEpubCitation(docId: docId, chapterNumber: 1, chapterHref: href, anchor: anchor).bounded != nil
@@ -89,7 +116,19 @@ enum EpubReaderJavaScript {
           box-shadow:0 1px 8px rgb(0 0 0 / 10%); }
         a { color:var(--vellum-epub-primary) !important; }
         img,svg,video { max-width:100%; height:auto; } pre { white-space:pre-wrap; }
-        html[data-vellum-dark] { color-scheme:dark; }`;
+        html[data-vellum-dark] { color-scheme:dark; }
+        html[data-vellum-paged] { height:100vh; box-sizing:border-box;
+          padding:2.5em var(--vellum-page-margin) 3em; column-width:var(--vellum-page-width);
+          column-gap:var(--vellum-page-gap); column-fill:auto; overflow:hidden;
+          background:var(--vellum-epub-surface) !important; scroll-behavior:auto !important; }
+        html[data-vellum-paged] body { box-sizing:border-box; max-width:none !important;
+          min-height:0; margin:0 !important; padding:0 !important; border:0 !important;
+          box-shadow:none !important; background:transparent !important; break-inside:auto; }
+        html[data-vellum-paged] img,html[data-vellum-paged] svg,html[data-vellum-paged] video,
+        html[data-vellum-paged] table,html[data-vellum-paged] pre {
+          max-height:calc(100vh - 5.5em); break-inside:avoid; }
+        html[data-vellum-paged] figure { max-height:calc(100vh - 5.5em); break-inside:avoid; }
+        html[data-vellum-paged] pre { overflow:auto; }`;
       (document.head || document.documentElement).appendChild(style);
       const post = (type, extra = {}) => {
         if (!config || !config.active) return;
@@ -194,8 +233,47 @@ enum EpubReaderJavaScript {
         }
       }
       const scrollable = () => Math.max(0,document.documentElement.scrollHeight-innerHeight);
+      const paged = () => config?.settings?.layout === 'paged';
+      function updatePageGeometry() {
+        const margin=Math.max(24,innerWidth*0.06);
+        document.documentElement.style.setProperty('--vellum-page-margin',margin+'px');
+        document.documentElement.style.setProperty('--vellum-page-width',Math.max(1,innerWidth-margin*2)+'px');
+        document.documentElement.style.setProperty('--vellum-page-gap',margin*2+'px');
+      }
+      function pageInfo() {
+        const width=Math.max(1,innerWidth), count=Math.max(1,Math.round(document.documentElement.scrollWidth/width));
+        return {page:Math.max(0,Math.min(count-1,Math.round(scrollX/width))),count};
+      }
+      function goTo(page) {
+        const info=pageInfo(), target=Math.max(0,Math.min(info.count-1,Math.trunc(Number(page)||0)));
+        scrollTo(target*innerWidth,0);
+        return target;
+      }
+      function turn(step) {
+        if (!paged()) return 'scroll';
+        const info=pageInfo(), target=info.page+step;
+        if (target>=0 && target<info.count) { goTo(target); return 'moved'; }
+        post('edge',{step});
+        return 'edge';
+      }
+      const pageAt = rect => Math.max(0,Math.min(pageInfo().count-1,
+        Math.floor((scrollX+rect.left)/Math.max(1,innerWidth))));
       function visible() {
         const m=index();
+        if (paged()) {
+          const previous=viewport?.anchor && resolve(viewport.anchor);
+          const previousRect=previous && previous.getClientRects()[0];
+          if (previousRect && pageAt(previousRect)===pageInfo().page) return viewport.anchor;
+          const margin=Math.max(24,innerWidth*0.06);
+          const top=(parseFloat(getComputedStyle(document.documentElement).paddingTop)||0)+8;
+          for (let y=top;y<Math.min(innerHeight,top+240);y+=24) for (let x=margin+8;x<innerWidth-margin;x+=Math.max(40,innerWidth/12)) {
+            const caret=document.caretRangeFromPoint(x,y); if (!caret || caret.startContainer.nodeType!==Node.TEXT_NODE) continue;
+            let start=offsetAt(caret.startContainer,caret.startOffset,false), end=Math.min(m.text.length,start+128);
+            if (!boundary(m.text,end)) end--;
+            const a=anchor(start,end); if (a) return a;
+          }
+          return null;
+        }
         // Probe actual text near the viewport top, not an offset proportional to text length.
         for (let y=24;y<Math.min(innerHeight,240);y+=24) for (let x=32;x<innerWidth;x+=Math.max(40,innerWidth/12)) {
           const caret=document.caretRangeFromPoint(x,y); if (!caret || caret.startContainer.nodeType!==Node.TEXT_NODE) continue;
@@ -205,20 +283,42 @@ enum EpubReaderJavaScript {
         }
         return null;
       }
-      function snapshot() { return {anchor:visible(),progression:scrollable()?Math.min(1,scrollY/scrollable()):0}; }
+      function snapshot() {
+        const current=visible();
+        if (paged()) {
+          const info=pageInfo();
+          return {anchor:current,progression:info.count>1?info.page/(info.count-1):0,page:info.page,pageCount:info.count};
+        }
+        return {anchor:current,progression:scrollable()?Math.min(1,scrollY/scrollable()):0};
+      }
       function report() {
         if (restoring || !config?.active) return;
-        viewport=snapshot(); post('progress',{anchor:viewport.anchor,value:viewport.progression});
+        viewport=snapshot();
+        if (paged()) post('progress',{anchor:viewport.anchor,value:viewport.progression,page:viewport.page,pageCount:viewport.pageCount});
+        else post('progress',{anchor:viewport.anchor,value:viewport.progression});
       }
       function restore(location) {
         if (!location) return;
         restoring=true;
+        const pagedMode=paged();
         const r=location.anchor && resolve(location.anchor);
-        if (r) { const rect=r.getBoundingClientRect(); scrollTo(0,scrollY+rect.top-24); }
+        if (r) {
+          if (pagedMode) {
+            const rect=r.getClientRects()[0]||r.getBoundingClientRect();
+            goTo(pageAt(rect));
+            viewport={anchor:location.anchor,progression:location.progression||0};
+          }
+          else { const rect=r.getBoundingClientRect(); scrollTo(0,scrollY+rect.top-24); }
+        }
         else {
           if (location.anchor) post('unresolvedLocation');
           const id=location.fragment, target=id && (document.getElementById(id) || document.getElementsByName(id)[0]);
-          if (target) target.scrollIntoView(); else scrollTo(0,scrollable()*Math.min(1,Math.max(0,location.progression || 0)));
+          if (pagedMode) {
+            if (target) goTo(pageAt(target.getBoundingClientRect()));
+            else goTo(Math.round(Math.min(1,Math.max(0,location.progression||0))*(pageInfo().count-1)));
+          } else {
+            if (target) target.scrollIntoView(); else scrollTo(0,scrollable()*Math.min(1,Math.max(0,location.progression || 0)));
+          }
         }
         restoring=false; viewport=snapshot(); paint(); report();
       }
@@ -258,30 +358,43 @@ enum EpubReaderJavaScript {
         if (anchor) post('selection',{anchor});
       });
       const finishSelection=()=>post('selection',{anchor:selection()});
-      document.addEventListener('pointerup',finishSelection);
+      document.addEventListener('pointerup',event=>{lastPointerWasPen=event.pointerType==='pen';finishSelection();});
       document.addEventListener('keyup',finishSelection);
       let resizeTimer;
       window.addEventListener('resize',()=>{
         const saved=viewport; clearTimeout(resizeTimer);
-        resizeTimer=setTimeout(()=>restore(saved),100);
+        resizeTimer=setTimeout(()=>{ if(paged()) updatePageGeometry(); restore(saved); },100);
       });
       document.addEventListener('load',()=>{ if(viewport) restore(viewport); },true);
+      let lastPointerWasPen=false;
+      document.addEventListener('click',event=>{
+        if (!paged() || !config?.active || lastPointerWasPen) return;
+        if (overlay && event.target instanceof Node && overlay.contains(event.target)) return;
+        const selected=window.getSelection();
+        if (selected && !selected.isCollapsed) return;
+        if (event.target instanceof Element && event.target.closest('a,button,[role=button]')) return;
+        if (event.clientX<innerWidth*0.25) turn(-1);
+        else if (event.clientX>innerWidth*0.75) turn(1);
+      });
       window.__vellumEpub={
         configure(c) {
           const saved=config && snapshot(); config=c;
-          document.documentElement.toggleAttribute('data-vellum-dark',c.dark);
-          document.documentElement.style.colorScheme=c.dark?'dark':'light';
-          document.documentElement.style.setProperty('--vellum-epub-well',c.colors.well);
-          document.documentElement.style.setProperty('--vellum-epub-surface',c.colors.surface);
-          document.documentElement.style.setProperty('--vellum-epub-foreground',c.colors.foreground);
-          document.documentElement.style.setProperty('--vellum-epub-primary',c.colors.primary);
-          document.documentElement.style.setProperty('--vellum-epub-border',c.colors.border);
+          const root=document.documentElement;
+          root.toggleAttribute('data-vellum-dark',c.dark);
+          root.toggleAttribute('data-vellum-paged',c.settings.layout==='paged');
+          root.style.colorScheme=c.dark?'dark':'light';
+          root.style.setProperty('--vellum-epub-well',c.colors.well);
+          root.style.setProperty('--vellum-epub-surface',c.colors.surface);
+          root.style.setProperty('--vellum-epub-foreground',c.colors.foreground);
+          root.style.setProperty('--vellum-epub-primary',c.colors.primary);
+          root.style.setProperty('--vellum-epub-border',c.colors.border);
+          if (paged()) updatePageGeometry();
           document.body.style.setProperty('font-size',c.settings.fontSize+'px','important');
           document.body.style.setProperty('line-height',String(c.settings.lineSpacing),'important');
           // Inherited controls retain publisher headings, emphasis, images and layout.
           if (saved) restore(saved);
         },
-        restore, selection, snapshot, pencil,
+        restore, selection, snapshot, pencil, pageInfo, goTo, turn,
         annotations(items) { annotations=items.slice(0,1000); paint(); },
         text:()=>index().text, resolve:a=>!!resolve(a),
         dispose() { config=null; clearTimeout(timer);clearTimeout(resizeTimer);overlay?.remove(); }

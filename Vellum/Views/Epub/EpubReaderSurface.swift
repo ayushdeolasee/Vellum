@@ -113,6 +113,17 @@ struct EpubReaderSurface: EpubViewRepresentable {
         view.addGestureRecognizer(pencil)
         context.coordinator.pencil = pencil
         context.coordinator.scrollTouchTypes = view.scrollView.panGestureRecognizer.allowedTouchTypes
+        let nextPage = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pageSwiped(_:)))
+        nextPage.direction = .left
+        nextPage.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        nextPage.isEnabled = false
+        view.addGestureRecognizer(nextPage)
+        let previousPage = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pageSwiped(_:)))
+        previousPage.direction = .right
+        previousPage.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        previousPage.isEnabled = false
+        view.addGestureRecognizer(previousPage)
+        context.coordinator.pageSwipes = [nextPage, previousPage]
         #endif
         return view
     }
@@ -120,11 +131,20 @@ struct EpubReaderSurface: EpubViewRepresentable {
     private func updateView(_ view: EpubChapterWebView, context: Context) {
         context.coordinator.parent = self
         view.readerActive = reader.isCurrent
+        view.paged = settings.layout == .paged
         #if os(iOS)
         let highlighting = pencilHighlighting && reader.isCurrent
         context.coordinator.pencil?.isEnabled = highlighting
+        context.coordinator.pageSwipes.forEach { $0.isEnabled = view.paged && reader.isCurrent && !pencilHighlighting }
+        view.scrollView.isScrollEnabled = !view.paged
+        view.scrollView.bounces = !view.paged
         view.scrollView.panGestureRecognizer.allowedTouchTypes = highlighting
             ? [NSNumber(value: UITouch.TouchType.direct.rawValue)] : context.coordinator.scrollTouchTypes
+        #else
+        view.onPageStep = { step in
+            guard reader.isCurrent else { return }
+            reader.turnPage(step)
+        }
         #endif
         view.onChapterStep = { step in
             guard reader.isCurrent else { return }
@@ -134,7 +154,7 @@ struct EpubReaderSurface: EpubViewRepresentable {
     }
 
     private static func dismantleView(_ view: EpubChapterWebView, coordinator: Coordinator) {
-        view.readerActive = false; view.removeKeyMonitor(); view.onChapterStep = nil
+        view.readerActive = false; view.removeKeyMonitor(); view.onChapterStep = nil; view.onPageStep = nil
         view.configuration.userContentController.removeAllScriptMessageHandlers()
         coordinator.invalidateLoad()
         view.navigationDelegate = nil; view.stopLoading()
@@ -162,7 +182,15 @@ struct EpubReaderSurface: EpubViewRepresentable {
         }
         #if os(iOS)
         var pencil: UIPanGestureRecognizer?
+        var pageSwipes: [UISwipeGestureRecognizer] = []
         var scrollTouchTypes: [NSNumber] = []
+
+        @objc func pageSwiped(_ gesture: UISwipeGestureRecognizer) {
+            guard gesture.state == .ended, let parent, parent.reader.isCurrent,
+                  parent.settings.layout == .paged, !parent.pencilHighlighting
+            else { return }
+            parent.reader.turnPage(gesture.direction == .left ? 1 : -1)
+        }
 
         @objc func pencilDragged(_ gesture: UIPanGestureRecognizer) {
             guard let parent, parent.reader.isCurrent, parent.reader.pencilHighlighting,

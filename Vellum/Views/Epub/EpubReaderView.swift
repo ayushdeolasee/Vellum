@@ -19,6 +19,8 @@ struct EpubReaderView: View {
     @Environment(ScratchpadStore.self) private var scratchpad
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.palette) private var palette
+    @AppStorage(EpubReaderSettings.layoutKey, store: AppDefaults.current)
+    private var layoutRaw = EpubReaderLayout.scroll.rawValue
     @State private var reader = EpubReaderController()
 
     var body: some View {
@@ -68,6 +70,11 @@ struct EpubReaderView: View {
                     reader.bind(app: app, ai: ai, annotations: annotations, scratchpad: scratchpad,
                         session: session, tabId: tabId)
                     reader.activate(isActive)
+                }
+                .onChange(of: layoutRaw, initial: true) { _, rawValue in
+                    let layout = EpubReaderLayout(rawValue: rawValue) ?? .scroll
+                    reader.settings.layout = layout
+                    if rawValue != layout.rawValue { layoutRaw = layout.rawValue }
                 }
                 .onChange(of: isActive) { _, active in reader.activate(active) }
                 .onChange(of: app.activeDocumentBinding) { _, _ in reader.activate(isActive) }
@@ -120,8 +127,13 @@ struct EpubReaderLocation: Equatable {
 #if os(macOS)
 final class EpubChapterWebView: WKWebView {
     var onChapterStep: ((Int) -> Void)?
+    var onPageStep: ((Int) -> Void)?
     var readerActive = true
+    var paged = false
     private var keyMonitor: Any?
+    private var pagedSwipeX: CGFloat = 0
+    private var pagedSwipeY: CGFloat = 0
+    private var trackingPagedSwipe = false
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -139,24 +151,76 @@ final class EpubChapterWebView: WKWebView {
     }
 
     func handleChapterShortcut(_ event: NSEvent) -> Bool {
-        if readerActive, let window, event.window === window, window.attachedSheet == nil,
-           let responder = window.firstResponder as? NSView,
-           responder === self || responder.isDescendant(of: self),
-           event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-           let onChapterStep {
+        guard readerActive, let window, event.window === window, window.attachedSheet == nil,
+              let responder = window.firstResponder as? NSView,
+              responder === self || responder.isDescendant(of: self)
+        else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers == .command, let onChapterStep {
             switch event.charactersIgnoringModifiers {
             case "[": onChapterStep(-1); return true
             case "]": onChapterStep(1); return true
             default: break
             }
         }
+        guard paged, let onPageStep else { return false }
+        if modifiers.isEmpty {
+            switch event.keyCode {
+            case 123: onPageStep(-1); return true
+            case 124, 49: onPageStep(1); return true
+            default: break
+            }
+        } else if modifiers == .shift, event.keyCode == 49 {
+            onPageStep(-1); return true
+        }
         return false
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard paged else {
+            pagedSwipeX = 0; pagedSwipeY = 0; trackingPagedSwipe = false
+            super.scrollWheel(with: event)
+            return
+        }
+        guard event.momentumPhase.isEmpty else { return }
+        if !event.hasPreciseScrollingDeltas {
+            guard event.phase.isEmpty else { return }
+            if let step = Self.pageStep(forWheelX: event.scrollingDeltaX, y: event.scrollingDeltaY) {
+                onPageStep?(step)
+            }
+            return
+        }
+        guard !event.phase.isEmpty else { return }
+        if event.phase.contains(.began) {
+            pagedSwipeX = 0; pagedSwipeY = 0; trackingPagedSwipe = true
+        } else if !trackingPagedSwipe, !event.phase.isEmpty {
+            trackingPagedSwipe = true
+        }
+        guard trackingPagedSwipe else { return }
+        pagedSwipeX += event.scrollingDeltaX
+        pagedSwipeY += event.scrollingDeltaY
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            if let step = Self.pageStep(forSwipeX: pagedSwipeX, y: pagedSwipeY) { onPageStep?(step) }
+            pagedSwipeX = 0; pagedSwipeY = 0; trackingPagedSwipe = false
+        }
+    }
+
+    static func pageStep(forSwipeX x: CGFloat, y: CGFloat) -> Int? {
+        guard abs(x) > 40, abs(x) > abs(y) else { return nil }
+        return x < 0 ? 1 : -1
+    }
+
+    static func pageStep(forWheelX x: CGFloat, y: CGFloat) -> Int? {
+        guard y != 0, abs(y) >= abs(x) else { return nil }
+        return y < 0 ? 1 : -1
     }
 }
 #else
 final class EpubChapterWebView: WKWebView {
     var onChapterStep: ((Int) -> Void)?
+    var onPageStep: ((Int) -> Void)?
     var readerActive = true
+    var paged = false
     func removeKeyMonitor() {}
 }
 #endif
