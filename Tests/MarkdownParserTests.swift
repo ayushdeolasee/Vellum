@@ -1,4 +1,8 @@
 import XCTest
+#if os(macOS)
+import AppKit
+import SwiftUI
+#endif
 @testable import Vellum
 
 /// Pins the current behavior of `MarkdownParser.parse` and
@@ -6,6 +10,15 @@ import XCTest
 /// message and sticky note — plus `MarkdownParser.plainPreview`'s corrected
 /// currency-vs-math `$` handling (see advisor-plans/011).
 final class MarkdownParserTests: XCTestCase {
+
+    func testEmptyPageNote() {
+        XCTAssertEqual(MarkdownParser.parse(""), [])
+        XCTAssertEqual(MarkdownParser.plainPreview(""), "")
+    }
+
+    func testUnclosedPageNoteCodeFencePreservesDraftText() {
+        XCTAssertEqual(MarkdownParser.parse("```swift\nlet value = 1"), [.code("let value = 1")])
+    }
 
     // MARK: - Blocks: headings
 
@@ -294,6 +307,13 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.plainPreview("**bold** text"), "bold text")
     }
 
+    func testPlainPreviewUsesLinkLabels() {
+        XCTAssertEqual(MarkdownParser.plainPreview("See [Docs](https://example.com)"), "See Docs")
+        XCTAssertEqual(MarkdownParser.plainPreview("[**Docs**](https://example.com/a_(b))"), "Docs")
+        XCTAssertEqual(MarkdownParser.plainPreview("[](https://example.com)"), "")
+        XCTAssertEqual(MarkdownParser.plainPreview("[Docs](https://example.com"), "[Docs](https://example.com")
+    }
+
     func testPlainPreviewPreservesCurrency() {
         // Currency preserved — fails before the step-2 fix, which routes
         // plainPreview's math stripping through MathRenderer.segments.
@@ -324,3 +344,73 @@ final class MarkdownParserTests: XCTestCase {
     // `MathRenderer.codeSpanRanges`, which packet 7 §2.5 has not landed yet.
     // Packet 5 §I.2 owns only the `testLists` change above.
 }
+
+#if os(macOS)
+@MainActor
+final class SidebarNoteEditingTests: XCTestCase {
+    func testLongDraftWrapsWithinVisibleClipWidth() {
+        let editor = SidebarNoteEditor(
+            text: .constant("Some `inline code` and [Docs](https://example.com/very/long/link/destination) "),
+            isFocused: .constant(false), fontSize: 14, onSave: {}, onCancel: {})
+        let coordinator = editor.makeCoordinator()
+        let size = coordinator.measure(width: 150, scrollerStyle: .legacy, inset: NSSize(width: 4, height: 0), padding: 5)
+        let visibleWidth = 150 - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) - 8
+        XCTAssertEqual(coordinator.measurementContainer.containerSize.width, visibleWidth)
+        XCTAssertLessThanOrEqual(coordinator.measurementLayout.usedRect(for: coordinator.measurementContainer).width, visibleWidth)
+        XCTAssertGreaterThan(size.height, coordinator.measurementLayout.defaultLineHeight(for: .systemFont(ofSize: 14)))
+    }
+
+    func testHostedEditorCanLayoutRepeatedly() {
+        let editor = SidebarNoteEditor(
+            text: .constant(String(repeating: "Long draft with `code` and a link destination. ", count: 12)),
+            isFocused: .constant(false), fontSize: 14, onSave: {}, onCancel: {})
+        let host = NSHostingView(rootView: editor.frame(width: 150))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 150, height: 220), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        host.needsLayout = true
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+    }
+
+    private func key(_ code: UInt16, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+            windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+            isARepeat: false, keyCode: code)!
+    }
+
+    func testModifiedReturnInsertsAtCursorWithoutReplacingDraft() {
+        for modifiers in [NSEvent.ModifierFlags.shift, .option] {
+            let editor = SidebarNoteTextView()
+            editor.string = "FirstSecond"
+            editor.setSelectedRange(NSRange(location: 5, length: 0))
+            editor.keyDown(with: key(36, modifiers: modifiers))
+            XCTAssertEqual(editor.string, "First\nSecond")
+            XCTAssertEqual(editor.selectedRange(), NSRange(location: 6, length: 0))
+        }
+    }
+
+    func testModifiedReturnWorksInEmptyDraft() {
+        let editor = SidebarNoteTextView()
+        editor.keyDown(with: key(36, modifiers: .shift))
+        XCTAssertEqual(editor.string, "\n")
+    }
+
+    func testReturnSavesAndEscapeCancelsWithoutChangingDraft() {
+        let editor = SidebarNoteTextView()
+        editor.string = "# Draft\nSecond line"
+        var saves = 0
+        var cancels = 0
+        editor.onSave = { saves += 1 }
+        editor.onCancel = { cancels += 1 }
+        editor.keyDown(with: key(36))
+        editor.keyDown(with: key(53))
+        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(cancels, 1)
+        XCTAssertEqual(editor.string, "# Draft\nSecond line")
+    }
+}
+#endif

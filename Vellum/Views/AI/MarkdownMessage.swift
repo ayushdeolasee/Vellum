@@ -243,6 +243,9 @@ enum MarkdownParser {
         // replacement can't remove. Unwrap $$...$$ and \[...\] to their bodies
         // up front (dot matches newlines for multi-line display blocks).
         let unwrapped = source
+            .replacingOccurrences(
+                of: #"\[([^\]\n]*)\]\((?:[^()\n]|\([^()\n]*\))*\)"#,
+                with: "$1", options: .regularExpression)
             .replacingOccurrences(of: #"(?s)\$\$(.+?)\$\$"#, with: "$1", options: .regularExpression)
             .replacingOccurrences(of: #"(?s)\\\[(.+?)\\\]"#, with: "$1", options: .regularExpression)
         // Inline math: same definition as the renderers (MathRenderer.segments),

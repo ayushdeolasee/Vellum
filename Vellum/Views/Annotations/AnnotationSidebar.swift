@@ -52,8 +52,7 @@ struct AnnotationSidebar: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: editFieldFocused) { wasFocused, isFocused in
-            guard wasFocused, !isFocused, let editingId,
-                  annotationStore.annotations.first(where: { $0.id == editingId })?.type == .bookmark
+            guard wasFocused, !isFocused, let editingId
             else { return }
             saveEdit(editingId)
         }
@@ -317,14 +316,13 @@ private struct AnnotationRow: View {
                 }
 
                 if editing {
-                    TextField(
-                        "", text: $editText,
-                        prompt: annotation.type == .bookmark ? Text("Add a title…") : nil
-                    )
+                    editField
                         .textFieldStyle(.plain)
                         .font(.system(size: fontSize))
+                        .foregroundStyle(palette.foreground)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
+                        .padding(.vertical, annotation.type == .bookmark ? 2 : 8)
                         .background(palette.muted)
                         .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
                         .overlay {
@@ -332,14 +330,20 @@ private struct AnnotationRow: View {
                                 .strokeBorder(palette.primary, lineWidth: 1)
                         }
                         .focused(editFieldFocused)
-                        .onSubmit(onSaveEdit)
                         #if os(macOS)
                         .onExitCommand(perform: onCancelEdit)
                         #endif
                         .padding(.top, 4)
                 } else if let content = annotation.content, !content.isEmpty {
-                    Text(content)
-                        .font(.system(size: fontSize))
+                    Group {
+                        if annotation.type == .bookmark {
+                            Text(content)
+                                .font(.system(size: fontSize))
+                        } else {
+                            MarkdownMessage(content: content, textColor: palette.foreground, baseSize: fontSize)
+                                .allowsHitTesting(false)
+                        }
+                    }
                         .foregroundStyle(palette.foreground)
                         .lineLimit(3)
                         .padding(.top, 4)
@@ -419,6 +423,32 @@ private struct AnnotationRow: View {
     }
 
     @ViewBuilder
+    private var editField: some View {
+        if annotation.type == .bookmark {
+            TextField("", text: $editText, prompt: Text("Add a title…"))
+                .onSubmit(onSaveEdit)
+        } else {
+            #if os(macOS)
+            SidebarNoteEditor(
+                text: $editText,
+                isFocused: Binding(get: { editFieldFocused.wrappedValue }, set: { editFieldFocused.wrappedValue = $0 }),
+                fontSize: fontSize,
+                onSave: onSaveEdit,
+                onCancel: onCancelEdit
+            )
+            #else
+            TextField("", text: $editText, axis: .vertical)
+                .lineLimit(3...10)
+                .onKeyPress { press in
+                    guard press.key == .return, !press.modifiers.contains(.shift) else { return .ignored }
+                    onSaveEdit()
+                    return .handled
+                }
+            #endif
+        }
+    }
+
+    @ViewBuilder
     private var marker: some View {
         if annotation.type == .highlight, annotation.color != nil {
             // The circle doubles as a color picker. The tap must be a
@@ -465,6 +495,122 @@ private struct AnnotationRow: View {
         }
     }
 }
+
+#if os(macOS)
+struct SidebarNoteEditor: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isFocused: Bool
+    let fontSize: Double
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 240, height: 1))
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        let editor = SidebarNoteTextView(frame: NSRect(origin: .zero, size: scrollView.contentSize))
+        editor.isRichText = false
+        editor.allowsUndo = true
+        editor.drawsBackground = false
+        editor.isHorizontallyResizable = false
+        editor.isVerticallyResizable = true
+        editor.minSize = NSSize(width: 0, height: 0)
+        editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        editor.autoresizingMask = [.width]
+        editor.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        editor.textContainer?.widthTracksTextView = true
+        editor.textContainerInset = .zero
+        editor.delegate = context.coordinator
+        scrollView.documentView = editor
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let editor = scrollView.documentView as? SidebarNoteTextView else { return }
+        editor.onSave = onSave
+        editor.onCancel = onCancel
+        editor.font = .systemFont(ofSize: fontSize)
+        editor.textColor = .labelColor
+        if editor.string != text { editor.string = text }
+        if isFocused, editor.window?.firstResponder !== editor {
+            DispatchQueue.main.async { [weak editor] in
+                guard let editor, context.coordinator.parent.isFocused else { return }
+                editor.window?.makeFirstResponder(editor)
+            }
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        guard let editor = nsView.documentView as? NSTextView,
+              let container = editor.textContainer else { return nil }
+        let width = proposal.width ?? 240
+        return context.coordinator.measure(
+            width: width, scrollerStyle: nsView.scrollerStyle,
+            inset: editor.textContainerInset, padding: container.lineFragmentPadding)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: SidebarNoteEditor
+        let measurementStorage = NSTextStorage()
+        let measurementLayout = NSLayoutManager()
+        let measurementContainer = NSTextContainer()
+
+        init(_ parent: SidebarNoteEditor) {
+            self.parent = parent
+            super.init()
+            measurementStorage.addLayoutManager(measurementLayout)
+            measurementLayout.addTextContainer(measurementContainer)
+        }
+
+        func measure(width: CGFloat, scrollerStyle: NSScroller.Style, inset: NSSize, padding: CGFloat) -> CGSize {
+            let font = NSFont.systemFont(ofSize: parent.fontSize)
+            let scrollerWidth = scrollerStyle == .legacy
+                ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: scrollerStyle) : 0
+            measurementContainer.containerSize = NSSize(
+                width: max(1, width - scrollerWidth - inset.width * 2),
+                height: CGFloat.greatestFiniteMagnitude)
+            measurementContainer.lineFragmentPadding = padding
+            measurementStorage.setAttributedString(NSAttributedString(string: parent.text, attributes: [.font: font]))
+            measurementLayout.ensureLayout(for: measurementContainer)
+            let lineHeight = measurementLayout.defaultLineHeight(for: font)
+            let height = max(
+                measurementLayout.usedRect(for: measurementContainer).height,
+                measurementLayout.extraLineFragmentRect.maxY)
+            return CGSize(width: width, height: min(max(height, lineHeight * 3), lineHeight * 10) + inset.height * 2)
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let editor = notification.object as? NSTextView else { return }
+            parent.text = editor.string
+        }
+        func textDidBeginEditing(_ notification: Notification) { parent.isFocused = true }
+        func textDidEndEditing(_ notification: Notification) { parent.isFocused = false }
+    }
+}
+
+final class SidebarNoteTextView: NSTextView {
+    var onSave: () -> Void = {}
+    var onCancel: () -> Void = {}
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36 || event.keyCode == 76 {
+            if !event.modifierFlags.intersection([.shift, .option]).isEmpty {
+                insertNewlineIgnoringFieldEditor(nil)
+            } else {
+                onSave()
+            }
+        } else if event.keyCode == 53 {
+            onCancel()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+}
+#endif
 
 private func symbol(for type: AnnotationType) -> String {
     switch type {
