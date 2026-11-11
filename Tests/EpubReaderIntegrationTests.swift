@@ -5,7 +5,7 @@ import Testing
 import WebKit
 @testable import Vellum
 
-@Suite("EPUB Stage 4 reader integration", .serialized, .isolatedStorage, .scratchDefaults)
+@Suite("EPUB reader integration", .serialized, .isolatedStorage, .scratchDefaults)
 @MainActor
 struct EpubReaderIntegrationTests {
     private let href = "OEBPS/a.html"
@@ -37,12 +37,47 @@ struct EpubReaderIntegrationTests {
         #expect(decode() == nil)
     }
 
-    @Test("Typography clamps finite values and persists only in AppDefaults")
+    @Test("Typography and layout settings persist globally with scroll as the default")
     func settings() {
+        #expect(EpubReaderSettings().layout == .scroll)
         #expect(EpubReaderSettings(fontSize: -3, lineSpacing: 9) == .init(fontSize: 12, lineSpacing: 2.4))
         #expect(EpubReaderSettings(fontSize: .nan, lineSpacing: .infinity) == .init())
-        EpubReaderSettings(fontSize: 24, lineSpacing: 1.9).save()
-        #expect(EpubReaderSettings.load() == .init(fontSize: 24, lineSpacing: 1.9))
+        EpubReaderSettings(fontSize: 24, lineSpacing: 1.9, layout: .paged).save()
+        #expect(EpubReaderSettings.load() == .init(fontSize: 24, lineSpacing: 1.9, layout: .paged))
+        AppDefaults.current.set("unknown-layout", forKey: EpubReaderSettings.layoutKey)
+        #expect(EpubReaderSettings.load().layout == .scroll)
+        let reader = EpubReaderController()
+        reader.settings.layout = .paged
+        reader.changeSettings(fontSize: 26, lineSpacing: 2)
+        #expect(reader.settings == .init(fontSize: 26, lineSpacing: 2, layout: .paged))
+    }
+
+    @Test("Bridge validates page progress and chapter-edge directions")
+    func pagedMessageValidation() {
+        func decode(_ body: [String: Any]) -> EpubReaderMessage? {
+            EpubReaderMessage.decode(body, token: "current", href: href, docId: docId)
+        }
+        var edge: [String: Any] = ["type": "edge", "token": "current", "href": href]
+        edge["step"] = -1
+        #expect(decode(edge)?.step == -1)
+        edge["step"] = 1
+        #expect(decode(edge)?.step == 1)
+        edge["step"] = 0
+        #expect(decode(edge) == nil)
+        edge["step"] = 2
+        #expect(decode(edge) == nil)
+        edge.removeValue(forKey: "step")
+        #expect(decode(edge) == nil)
+
+        var progress: [String: Any] = ["type": "progress", "token": "current", "href": href, "value": 0.5]
+        progress["page"] = 0; progress["pageCount"] = 1
+        #expect(decode(progress)?.page == 0)
+        progress["page"] = 1; #expect(decode(progress) == nil)
+        progress["page"] = -1; #expect(decode(progress) == nil)
+        progress["page"] = 0; progress["pageCount"] = 0; #expect(decode(progress) == nil)
+        progress["pageCount"] = 100_001; #expect(decode(progress) == nil)
+        progress["page"] = 99_999; progress["pageCount"] = 100_000; #expect(decode(progress)?.pageCount == 100_000)
+        progress.removeValue(forKey: "page"); #expect(decode(progress) == nil)
     }
 
     @Test("Only active main-frame user links leave the book, using the injected opener")
@@ -109,15 +144,36 @@ struct EpubReaderIntegrationTests {
         container.addSubview(left); container.addSubview(right); window.contentView = container
         defer { left.removeKeyMonitor(); right.removeKeyMonitor(); window.contentView = nil }
         var leftSteps = 0, rightSteps = 0
+        var leftPageSteps: [Int] = [], rightPageSteps: [Int] = []
         left.onChapterStep = { _ in leftSteps += 1 }; right.onChapterStep = { _ in rightSteps += 1 }
+        left.onPageStep = { leftPageSteps.append($0) }; right.onPageStep = { rightPageSteps.append($0) }
+        func key(_ keyCode: UInt16, modifiers: NSEvent.ModifierFlags = [], characters: String = "") throws -> NSEvent {
+            try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: keyCode))
+        }
         #expect(window.makeFirstResponder(right))
-        let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-            timestamp: 0, windowNumber: window.windowNumber, context: nil,
-            characters: "]", charactersIgnoringModifiers: "]", isARepeat: false, keyCode: 30))
+        let event = try key(30, modifiers: .command, characters: "]")
         #expect(!left.handleChapterShortcut(event) && right.handleChapterShortcut(event))
         #expect(leftSteps == 0 && rightSteps == 1)
+        let leftArrow = try key(123)
+        #expect(!right.handleChapterShortcut(leftArrow))
+        let space = try key(49, characters: " ")
+        #expect(!right.handleChapterShortcut(space))
+        right.paged = true
+        #expect(!left.handleChapterShortcut(leftArrow) && right.handleChapterShortcut(leftArrow))
+        #expect(right.handleChapterShortcut(try key(124)))
+        #expect(right.handleChapterShortcut(space))
+        #expect(right.handleChapterShortcut(try key(49, modifiers: .shift, characters: " ")))
+        for modifiers in [NSEvent.ModifierFlags.command, .option, .control, .shift] {
+            #expect(!right.handleChapterShortcut(try key(123, modifiers: modifiers)))
+        }
+        #expect(!right.handleChapterShortcut(try key(124, modifiers: .command)))
+        #expect(rightPageSteps == [-1, 1, 1, -1] && leftPageSteps.isEmpty)
         right.readerActive = false
         #expect(!right.handleChapterShortcut(event))
+        #expect(!right.handleChapterShortcut(leftArrow) && !right.handleChapterShortcut(space))
         #expect(window.makeFirstResponder(left))
         #expect(left.handleChapterShortcut(event) && !right.handleChapterShortcut(event))
         #expect(leftSteps == 1 && rightSteps == 1)
@@ -265,6 +321,76 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Paged layout reports pages and turns without moving past chapter edges")
+    func pagedPagination() async throws {
+        let (html, _) = try pagedFixture()
+        try await withDOM(html, size: NSSize(width: 420, height: 480)) { view in
+            _ = try await js(view, configure(layout: .paged))
+            let count = try await js(view, "window.__vellumEpub.pageInfo().count") as? Int ?? 0
+            #expect(count > 1)
+            #expect(try await js(view, "window.__vellumEpub.turn(1)") as? String == "moved")
+            #expect(try await js(view, "window.__vellumEpub.pageInfo().page") as? Int == 1)
+            #expect(try await js(view, "scrollX===innerWidth") as? Bool == true)
+            _ = try await js(view, "window.__vellumEpub.goTo(\(count - 1))")
+            #expect(try await js(view, "window.__vellumEpub.turn(1)") as? String == "edge")
+            _ = try await js(view, "window.__vellumEpub.goTo(0)")
+            #expect(try await js(view, "window.__vellumEpub.turn(-1)") as? String == "edge")
+        }
+    }
+
+    @Test("Paged restore keeps a passage through reflow, resizing and layout changes")
+    func pagedRestore() async throws {
+        let (html, anchor) = try pagedFixture()
+        let encoded = EpubReaderJavaScript.literal(anchor)
+        try await withDOM(html, size: NSSize(width: 420, height: 480)) { view in
+            _ = try await js(view, configure(layout: .paged))
+            _ = try await js(view, "window.__vellumEpub.restore({anchor:\(encoded),progression:0})")
+            #expect((try await js(view, "window.__vellumEpub.snapshot().anchor?.quote") as? String)?.contains("Paragraph 60") == true)
+            #expect(try await js(view, rangeStartsInsideViewport("Paragraph 60 contains a unique passage")) as? Bool == true)
+
+            _ = try await js(view, configure(font: 30, spacing: 2.1, layout: .paged))
+            #expect((try await js(view, "window.__vellumEpub.snapshot().anchor?.quote") as? String)?.contains("Paragraph 60") == true)
+            #expect(try await js(view, rangeStartsInsideViewport("Paragraph 60 contains a unique passage")) as? Bool == true)
+
+            view.setFrameSize(NSSize(width: 360, height: 480))
+            _ = try await js(view, "window.dispatchEvent(new Event('resize'))")
+            try await Task.sleep(for: .milliseconds(150))
+            #expect((try await js(view, "window.__vellumEpub.snapshot().anchor?.quote") as? String)?.contains("Paragraph 60") == true)
+            #expect(try await js(view, rangeStartsInsideViewport("Paragraph 60 contains a unique passage")) as? Bool == true)
+
+            _ = try await js(view, "window.__vellumEpub.restore({progression:1})")
+            #expect(try await js(view, "window.__vellumEpub.pageInfo().page===window.__vellumEpub.pageInfo().count-1") as? Bool == true)
+        }
+    }
+
+    @Test("Scroll and paged modes restore the same text anchor")
+    func layoutSwitch() async throws {
+        let (html, anchor) = try pagedFixture()
+        let encoded = EpubReaderJavaScript.literal(anchor)
+        try await withDOM(html, size: NSSize(width: 420, height: 480)) { view in
+            _ = try await js(view, "window.__vellumEpub.restore({anchor:\(encoded),progression:0})")
+            _ = try await js(view, configure(layout: .paged))
+            #expect((try await js(view, "window.__vellumEpub.snapshot().anchor?.quote") as? String)?.contains("Paragraph 60") == true)
+            _ = try await js(view, configure(layout: .scroll))
+            #expect((try await js(view, "window.__vellumEpub.snapshot().anchor?.quote") as? String)?.contains("Paragraph 60") == true)
+            let before = try await js(view, "scrollX+','+scrollY") as? String
+            #expect(try await js(view, "window.__vellumEpub.turn(1)") as? String == "scroll")
+            #expect(try await js(view, "scrollX+','+scrollY") as? String == before)
+        }
+    }
+
+    @Test("Paged annotation marks align with the anchored passage")
+    func pagedOverlay() async throws {
+        let (html, anchor) = try pagedFixture()
+        let encoded = EpubReaderJavaScript.literal(anchor)
+        try await withDOM(html, size: NSSize(width: 420, height: 480)) { view in
+            _ = try await js(view, configure(layout: .paged))
+            _ = try await js(view, "window.__vellumEpub.restore({anchor:\(encoded),progression:0})")
+            _ = try await js(view, "window.__vellumEpub.annotations([{id:'test-mark',anchor:\(encoded),color:'#ff0000'}])")
+            #expect(try await js(view, overlayAligned("Paragraph 60 contains a unique passage")) as? Bool == true)
+        }
+    }
+
     @Test("Active owner scopes search/AI/annotations, generic jumps clear anchors, close joins cancelled work")
     func lifecycle() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("epub-reader-\(UUID())")
@@ -294,6 +420,41 @@ struct EpubReaderIntegrationTests {
         reader.bind(app: pane, ai: ai, annotations: notes, scratchpad: scratchpad, session: session, tabId: binding.tabId)
         reader.activate(true); await reader.drain()
         #expect(reader.isCurrent && pane.epubHandlerOwner == binding)
+        reader.settings.layout = .paged
+        let firstHref = session.publication.spine[0].path
+        let secondHref = session.publication.spine[1].path
+        let firstToken = try #require(reader.location?.request.uuidString)
+        reader.receive(EpubReaderMessage(type: "edge", token: firstToken, href: firstHref,
+            value: nil, anchor: nil, id: nil, unresolved: nil, step: -1))
+        #expect(reader.location?.chapter == 0)
+        reader.receive(EpubReaderMessage(type: "edge", token: firstToken, href: firstHref,
+            value: nil, anchor: nil, id: nil, unresolved: nil, step: 1))
+        #expect(reader.location?.chapter == 1 && reader.location?.progression == 0)
+        let secondToken = try #require(reader.location?.request.uuidString)
+        reader.receive(EpubReaderMessage(type: "edge", token: firstToken, href: firstHref,
+            value: nil, anchor: nil, id: nil, unresolved: nil, step: -1))
+        #expect(reader.location?.chapter == 1)
+        reader.receive(EpubReaderMessage(type: "edge", token: secondToken, href: secondHref,
+            value: nil, anchor: nil, id: nil, unresolved: nil, step: -1))
+        #expect(reader.location?.chapter == 0 && reader.location?.progression == 1)
+        let resumedToken = try #require(reader.location?.request.uuidString)
+        reader.receive(EpubReaderMessage(type: "edge", token: resumedToken, href: firstHref,
+            value: nil, anchor: nil, id: nil, unresolved: nil, step: -1))
+        #expect(reader.location?.chapter == 0 && reader.location?.progression == 1)
+        reader.receive(EpubReaderMessage(type: "edge", token: resumedToken, href: firstHref,
+            value: nil, anchor: nil, id: nil, unresolved: nil, step: 1))
+        let lastToken = try #require(reader.location?.request.uuidString)
+        reader.receive(EpubReaderMessage(type: "edge", token: lastToken, href: secondHref,
+            value: nil, anchor: nil, id: nil, unresolved: nil, step: 1))
+        #expect(reader.location?.chapter == 1)
+        reader.go(chapter: 0)
+        let pageToken = try #require(reader.location?.request.uuidString)
+        reader.receive(EpubReaderMessage(type: "progress", token: pageToken, href: firstHref,
+            value: 0.5, anchor: nil, id: nil, unresolved: nil, page: 2, pageCount: 4))
+        #expect(reader.page == EpubReaderPage(index: 2, count: 4))
+        reader.settings.layout = .scroll
+        #expect(reader.page == nil)
+        reader.settings.layout = .paged
         let chapter = try await session.chapterText(spineIndex: 0)
         let anchor = try #require(chapter.anchor(in: NSRange(location: 0, length: 5)))
         reader.go(chapter: 0, anchor: anchor)
@@ -387,8 +548,41 @@ struct EpubReaderIntegrationTests {
         await AiPersistence.awaitPendingFlush(); await ScratchpadPersistence.awaitPendingFlush()
     }
 
-    private func configure(font: Double = 18, spacing: Double = 1.6) -> String {
-        "window.__vellumEpub.configure({token:'test',href:'\(href)',active:true,dark:false,settings:{fontSize:\(font),lineSpacing:\(spacing)},colors:{well:'rgb(245, 245, 245)',surface:'rgb(255, 255, 255)',foreground:'rgb(30, 30, 30)',primary:'rgb(0, 90, 200)',border:'rgb(220, 220, 220)'}})"
+    private func pagedFixture() throws -> (html: String, anchor: EpubTextAnchor) {
+        let quote = "Paragraph 60 contains a unique passage"
+        let paragraphs = (0..<100).map {
+            "<p>Paragraph \($0) contains a unique passage for paged layout with enough words to wrap across lines.</p>"
+        }.joined()
+        let html = "<html><body>\(paragraphs)</body></html>"
+        let chapter = try EpubTextExtractor.extract(xhtml: Data(html.utf8), chapterHref: href)
+        let anchor = try #require(chapter.anchor(in: (chapter.text as NSString).range(of: quote)))
+        return (html, anchor)
+    }
+
+    private func rangeStartsInsideViewport(_ quote: String) -> String {
+        let literal = EpubReaderJavaScript.literal(quote)
+        return """
+        (()=>{const q=\(literal),node=Array.from(document.querySelectorAll('p')).map(p=>p.firstChild)
+          .find(n=>n&&n.nodeType===Node.TEXT_NODE&&n.data.includes(q));if(!node)return false;
+          const start=node.data.indexOf(q),r=document.createRange();r.setStart(node,start);r.setEnd(node,start+q.length);
+          const rect=r.getClientRects()[0];return !!rect&&rect.left>=0&&rect.left<innerWidth;})()
+        """
+    }
+
+    private func overlayAligned(_ quote: String) -> String {
+        let literal = EpubReaderJavaScript.literal(quote)
+        return """
+        (()=>{const mark=document.querySelector('button[aria-label="Open annotation"]');
+          const q=\(literal),node=Array.from(document.querySelectorAll('p')).map(p=>p.firstChild)
+            .find(n=>n&&n.nodeType===Node.TEXT_NODE&&n.data.includes(q));if(!mark||!node)return false;
+          const start=node.data.indexOf(q),r=document.createRange();r.setStart(node,start);r.setEnd(node,start+q.length);
+          const textRect=r.getClientRects()[0],markRect=mark.getBoundingClientRect();
+          return !!textRect&&Math.abs(markRect.left-textRect.left)<=2&&Math.abs(markRect.top-textRect.top)<=2;})()
+        """
+    }
+
+    private func configure(font: Double = 18, spacing: Double = 1.6, layout: EpubReaderLayout = .scroll) -> String {
+        "window.__vellumEpub.configure({token:'test',href:'\(href)',active:true,dark:false,settings:{fontSize:\(font),lineSpacing:\(spacing),layout:'\(layout.rawValue)'},colors:{well:'rgb(245, 245, 245)',surface:'rgb(255, 255, 255)',foreground:'rgb(30, 30, 30)',primary:'rgb(0, 90, 200)',border:'rgb(220, 220, 220)'}})"
     }
 
     private func js(_ view: WKWebView, _ code: String) async throws -> Any? {
@@ -401,6 +595,7 @@ struct EpubReaderIntegrationTests {
     }
 
     private func withDOM(_ html: String, loadURL: URL? = nil, messages: DOMMessages? = nil,
+                         size: NSSize = NSSize(width: 700, height: 480),
                          body: (WKWebView) async throws -> Void) async throws {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
@@ -409,7 +604,7 @@ struct EpubReaderIntegrationTests {
         config.userContentController.addUserScript(WKUserScript(source: EpubReaderJavaScript.source,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
         if let messages { config.userContentController.add(messages, contentWorld: .defaultClient, name: "epubReader") }
-        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 700, height: 480), configuration: config)
+        let view = WKWebView(frame: NSRect(origin: .zero, size: size), configuration: config)
         let load = DOMLoad(); view.navigationDelegate = load
         defer {
             view.stopLoading(); view.navigationDelegate = nil

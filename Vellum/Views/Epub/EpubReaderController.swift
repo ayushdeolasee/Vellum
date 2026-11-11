@@ -3,9 +3,21 @@ import Foundation
 import Observation
 import WebKit
 
+struct EpubReaderPage: Equatable {
+    let index: Int
+    let count: Int
+
+    init?(index: Int, count: Int) {
+        guard (1...100_000).contains(count), (0..<count).contains(index) else { return nil }
+        self.index = index
+        self.count = count
+    }
+}
+
 @MainActor @Observable
 final class EpubReaderController {
     private(set) var location: EpubReaderLocation?
+    private(set) var page: EpubReaderPage?
     private(set) var selection: EpubTextAnchor?
     private var selectionNoteDrafts: [EpubTextAnchor: String] = [:]
     var selectedAnchor: EpubTextAnchor? { selection }
@@ -15,7 +27,11 @@ final class EpubReaderController {
     }
     private(set) var unresolved: Set<String> = []
     var notice: String?
-    var settings = EpubReaderSettings.load()
+    var settings = EpubReaderSettings.load() {
+        didSet {
+            if settings.layout == .scroll { page = nil }
+        }
+    }
     private(set) var searchResults: [EpubSearchResult] = []
     private(set) var searchIndex = 0
     private(set) var searchTruncated = false
@@ -155,16 +171,23 @@ final class EpubReaderController {
         }
     }
 
-    func go(chapter: Int, fragment: String? = nil, anchor: EpubTextAnchor? = nil) {
+    func go(chapter: Int, fragment: String? = nil, anchor: EpubTextAnchor? = nil, progression: Double = 0) {
         guard isCurrent, let session, let binding, session.publication.spine.indices.contains(chapter) else { return }
         guard anchor == nil || anchor?.chapterHref == session.publication.spine[chapter].path else { return }
+        let progression = progression.isFinite ? min(1, max(0, progression)) : 0
         selection = nil; notice = nil
-        location = EpubReaderLocation(chapter: chapter, progression: 0, fragment: fragment, anchor: anchor)
-        app?.setEpubLocation(tabId: binding.tabId, chapter: chapter + 1, progression: 0, anchor: anchor)
+        page = nil
+        location = EpubReaderLocation(chapter: chapter, progression: progression, fragment: fragment, anchor: anchor)
+        app?.setEpubLocation(tabId: binding.tabId, chapter: chapter + 1, progression: progression, anchor: anchor)
     }
 
     func progress(_ message: EpubReaderMessage) {
         guard isCurrent, let location, let binding, let value = message.value else { return }
+        if settings.layout == .paged, let index = message.page, let count = message.pageCount {
+            page = EpubReaderPage(index: index, count: count)
+        } else {
+            page = nil
+        }
         app?.setEpubLocation(tabId: binding.tabId, chapter: location.chapter + 1, progression: value, anchor: message.anchor)
     }
 
@@ -179,6 +202,10 @@ final class EpubReaderController {
             annotate(type: .highlight, color: pencilHighlightColor)
         #endif
         case "progress": progress(message)
+        case "edge":
+            guard let step = message.step, step == -1 || step == 1 else { return }
+            if step == 1 { go(chapter: location.chapter + 1) }
+            else { go(chapter: location.chapter - 1, progression: 1) }
         case "selection":
             if message.anchor != nil || selectionNoteDraft == nil { selection = message.anchor }
         case "annotation":
@@ -201,8 +228,13 @@ final class EpubReaderController {
     }
 
     func changeSettings(fontSize: Double, lineSpacing: Double) {
-        settings = EpubReaderSettings(fontSize: fontSize, lineSpacing: lineSpacing)
+        settings = EpubReaderSettings(fontSize: fontSize, lineSpacing: lineSpacing, layout: settings.layout)
         settings.save()
+    }
+
+    func turnPage(_ step: Int) {
+        guard (step == -1 || step == 1), isCurrent, settings.layout == .paged, let webView else { return }
+        webView.evaluateJavaScript("window.__vellumEpub?.turn(\(step));", in: nil, in: .defaultClient) { _ in }
     }
 
     static func position(_ anchor: EpubTextAnchor) -> PositionData {
