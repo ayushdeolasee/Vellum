@@ -150,6 +150,8 @@ struct DocumentInfo: Codable, Equatable, Sendable {
     /// Web titles chosen by the user take precedence over later DOM titles.
     /// Carried with the document when its tab moves between panes.
     var titleIsUserDefined: Bool? = nil
+    /// Navigation address (including an anchor), separate from canonical storage identity.
+    var webNavigationURL: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case kind
@@ -160,6 +162,7 @@ struct DocumentInfo: Codable, Equatable, Sendable {
         case docId = "doc_id"
         case bookmarkData = "bookmark_data"
         case titleIsUserDefined = "title_is_user_defined"
+        case webNavigationURL = "web_navigation_url"
     }
 }
 

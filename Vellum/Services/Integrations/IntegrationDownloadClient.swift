@@ -7,7 +7,15 @@ protocol IntegrationDownloading: Sendable {
 
 actor IntegrationDownloadClient: IntegrationDownloading {
     private let session: URLSession
-    init(session: URLSession = .shared) { self.session = session }
+    private let acceptResponse: @Sendable (HTTPURLResponse) throws -> Void
+
+    init(
+        session: URLSession = .shared,
+        acceptResponse: @escaping @Sendable (HTTPURLResponse) throws -> Void = { _ in }
+    ) {
+        self.session = session
+        self.acceptResponse = acceptResponse
+    }
 
     func download(_ request: URLRequest, to temporaryURL: URL, maximumBytes: Int, progress: @escaping @Sendable (Double?) async -> Void) async throws -> IntegrationDownloadResult {
         try? FileManager.default.removeItem(at: temporaryURL)
@@ -28,6 +36,7 @@ actor IntegrationDownloadClient: IntegrationDownloading {
                     try Task.checkCancellation()
                     switch event {
                     case .response(let value):
+                        try acceptResponse(value)
                         guard (200...299).contains(value.statusCode) else { throw IntegrationError.invalidResponse }
                         response = value
                         expected = value.expectedContentLength > 0 ? value.expectedContentLength : nil

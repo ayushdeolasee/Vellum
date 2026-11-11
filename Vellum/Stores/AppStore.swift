@@ -459,8 +459,11 @@ final class AppStore {
     }
 
     #if os(macOS)
-    /// Opens a mixed Finder/browser delivery in caller order under one loading
-    /// and error scope. File-only deliveries continue through `openFiles`.
+    @ObservationIgnored var incomingPDFDownload: @Sendable (URL) async throws -> URL? = {
+        try await IncomingPDFDownload.download($0)
+    }
+
+    /// Opens mixed Finder/browser deliveries in caller order under one error scope.
     func openIncomingURLs(_ urls: [URL]) async {
         pendingDocumentAdmissions += 1
         defer { pendingDocumentAdmissions -= 1 }
@@ -471,13 +474,13 @@ final class AppStore {
         for url in urls {
             if let webpage = VellumExternalWebLink.parseSavedURL(url) {
                 do {
-                    try await openOneUrl(webpage.absoluteString, saveToLibrary: true)
+                    try await openIncomingWebpage(webpage, saveToLibrary: true)
                 } catch {
                     errors.append("\(webpage.absoluteString): \(error.localizedDescription)")
                 }
             } else if let webpage = VellumExternalWebLink.parse(url) {
                 do {
-                    try await openOneUrl(webpage.absoluteString)
+                    try await openIncomingWebpage(webpage, saveToLibrary: false)
                 } catch {
                     errors.append("\(webpage.absoluteString): \(error.localizedDescription)")
                 }
@@ -492,6 +495,21 @@ final class AppStore {
         }
         isLoading = false
         self.error = errors.isEmpty ? nil : errors.joined(separator: "\n")
+    }
+
+    private func openIncomingWebpage(_ url: URL, saveToLibrary: Bool) async throws {
+        if let downloaded = try await incomingPDFDownload(url) {
+            do {
+                try Task.checkCancellation()
+                try await openDocumentFile(path: downloaded.path, copyToLibrary: true)
+            } catch {
+                await IncomingPDFDownload.remove(downloaded.deletingLastPathComponent())
+                throw error
+            }
+            await IncomingPDFDownload.remove(downloaded.deletingLastPathComponent())
+        } else {
+            try await openOneUrl(url.absoluteString, saveToLibrary: saveToLibrary)
+        }
     }
     #endif
 
@@ -1419,7 +1437,7 @@ final class AppStore {
         workspace?.settingsSection = .storage
     }
 
-    private func openDocumentFile(path: String) async throws {
+    private func openDocumentFile(path: String, copyToLibrary: Bool = false) async throws {
         let isArchive = path.lowercased().hasSuffix(".vellumweb")
         // Close-then-immediately-reopen: a teardown from a preceding close may
         // still be rewriting this exact file. Opening before it lands would
@@ -1443,7 +1461,8 @@ final class AppStore {
         } else {
             doc = try await documentAccess.openPickedPDF(
                 url: URL(fileURLWithPath: path),
-                sessionId: sessionId
+                sessionId: sessionId,
+                copyToLibrary: copyToLibrary
             ) { [sessions] path, sessionId in
                 try await sessions.openFile(path: path, sessionId: sessionId)
             } close: { [sessions] sessionId in
@@ -1901,6 +1920,12 @@ final class AppStore {
         }
         if let existing = tabs.first(where: { $0.document?.pdfPath == doc.pdfPath }) {
             try? await sessions.closeFile(sessionId: sessionId)
+            #if os(macOS)
+            if doc.kind == .web, let navigationURL = doc.webNavigationURL {
+                updateTab(existing.id) { $0.document?.webNavigationURL = navigationURL }
+                if activeTabId == existing.id { document?.webNavigationURL = navigationURL }
+            }
+            #endif
             // Discard the start tab we opened from before switching to the
             // already-open document (never remove the target itself).
             if let activeStartId, activeStartId != existing.id {
