@@ -179,6 +179,19 @@ struct EpubReaderIntegrationTests {
         #expect(leftSteps == 1 && rightSteps == 1)
     }
 
+    @Test("Paged trackpad and mouse-wheel deltas map to natural page directions")
+    func pagedScrollWheelDirection() {
+        #expect(EpubChapterWebView.pageStep(forSwipeX: -41, y: 0) == 1)
+        #expect(EpubChapterWebView.pageStep(forSwipeX: 41, y: 0) == -1)
+        #expect(EpubChapterWebView.pageStep(forSwipeX: -40, y: 0) == nil)
+        #expect(EpubChapterWebView.pageStep(forSwipeX: -80, y: 81) == nil)
+        #expect(EpubChapterWebView.pageStep(forWheelX: 0, y: -1) == 1)
+        #expect(EpubChapterWebView.pageStep(forWheelX: 0, y: 1) == -1)
+        #expect(EpubChapterWebView.pageStep(forWheelX: 30, y: -30) == 1)
+        #expect(EpubChapterWebView.pageStep(forWheelX: 31, y: -30) == nil)
+        #expect(EpubChapterWebView.pageStep(forWheelX: 0, y: 0) == nil)
+    }
+
     @Test("Isolated DOM text/UTF16 anchors match extractor without mutating publication text")
     func domParity() async throws {
         let xhtml = """
@@ -388,6 +401,29 @@ struct EpubReaderIntegrationTests {
             _ = try await js(view, "window.__vellumEpub.restore({anchor:\(encoded),progression:0})")
             _ = try await js(view, "window.__vellumEpub.annotations([{id:'test-mark',anchor:\(encoded),color:'#ff0000'}])")
             #expect(try await js(view, overlayAligned("Paragraph 60 contains a unique passage")) as? Bool == true)
+        }
+    }
+
+    @Test("Paged annotation taps do not trigger tap-zone page turns")
+    func pagedOverlayTapZone() async throws {
+        let (html, anchor) = try pagedFixture()
+        let encoded = EpubReaderJavaScript.literal(anchor)
+        try await withDOM(html, size: NSSize(width: 420, height: 480)) { view in
+            _ = try await js(view, configure(layout: .paged))
+            _ = try await js(view, "window.__vellumEpub.annotations([{id:'test-mark',anchor:\(encoded),color:'#ff0000'}])")
+            let pages = try await js(view, """
+            (() => {
+              const api=window.__vellumEpub,mark=document.querySelector('button[aria-label="Open annotation"]');
+              if (!mark) return 'missing';
+              api.goTo(0);
+              const x=innerWidth*0.9,click=()=>new MouseEvent('click',{bubbles:true,clientX:x,clientY:20});
+              mark.dispatchEvent(click());
+              const afterMark=api.pageInfo().page;
+              document.body.dispatchEvent(click());
+              return `${afterMark},${api.pageInfo().page}`;
+            })()
+            """) as? String
+            #expect(pages == "0,1")
         }
     }
 

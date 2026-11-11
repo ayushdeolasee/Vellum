@@ -182,7 +182,15 @@ final class EpubChapterWebView: WKWebView {
             super.scrollWheel(with: event)
             return
         }
-        guard event.hasPreciseScrollingDeltas || !event.phase.isEmpty else { return }
+        guard event.momentumPhase.isEmpty else { return }
+        if !event.hasPreciseScrollingDeltas {
+            guard event.phase.isEmpty else { return }
+            if let step = Self.pageStep(forWheelX: event.scrollingDeltaX, y: event.scrollingDeltaY) {
+                onPageStep?(step)
+            }
+            return
+        }
+        guard !event.phase.isEmpty else { return }
         if event.phase.contains(.began) {
             pagedSwipeX = 0; pagedSwipeY = 0; trackingPagedSwipe = true
         } else if !trackingPagedSwipe, !event.phase.isEmpty {
@@ -192,11 +200,19 @@ final class EpubChapterWebView: WKWebView {
         pagedSwipeX += event.scrollingDeltaX
         pagedSwipeY += event.scrollingDeltaY
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-            if abs(pagedSwipeX) > 40, abs(pagedSwipeX) > abs(pagedSwipeY) {
-                onPageStep?(pagedSwipeX > 0 ? 1 : -1)
-            }
+            if let step = Self.pageStep(forSwipeX: pagedSwipeX, y: pagedSwipeY) { onPageStep?(step) }
             pagedSwipeX = 0; pagedSwipeY = 0; trackingPagedSwipe = false
         }
+    }
+
+    static func pageStep(forSwipeX x: CGFloat, y: CGFloat) -> Int? {
+        guard abs(x) > 40, abs(x) > abs(y) else { return nil }
+        return x < 0 ? 1 : -1
+    }
+
+    static func pageStep(forWheelX x: CGFloat, y: CGFloat) -> Int? {
+        guard y != 0, abs(y) >= abs(x) else { return nil }
+        return y < 0 ? 1 : -1
     }
 }
 #else

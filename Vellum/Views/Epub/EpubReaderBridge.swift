@@ -369,6 +369,7 @@ enum EpubReaderJavaScript {
       let lastPointerWasPen=false;
       document.addEventListener('click',event=>{
         if (!paged() || !config?.active || lastPointerWasPen) return;
+        if (overlay && event.target instanceof Node && overlay.contains(event.target)) return;
         const selected=window.getSelection();
         if (selected && !selected.isCollapsed) return;
         if (event.target instanceof Element && event.target.closest('a,button,[role=button]')) return;
