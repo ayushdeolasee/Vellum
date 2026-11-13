@@ -13,6 +13,7 @@ extension Notification.Name {
 struct SidebarBrowserView: View {
     let isActive: Bool
     @Environment(\.palette) private var palette
+    @Environment(WorkspaceStore.self) private var workspace
 
     @State private var controller = SidebarBrowserController()
     @State private var address = ""
@@ -71,7 +72,14 @@ struct SidebarBrowserView: View {
             controller.setActive(active)
             if !active { addressFocused = false }
         }
-        .onAppear { controller.setActive(isActive) }
+        .onAppear {
+            controller.setActive(isActive)
+            loadRequestedLink()
+        }
+        // A link clicked in an article or PDF (see `DocumentLinkActions`).
+        .onChange(of: workspace.browserOpenRequest) { _, request in
+            if request != nil { loadRequestedLink() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .vellumFocusBrowserAddress)) { _ in
             guard isActive else { return }
             addressFocused = true
@@ -176,6 +184,14 @@ struct SidebarBrowserView: View {
             }
         }
         .padding(12)
+    }
+
+    private func loadRequestedLink() {
+        guard let url = workspace.takeBrowserOpenRequest() else { return }
+        addressFocused = false
+        if controller.open(url.absoluteString) {
+            address = url.absoluteString
+        }
     }
 
     private func openAddress() {

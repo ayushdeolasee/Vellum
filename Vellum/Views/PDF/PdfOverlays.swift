@@ -101,9 +101,12 @@ struct PdfOverlayStack: View {
             }
 
             if let menu = controller.contextMenu {
-                PdfContextMenuView {
-                    controller.addNoteFromContextMenu()
-                }
+                DocumentContextMenuView(
+                    linkURL: menu.linkURL,
+                    onOpenInSidebar: { controller.openContextMenuLinkInSidebar() },
+                    onOpenInDefaultBrowser: { controller.openContextMenuLinkInDefaultBrowser() },
+                    onCopyLink: { controller.copyContextMenuLink() },
+                    onAddNote: { controller.addNoteFromContextMenu() })
                 .offset(x: menu.location.x, y: menu.location.y)
                 .zIndex(50)
             }
@@ -243,38 +246,4 @@ struct AnchoredAbove<Content: View>: View {
     }
 }
 
-/// Right-click context menu: single "Add note here" row.
-struct PdfContextMenuView: View {
-    var onAddNote: () -> Void
-
-    @Environment(\.palette) private var palette
-    @State private var hovering = false
-
-    var body: some View {
-        // A single-action pill that hugs its label — not a full-width menu row.
-        Button(action: onAddNote) {
-            HStack(spacing: 8) {
-                Image(systemName: "note.text")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color(hex: "#f59e0b"))
-                Text("Add note here")
-                    .font(.system(size: 13))
-                    .foregroundStyle(palette.foreground)
-            }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 7)
-            .contentShape(RoundedRectangle(cornerRadius: Radius.lg))
-        }
-        .buttonStyle(.plain)
-        // Hover darkens the whole pill edge to edge, behind the label.
-        .background {
-            if hovering {
-                RoundedRectangle(cornerRadius: Radius.lg).fill(.black.opacity(0.25))
-            }
-        }
-        .glassEffect(.regular, in: .rect(cornerRadius: Radius.lg))
-        .onHover { hovering = $0 }
-        .fixedSize()
-    }
-}
 #endif

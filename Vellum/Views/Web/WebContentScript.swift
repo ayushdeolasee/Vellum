@@ -2089,6 +2089,10 @@ enum WebContentScript {
       e.preventDefault();
       var vp = visualPointPayload(e.clientX, e.clientY);
       var payload = { x: vp.x, y: vp.y, visualScale: vp.visualScale, found: !!anchor };
+      // Right-clicking a link offers the link actions (open beside the
+      // document, open in the default browser, copy) alongside the note.
+      var linkUrl = linkHrefForTarget(e.target);
+      if (linkUrl) payload.linkURL = linkUrl;
       if (anchor) {
         for (var k in anchor) payload[k] = anchor[k];
         payload.x = vp.x;
@@ -2101,37 +2105,43 @@ enum WebContentScript {
   );
 
   // ------------------------------------------------------------------
-  // Link interception — keep navigation inside the reader
+  // Link interception — links open beside the reader, never inside it
   // ------------------------------------------------------------------
+
+  // Absolute href of the <a> under `target`, or "" when there is none or it
+  // is a same-document "#anchor". SVG <a> exposes href as SVGAnimatedString;
+  // without unwrapping it the regex tests fail and the click would navigate
+  // the webview out of the reader entirely.
+  function linkHrefForTarget(target) {
+    if (!target || !target.closest) return "";
+    var link = target.closest("a[href]");
+    if (!link) return "";
+    var rawHref = link.getAttribute("href") || "";
+    if (rawHref.charAt(0) === "#") return "";
+    var href = link.href;
+    if (href && typeof href === "object" && typeof href.baseVal === "string") {
+      try {
+        href = new URL(href.baseVal, document.baseURI).href;
+      } catch (err) {
+        href = "";
+      }
+    }
+    return typeof href === "string" ? href : "";
+  }
 
   document.addEventListener(
     "click",
     function (e) {
       if (e.defaultPrevented) return;
       if (noteMode) return; // note placement owns clicks in note mode
-      var target = e.target;
-      if (!target || !target.closest) return;
-      var link = target.closest("a[href]");
-      if (!link) return;
-
-      var rawHref = link.getAttribute("href") || "";
-      if (rawHref.charAt(0) === "#") return; // same-document anchor
-
-      // SVG <a> exposes href as SVGAnimatedString; without unwrapping it the
-      // regex tests fail and the click would navigate the webview out of the
-      // reader entirely.
-      var href = link.href;
-      if (href && typeof href === "object" && typeof href.baseVal === "string") {
-        try {
-          href = new URL(href.baseVal, document.baseURI).href;
-        } catch (err) {
-          href = "";
-        }
-      }
+      var href = linkHrefForTarget(e.target);
+      if (!href) return;
       if (/^https?:/i.test(href)) {
         e.preventDefault();
         e.stopPropagation();
-        post("navigate", { url: href });
+        // macOS opens it in the sidebar browser; iOS keeps navigating the
+        // reader (it treats "open-link" exactly like "navigate").
+        post("open-link", { url: href });
       } else if (/^(mailto|tel):/i.test(href)) {
         e.preventDefault();
       }

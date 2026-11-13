@@ -38,6 +38,8 @@ struct PdfContextMenuState {
     /// Page display size at zoom = 1.
     var pageWidth: Double
     var pageHeight: Double
+    /// The http(s) link annotation under the pointer, if any.
+    var linkURL: URL? = nil
 }
 
 /// Shared state + behavior between the PDFView (AppKit) and the SwiftUI
@@ -565,9 +567,49 @@ final class PdfViewerController: HighlightResizeControlling {
             clickX: Double((tp.x - frame.minX) / zoom),
             clickY: Double((tp.y - frame.minY) / zoom),
             pageWidth: Double(frame.width / zoom),
-            pageHeight: Double(frame.height / zoom)
+            pageHeight: Double(frame.height / zoom),
+            linkURL: linkURL(on: page, atNative: point, in: pdfView)
         )
         return true
+    }
+
+    /// The web link annotation at a PDFView point. PDFs carry a link either as
+    /// a URI action or directly on the annotation's `url`; internal "go to
+    /// page" links and non-http(s) URIs return nil.
+    private func linkURL(on page: PDFPage, atNative point: CGPoint, in pdfView: PDFView) -> URL? {
+        let pagePoint = pdfView.convert(point, to: page)
+        guard let annotation = page.annotation(at: pagePoint) else { return nil }
+        let url = (annotation.action as? PDFActionURL)?.url ?? annotation.url
+        guard let url, DocumentLinkActions.isBrowsable(url) else { return nil }
+        return url
+    }
+
+    // MARK: - Link actions
+
+    /// PDFKit's link-click hook (via `PdfKitView.Coordinator`). http(s) opens
+    /// in the sidebar browser; mailto:/tel: go to their system handler. Any
+    /// other scheme (file:, app schemes embedded in a PDF) is ignored rather
+    /// than launched from a document.
+    func openClickedLink(_ url: URL) {
+        DocumentLinkActions.activate(url, workspace: app?.workspace)
+    }
+
+    func openContextMenuLinkInSidebar() {
+        guard let url = contextMenu?.linkURL else { return }
+        contextMenu = nil
+        app?.workspace?.openInSidebarBrowser(url)
+    }
+
+    func openContextMenuLinkInDefaultBrowser() {
+        guard let url = contextMenu?.linkURL else { return }
+        contextMenu = nil
+        DocumentLinkActions.openInDefaultBrowser(url)
+    }
+
+    func copyContextMenuLink() {
+        guard let url = contextMenu?.linkURL else { return }
+        contextMenu = nil
+        DocumentLinkActions.copy(url)
     }
 
     func dismissContextMenu() {

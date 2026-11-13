@@ -154,7 +154,7 @@ struct PdfKitView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, @preconcurrency PDFViewDelegate {
         private let controller: PdfViewerController
         private weak var view: PDFView?
         private var observers: [NSObjectProtocol] = []
@@ -168,6 +168,9 @@ struct PdfKitView: NSViewRepresentable {
 
         func attach(to view: PDFView) {
             self.view = view
+            // Link clicks: PDFKit's default opens every URL in the default
+            // browser. Routed instead to the sidebar browser.
+            view.delegate = self
             let center = NotificationCenter.default
 
             observers.append(center.addObserver(
@@ -248,6 +251,7 @@ struct PdfKitView: NSViewRepresentable {
                 view.removeTrackingArea(trackingArea)
             }
             trackingArea = nil
+            if view.delegate === self { view.delegate = nil }
             self.view = nil
         }
 
@@ -258,6 +262,12 @@ struct PdfKitView: NSViewRepresentable {
         /// every mouse-move over the PDF would then throw `unrecognized selector`
         /// (an NSInvalidArgumentException that crashes under NSApplicationCrashOnExceptions).
         @objc(mouseMoved:) func mouseMoved(with event: NSEvent) {}
+
+        /// Implementing this replaces PDFKit's default (open in the system
+        /// browser) for every URL link annotation in the document.
+        func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+            controller.openClickedLink(url)
+        }
 
         // MARK: - Event monitors
 

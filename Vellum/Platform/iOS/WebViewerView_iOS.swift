@@ -1952,7 +1952,9 @@ final class WebViewerController_iOS: NSObject {
                     pageNumber: intValue(data["pageNumber"])))
             }
 
-        case "navigate":
+        case "navigate", "open-link":
+            // "open-link" is a clicked link; the Mac routes it to the sidebar
+            // browser, the iPad/iPhone reader keeps navigating in place.
             guard let url = data["url"] as? String else { break }
             navigateTo(url)
 
