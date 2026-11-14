@@ -465,7 +465,7 @@ struct PhoneTabSwitcher_iOS: View {
             return 0
         case .web:
             return runtime.webController.hasWebView ? runtime.webController.initCount : 0
-        case nil:
+        case .epub, nil:
             return 0
         }
     }
@@ -495,7 +495,7 @@ struct PhoneTabSwitcher_iOS: View {
                 let configuration = WKSnapshotConfiguration()
                 configuration.rect = webView.bounds
                 return try? await webView.takeSnapshot(configuration: configuration)
-            case nil:
+            case .epub, nil:
                 break
             }
         }
@@ -553,6 +553,7 @@ struct PhoneTabCardView: View {
         switch card.kind {
         case .web: "globe"
         case .pdf: "doc.text"
+        case .epub: "book"
         case nil: "square.dashed"
         }
     }

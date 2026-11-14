@@ -50,6 +50,10 @@ struct DocumentPositionService: Sendable {
                 return .pdf(stableIdentifier: docId)
             }
             return .pdfPath(document.pdfPath)
+        case .epub:
+            // EPUB locations are chapter/text anchors, not pages; they get
+            // their own namespace with the reader.
+            return nil
         }
     }
 
