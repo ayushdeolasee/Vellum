@@ -492,6 +492,40 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Fixed background elements do not limit the paged chapter count")
+    func pagedFixedBackgroundDoesNotLimitPageCount() async throws {
+        let continuation = "Paragraph text continues across the paged chapter. "
+        let paragraphs = (0..<80).map {
+            "<p>Paragraph \($0). \(String(repeating: continuation, count: 5))</p>"
+        }.joined()
+        let illustration = """
+        <div id="fixed-illustration" style="position:fixed;right:0;bottom:0;width:100vw;height:60vh;background-image:url('data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%20120%20120%22%3E%3Crect%20width=%22120%22%20height=%22120%22%20fill=%22red%22/%3E%3C/svg%3E');background-size:cover"></div>
+        """
+        try await withDOM("<html><body>\(paragraphs)\(illustration)</body></html>",
+            size: NSSize(width: 360, height: 460)) { view in
+            _ = try await js(view, configure(font: 28, spacing: 2.4, layout: .paged))
+            let result = try await js(view, """
+            (()=>{const api=window.__vellumEpub,fixed=document.getElementById('fixed-illustration');
+              const range=document.createRange();
+              range.selectNodeContents(document.querySelector('p:last-of-type'));
+              const right=Array.from(range.getClientRects()).reduce((value,rect)=>
+                rect.width>0&&rect.height>0?Math.max(value,rect.right+scrollX):value,0);
+              const textCount=Math.max(1,Math.ceil(right/innerWidth)),initial=api.pageInfo();
+              const turn=api.turn(1),after=api.pageInfo();
+              return [initial.count,textCount,turn,after.page,getComputedStyle(fixed).position,
+                getComputedStyle(fixed).backgroundImage!=='none'].join('|');
+            })()
+            """) as? String
+            let values = try #require(result).split(separator: "|")
+            let count = try #require(Int(values[0]))
+            let textCount = try #require(Int(values[1]))
+            #expect(values.count == 6)
+            #expect(textCount > 1 && count == textCount)
+            #expect(values[2] == "moved" && Int(values[3]) == 1)
+            #expect(values[4] == "fixed" && values[5] == "true")
+        }
+    }
+
     @Test("RTL EPUB text progresses through paged columns without skipping content")
     func rtlPagedPagination() async throws {
         let paragraphs = (0..<80).map {

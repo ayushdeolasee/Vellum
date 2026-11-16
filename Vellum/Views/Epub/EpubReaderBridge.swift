@@ -251,8 +251,10 @@ enum EpubReaderJavaScript {
         const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT|NodeFilter.SHOW_ELEMENT,{
           acceptNode(node) {
             if (node.nodeType===Node.TEXT_NODE) return node.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+            const computed=getComputedStyle(node);
+            if (computed.position==='fixed') return NodeFilter.FILTER_REJECT;
             return node.matches('img,svg,video,hr,canvas,object,embed,iframe,math,picture') ||
-              getComputedStyle(node).backgroundImage !== 'none' ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+              computed.backgroundImage !== 'none' ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
           }
         });
         let node=walker.lastChild();
