@@ -106,7 +106,8 @@ enum EpubReaderJavaScript {
         c === 0x1680 || (c >= 0x2000 && c <= 0x200a) || [0x2028,0x2029,0x202f,0x205f,0x3000,0xfeff].includes(c);
       let config = null, cache = null, viewport = null, timer = null, restoring = false;
       let resizeTimer = null, resizePending = false, resizeSaved = null, disposed = false;
-      let layoutRestoreGeneration = 0;
+      let layoutRestoreGeneration = 0, deferredLocation = null;
+      let selectionAnchor = null, selectionPinned = false, releaseAfterNextResize = false, releaseAfterCurrentResize = false;
       let pagedBodyDirection = false;
       let annotations = [], overlay = null;
       const element = name => document.createElementNS('http://www.w3.org/1999/xhtml', name);
@@ -331,6 +332,7 @@ enum EpubReaderJavaScript {
       }
       function restore(location, fromResize=false) {
         if (!location) return;
+        if (deferredLocation && !fromResize) return;
         if (!fromResize) layoutRestoreGeneration++;
         if (resizePending && !fromResize) resizeSaved=location;
         restoring=true;
@@ -359,11 +361,13 @@ enum EpubReaderJavaScript {
       function restoreAfterLayout(location) {
         if (!location || disposed) return;
         if (resizePending) resizeSaved=location;
+        deferredLocation=location;
         const generation=++layoutRestoreGeneration;
         const fontsReady=Promise.resolve(document.fonts?.ready);
         const layoutReady=Promise.race([fontsReady,new Promise(resolve=>setTimeout(resolve,150))]);
         layoutReady.then(()=>setTimeout(()=>{
           if (disposed || generation!==layoutRestoreGeneration) return;
+          deferredLocation=null;
           restore(location);
         },0));
       }
@@ -401,27 +405,42 @@ enum EpubReaderJavaScript {
       };
       window.addEventListener('scroll',schedule,{passive:true});
       document.addEventListener('selectionchange',()=>{
+        if (selectionPinned || resizePending) return;
         const anchor=selection();
         // WebKit also clears its selection when focus moves to the note editor.
-        if (anchor) post('selection',{anchor});
+        if (anchor) { selectionAnchor=anchor; post('selection',{anchor}); }
       });
-      const finishSelection=()=>post('selection',{anchor:selection()});
+      const finishSelection=()=>{
+        const anchor=selection();
+        selectionAnchor=anchor; selectionPinned=!!anchor;
+        if (resizePending && anchor) resizeSaved={anchor,progression:viewport?.progression||0};
+        post('selection',{anchor});
+      };
       document.addEventListener('pointerup',event=>{lastPointerWasPen=event.pointerType==='pen';finishSelection();});
       document.addEventListener('keyup',finishSelection);
       window.addEventListener('resize',()=>{
         if (disposed) return;
-        if (!resizePending) { resizePending=true; resizeSaved=viewport; }
+        if (!resizePending) {
+          resizePending=true;
+          releaseAfterCurrentResize=releaseAfterNextResize;
+          releaseAfterNextResize=false;
+          resizeSaved=deferredLocation || (selectionAnchor ? {anchor:selectionAnchor,progression:viewport?.progression||0} : viewport);
+        }
         if (paged()) updatePageGeometry();
+        if (resizeSaved) restore(resizeSaved,true);
         clearTimeout(resizeTimer);
         resizeTimer=setTimeout(()=>{
           const saved=resizeSaved;
           clearTimeout(timer);timer=null;
           try { restore(saved,true); }
-          finally { resizeTimer=null;resizeSaved=null;resizePending=false; }
-          if (saved) report();
+          finally {
+            resizeTimer=null;resizeSaved=null;resizePending=false;
+            if (releaseAfterCurrentResize) { selectionAnchor=null;selectionPinned=false;releaseAfterCurrentResize=false; }
+          }
+          report();
         },100);
       });
-      document.addEventListener('load',()=>{ if(viewport) restore(viewport); },true);
+      document.addEventListener('load',()=>{ if(viewport && !deferredLocation) restore(viewport); },true);
       let lastPointerWasPen=false;
       document.addEventListener('click',event=>{
         if (!paged() || !config?.active || lastPointerWasPen) return;
@@ -460,9 +479,14 @@ enum EpubReaderJavaScript {
         },
         restore, restoreAfterLayout, selection, snapshot, pencil, pageInfo, goTo, turn,
         annotations(items) { annotations=items.slice(0,1000); paint(); },
+        freezeSelectionAnchor() { selectionPinned=!!selectionAnchor; },
+        clearSelectionAnchor() { selectionAnchor=null;selectionPinned=false;releaseAfterNextResize=false; },
+        releaseSelectionAnchorAfterResize() { if (selectionAnchor) releaseAfterNextResize=true; },
         text:()=>index().text, resolve:a=>!!resolve(a),
         dispose() {
-          disposed=true;config=null;resizeSaved=null;resizePending=false;layoutRestoreGeneration++;
+          disposed=true;config=null;resizeSaved=null;resizePending=false;deferredLocation=null;
+          selectionAnchor=null;selectionPinned=false;releaseAfterNextResize=false;releaseAfterCurrentResize=false;
+          layoutRestoreGeneration++;
           clearTimeout(timer);clearTimeout(resizeTimer);timer=null;resizeTimer=null;overlay?.remove();
         }
       };

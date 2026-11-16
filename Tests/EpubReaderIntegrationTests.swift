@@ -645,6 +645,131 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Cross-chapter Find restores its target through the surface coordinator in both layouts")
+    func coordinatedCrossChapterFindRestore() async throws {
+        struct RestoreTarget: Encodable {
+            let anchor: EpubTextAnchor?
+            let progression: Double
+            let fragment: String?
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("epub-coordinator-find-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let oldDocuments = DocumentDataStore.rootDirectoryOverride, oldBooks = EpubLibrary.directoryOverride
+        let oldWeb = WebLibrary.storeDirOverride
+        DocumentDataStore.rootDirectoryOverride = root.appendingPathComponent("documents")
+        EpubLibrary.directoryOverride = root.appendingPathComponent("Books")
+        WebLibrary.storeDirOverride = root.appendingPathComponent("web")
+        defer {
+            DocumentDataStore.rootDirectoryOverride = oldDocuments
+            EpubLibrary.directoryOverride = oldBooks
+            WebLibrary.storeDirOverride = oldWeb
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        var fixture = EpubFixture.epub2()
+        fixture.items.removeAll { $0.path == "OEBPS/a.html" || $0.path == "OEBPS/b.html" }
+        fixture.add("OEBPS/a.html", """
+            <html xmlns="http://www.w3.org/1999/xhtml"><body><h1>First chapter</h1>
+            <p>needle first result.</p></body></html>
+            """)
+        let paragraphs = (0..<80).map {
+            "<p>Paragraph \($0) fills the chapter before the requested cross-chapter search result.</p>"
+        }.joined()
+        fixture.add("OEBPS/b.html", """
+            <html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Second chapter</h1>
+            \(paragraphs)<p>needle target passage.</p></body></html>
+            """)
+        let file = try fixture.write(to: root.appendingPathComponent("book.epub"))
+        let manager = DocumentSessionManager()
+        let workspace = WorkspaceStore(sessions: manager,
+            positions: DocumentPositionService(storage: InMemoryPositionStorage()))
+        let app = workspace.focusedPane.app
+        let ai = AiStore(settings: AiSettings()); ai.app = app
+        let annotations = AnnotationStore(app: app)
+        let scratchpad = ScratchpadStore()
+        await app.openFile(path: file.path)
+        let binding = try #require(app.activeDocumentBinding)
+        let session = try #require(manager.documentSession(sessionId: binding.tabId) as? EpubDocumentSession)
+
+        for layout in [EpubReaderLayout.scroll, .paged] {
+            let reader = EpubReaderController()
+            reader.bind(app: app, ai: ai, annotations: annotations, scratchpad: scratchpad,
+                session: session, tabId: binding.tabId)
+            reader.settings.layout = layout
+            reader.activate(true)
+            await reader.drain()
+            reader.go(chapter: 0)
+            let initialLocation = try #require(reader.location)
+
+            let coordinator = EpubReaderSurface.Coordinator(session: session)
+            let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = .nonPersistent()
+            configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+            configuration.setURLSchemeHandler(coordinator.resources, forURLScheme: EpubResourceSchemeHandler.scheme)
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: EpubReaderJavaScript.source, injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true, in: .defaultClient))
+            configuration.userContentController.add(coordinator, contentWorld: .defaultClient, name: "epubReader")
+            let view = EpubChapterWebView(frame: NSRect(x: 0, y: 0, width: 420, height: 480),
+                configuration: configuration)
+            view.navigationDelegate = coordinator
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+            window.contentView = view
+            window.orderFrontRegardless()
+            var surface = EpubReaderSurface(reader: reader, session: session, location: initialLocation,
+                settings: reader.settings, annotations: annotations.annotations, dark: false, palette: .light)
+            coordinator.parent = surface
+            coordinator.show(in: view)
+            try await waitForBridge(view, path: "OEBPS/a.html")
+
+            app.performFind("")
+            app.performFind("needle")
+            await reader.drain()
+            #expect(reader.searchResults.count == 2)
+            #expect(app.findCurrentMatch == 1)
+            app.findNext()
+            let requested = try #require(reader.location)
+            #expect(requested.chapter == 1 && requested.anchor?.quote == "needle")
+            surface = EpubReaderSurface(reader: reader, session: session, location: requested,
+                settings: reader.settings, annotations: annotations.annotations, dark: false, palette: .light)
+            coordinator.parent = surface
+            coordinator.show(in: view)
+            try await waitForBridge(view, path: "OEBPS/b.html")
+            try await Task.sleep(for: .milliseconds(200))
+            let target = EpubReaderJavaScript.literal(RestoreTarget(anchor: requested.anchor,
+                progression: requested.progression, fragment: requested.fragment))
+            _ = try await js(view, """
+                window.__vellumEpub.restore({progression:0});
+                window.__vellumEpub.restoreAfterLayout(\(target));
+                document.dispatchEvent(new Event('load'));
+                """)
+            try await Task.sleep(for: .milliseconds(400))
+
+            let targetRange = layout == .paged
+                ? pagedRangeVisibleOnCurrentPage("needle target passage")
+                : rangeWithinViewport("needle target passage")
+            #expect(app.findCurrentMatch == 2)
+            #expect(try await js(view, targetRange) as? Bool == true)
+
+            view.stopLoading()
+            coordinator.invalidateLoad()
+            coordinator.resources.cancelAll()
+            await coordinator.resources.drain()
+            view.navigationDelegate = nil
+            view.configuration.userContentController.removeAllScriptMessageHandlers()
+            window.orderOut(nil)
+            window.contentView = nil
+            _ = await reader.close()
+        }
+        await app.closeFile()
+        await app.awaitPendingTabTeardowns()
+        await workspace.awaitMaintenance()
+    }
+
     @Test("Paged resize bursts keep the original passage on the current page")
     func pagedResizeBurst() async throws {
         let (html, anchor) = try resizeFixture()
@@ -663,6 +788,54 @@ struct EpubReaderIntegrationTests {
             try await resizeBurst(view, in: window)
             #expect((try await js(view, "window.__vellumEpub.snapshot().anchor?.quote") as? String)?.contains("Paragraph 60") == true)
             #expect(try await js(view, rangeStartsInsideViewport("Paragraph 60 contains a unique passage")) as? Bool == true)
+        }
+    }
+
+    @Test("Paged note selection remains anchored through a collapsed resize and paints only its quote")
+    func pagedNoteSelectionResize() async throws {
+        let (html, _) = try resizeFixture()
+        try await withDOM(html, size: NSSize(width: 420, height: 480)) { view in
+            _ = try await js(view, configure(font: 28, spacing: 2.4, layout: .paged))
+            _ = try await js(view, "window.__vellumEpub.restore({progression:0})")
+            _ = try await js(view, """
+            (()=>{const q='Paragraph 60 contains a unique passage';
+              const node=Array.from(document.querySelectorAll('p')).map(p=>p.firstChild)
+                .find(n=>n&&n.nodeType===Node.TEXT_NODE&&n.data.includes(q));if(!node)return false;
+              const start=node.data.indexOf(q),r=document.createRange();r.setStart(node,start);r.setEnd(node,start+q.length);
+              const rect=r.getBoundingClientRect();window.__vellumEpub.goTo(Math.floor((scrollX+rect.left)/innerWidth));})()
+            """)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+            window.contentView = view
+            window.orderFrontRegardless()
+            defer { window.orderOut(nil); window.contentView = nil }
+            #expect(try await js(view, pagedRangeVisibleOnCurrentPage("Paragraph 60 contains a unique passage")) as? Bool == true)
+
+            let captured = try await js(view, """
+            (()=>{const q='Paragraph 60 contains a unique passage';
+              const node=Array.from(document.querySelectorAll('p')).map(p=>p.firstChild)
+                .find(n=>n&&n.nodeType===Node.TEXT_NODE&&n.data.includes(q));if(!node)return false;
+              const start=node.data.indexOf(q),range=document.createRange();range.setStart(node,start);range.setEnd(node,start+q.length);
+              const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+              document.dispatchEvent(new Event('selectionchange'));
+              window.__testNoteAnchor=window.__vellumEpub.selection();
+              selection.removeAllRanges();document.dispatchEvent(new Event('selectionchange'));
+              return window.__testNoteAnchor?.quote||false;})()
+            """) as? String
+            #expect(captured == "Paragraph 60 contains a unique passage")
+
+            try await resizeBurst(view, in: window, includeNearZeroHeight: true,
+                keepingVisible: "Paragraph 60 contains a unique passage")
+            #expect((try await js(view, "window.__vellumEpub.snapshot().anchor?.quote") as? String)?
+                .contains("Paragraph 60") == true)
+            #expect(try await js(view, pagedRangeVisibleOnCurrentPage("Paragraph 60 contains a unique passage")) as? Bool == true)
+            _ = try await js(view, """
+            window.__vellumEpub.annotations([{id:'selected-note',anchor:window.__testNoteAnchor,color:'#ff0000'}])
+            """)
+            #expect(try await js(view, annotationRectsMatchSelection("Paragraph 60 contains a unique passage")) as? Bool == true)
         }
     }
 
@@ -765,6 +938,7 @@ struct EpubReaderIntegrationTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let oldDocuments = DocumentDataStore.rootDirectoryOverride, oldBooks = EpubLibrary.directoryOverride
         let oldWeb = WebLibrary.storeDirOverride
+        let oldLayout = AppDefaults.current.string(forKey: EpubReaderSettings.layoutKey)
         DocumentDataStore.rootDirectoryOverride = root.appendingPathComponent("documents")
         EpubLibrary.directoryOverride = root.appendingPathComponent("Books")
         WebLibrary.storeDirOverride = root.appendingPathComponent("web")
@@ -772,10 +946,17 @@ struct EpubReaderIntegrationTests {
             DocumentDataStore.rootDirectoryOverride = oldDocuments
             EpubLibrary.directoryOverride = oldBooks
             WebLibrary.storeDirOverride = oldWeb
+            if let oldLayout { AppDefaults.current.set(oldLayout, forKey: EpubReaderSettings.layoutKey) }
+            else { AppDefaults.current.removeObject(forKey: EpubReaderSettings.layoutKey) }
             try? FileManager.default.removeItem(at: root)
         }
 
-        let file = try EpubFixture.epub2().write(to: root.appendingPathComponent("book.epub"))
+        var fixture = EpubFixture.epub2()
+        fixture.items.removeAll { $0.path == "OEBPS/a.html" || $0.path == "OEBPS/b.html" }
+        fixture.add("OEBPS/a.html", "<html><body><p>needle first.</p><p>needle second.</p></body></html>")
+        let repeated = (0..<600).map { "<p>needle result \($0).</p>" }.joined()
+        fixture.add("OEBPS/b.html", "<html><body>\(repeated)</body></html>")
+        let file = try fixture.write(to: root.appendingPathComponent("book.epub"))
         let manager = DocumentSessionManager()
         let workspace = WorkspaceStore(sessions: manager,
             positions: DocumentPositionService(storage: InMemoryPositionStorage()))
@@ -790,13 +971,14 @@ struct EpubReaderIntegrationTests {
         reader.bind(app: app, ai: ai, annotations: notes, scratchpad: scratchpad, session: session, tabId: binding.tabId)
         reader.activate(true)
         await reader.drain()
-        app.performFind("Text")
+        app.performFind("needle")
         await reader.drain()
+        app.findNext()
         app.findNext()
         let location = try #require(reader.location)
         let expectedCount = reader.searchResults.count
         let expectedCurrent = reader.searchIndex + 1
-        #expect(expectedCount > 1 && expectedCurrent > 1)
+        #expect(expectedCount > 1 && expectedCurrent == 3 && reader.searchTruncated)
 
         reader.deactivate()
         app.setFindSearching(true)
@@ -811,7 +993,24 @@ struct EpubReaderIntegrationTests {
         #expect(app.findCurrentMatch == expectedCurrent)
         #expect(reader.location == location)
 
-        _ = await reader.close()
+        app.newStartTab()
+        AppDefaults.current.set(EpubReaderLayout.paged.rawValue, forKey: EpubReaderSettings.layoutKey)
+        app.activateTab(binding.tabId)
+        let replacement = EpubReaderController()
+        replacement.bind(app: app, ai: ai, annotations: notes, scratchpad: scratchpad, session: session, tabId: binding.tabId)
+        replacement.activate(true)
+        await replacement.drain()
+        app.performFind(app.findQuery)
+        await replacement.drain()
+        #expect(!app.findIsSearching)
+        #expect(app.findTruncated)
+        #expect(app.findMatchCount == expectedCount)
+        #expect(app.findCurrentMatch == expectedCurrent)
+        #expect(replacement.location?.chapter == location.chapter)
+        #expect(replacement.location?.anchor == location.anchor)
+        #expect(replacement.location?.progression == location.progression)
+
+        _ = await replacement.close()
         await app.closeFile()
         await app.awaitPendingTabTeardowns()
         await workspace.awaitMaintenance()
@@ -1017,6 +1216,18 @@ struct EpubReaderIntegrationTests {
         """
     }
 
+    private func pagedRangeVisibleOnCurrentPage(_ quote: String) -> String {
+        let literal = EpubReaderJavaScript.literal(quote)
+        return """
+        (()=>{const q=\(literal),node=Array.from(document.querySelectorAll('p')).map(p=>p.firstChild)
+          .find(n=>n&&n.nodeType===Node.TEXT_NODE&&n.data.includes(q));if(!node)return false;
+          const start=node.data.indexOf(q),r=document.createRange();r.setStart(node,start);r.setEnd(node,start+q.length);
+          const page=window.__vellumEpub.pageInfo().page;
+          return Array.from(r.getClientRects()).some(rect=>rect.width>0&&rect.left>=0&&rect.left<innerWidth&&
+            rect.top<innerHeight&&rect.bottom>0&&Math.floor((scrollX+rect.left)/innerWidth)===page);})()
+        """
+    }
+
     private func rangeWithinViewport(_ quote: String) -> String {
         let literal = EpubReaderJavaScript.literal(quote)
         return """
@@ -1027,7 +1238,35 @@ struct EpubReaderIntegrationTests {
         """
     }
 
-    private func resizeBurst(_ view: WKWebView, in window: NSWindow, restoringDuringBurst: String? = nil) async throws {
+    private func annotationRectsMatchSelection(_ quote: String) -> String {
+        let literal = EpubReaderJavaScript.literal(quote)
+        return """
+        (()=>{const q=\(literal),node=Array.from(document.querySelectorAll('p')).map(p=>p.firstChild)
+          .find(n=>n&&n.nodeType===Node.TEXT_NODE&&n.data.includes(q));if(!node)return false;
+          const start=node.data.indexOf(q),r=document.createRange();r.setStart(node,start);r.setEnd(node,start+q.length);
+          const textRects=Array.from(r.getClientRects()),marks=Array.from(document.querySelectorAll('button[aria-label="Open annotation"]'));
+          return textRects.length>0&&marks.length===textRects.length&&textRects.every(text=>marks.some(mark=>{
+            const rect=mark.getBoundingClientRect();
+            return Math.abs(rect.left-text.left)<=2&&Math.abs(rect.top-text.top)<=2&&
+              Math.abs(rect.width-text.width)<=2&&Math.abs(rect.height-text.height)<=2;}));})()
+        """
+    }
+
+    private func waitForBridge(_ view: WKWebView, path: String) async throws {
+        let deadline = ContinuousClock.now + .seconds(8)
+        while ContinuousClock.now < deadline {
+            if EpubResourceSchemeHandler.archivePath(for: view.url ?? URL(string: "about:blank")!) == path,
+               (try? await js(view, "!!window.__vellumEpub")) as? Bool == true {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(EpubResourceSchemeHandler.archivePath(for: view.url ?? URL(string: "about:blank")!) == path)
+        #expect(try await js(view, "!!window.__vellumEpub") as? Bool == true)
+    }
+
+    private func resizeBurst(_ view: WKWebView, in window: NSWindow, restoringDuringBurst: String? = nil,
+                             includeNearZeroHeight: Bool = false, keepingVisible quote: String? = nil) async throws {
         _ = try await js(view, """
         window.__vellumResizeCount=0;window.__vellumScrollCount=0;window.__vellumSawNarrower=false;
         window.addEventListener('resize',()=>{
@@ -1037,7 +1276,9 @@ struct EpubReaderIntegrationTests {
         window.addEventListener('scroll',()=>window.__vellumScrollCount++);
         """)
         _ = try await js(view, "window.dispatchEvent(new Event('scroll'))")
-        let sizes = restoringDuringBurst == nil
+        let sizes = includeNearZeroHeight
+            ? [(404, 462), (388, 444), (360, 24), (372, 426), (356, 408), (420, 480)]
+            : restoringDuringBurst == nil
             ? [(404, 462), (388, 444), (372, 426), (356, 408), (352, 403), (420, 480)]
             : [(404, 462), (388, 444), (420, 480)]
         for (index, (width, height)) in sizes.enumerated() {
@@ -1051,6 +1292,9 @@ struct EpubReaderIntegrationTests {
                 _ = try await js(view, "window.dispatchEvent(new Event('scroll'))")
             }
             try await Task.sleep(for: .milliseconds(90))
+            if let quote, height > 100 {
+                #expect(try await js(view, pagedRangeVisibleOnCurrentPage(quote)) as? Bool == true)
+            }
         }
         try await Task.sleep(for: .milliseconds(400))
         #expect(try await js(view, "innerWidth") as? Int == 420)

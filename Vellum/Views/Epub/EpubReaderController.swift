@@ -107,6 +107,7 @@ final class EpubReaderController {
                   let chapter = self.session?.publication.spineIndex(path: anchor.chapterHref) else { return nil }
             return CapturedWebPosition(pageNumber: chapter + 1, positionData: Self.position(anchor))
         }
+        let restoredSearch = !app.findQuery.isEmpty && restoreCachedSearch(app.findQuery)
         if let pending = app.takePendingEpubCitation(binding: binding) {
             go(chapter: pending.chapterNumber - 1, anchor: pending.anchor)
         } else if location == nil {
@@ -119,7 +120,7 @@ final class EpubReaderController {
                 location = EpubReaderLocation(chapter: chapter, progression: saved?.progression ?? 0,
                     anchor: saved?.textAnchor)
             }
-        } else if !app.findQuery.isEmpty { search(app.findQuery) }
+        } else if !app.findQuery.isEmpty && !restoredSearch { search(app.findQuery) }
     }
 
     func deactivate() {
@@ -129,7 +130,7 @@ final class EpubReaderController {
         handwriting.isPresented = false
         handwriting.listPresented = false
         #endif
-        if selectionNoteDraft == nil { selection = nil }
+        if selectionNoteDraft == nil { clearSelection() }
         if !searchCompleted { searchQuery = nil }
         searchGeneration = UUID(); tasks.values.forEach { $0.cancel() }
         if let binding {
@@ -178,7 +179,9 @@ final class EpubReaderController {
         guard isCurrent, let session, let binding, session.publication.spine.indices.contains(chapter) else { return }
         guard anchor == nil || anchor?.chapterHref == session.publication.spine[chapter].path else { return }
         let progression = progression.isFinite ? min(1, max(0, progression)) : 0
-        selection = nil; notice = nil
+        selection = nil
+        webView?.evaluateJavaScript("window.__vellumEpub?.clearSelectionAnchor();", in: nil, in: .defaultClient) { _ in }
+        notice = nil
         page = nil
         location = EpubReaderLocation(chapter: chapter, progression: progression, fragment: fragment, anchor: anchor)
         app?.setEpubLocation(tabId: binding.tabId, chapter: chapter + 1, progression: progression, anchor: anchor)
@@ -250,7 +253,7 @@ final class EpubReaderController {
         let request = location.request
         let input = CreateAnnotationInput(type: type, pageNumber: chapter + 1, color: color,
             content: note, positionData: Self.position(anchor))
-        clearSelection()
+        clearSelection(preservingAnchorForResize: type == .note)
         run { [self] in
             guard isCurrent, self.location?.request == request else { return }
             let annotation = type == .highlight ? await annotations.addHighlight(input) : await annotations.addNote(input)
@@ -287,6 +290,7 @@ final class EpubReaderController {
     func beginSelectionNote() {
         guard isCurrent, let anchor = selection else { return }
         if selectionNoteDrafts[anchor] == nil { selectionNoteDrafts[anchor] = "" }
+        webView?.evaluateJavaScript("window.__vellumEpub?.freezeSelectionAnchor();", in: nil, in: .defaultClient) { _ in }
         #if os(iOS)
         webView?.endEditing(true)
         #endif
@@ -297,15 +301,32 @@ final class EpubReaderController {
         selectionNoteDrafts[anchor] = text
     }
 
-    func clearSelection() {
-        if let selection { selectionNoteDrafts.removeValue(forKey: selection) }
+    func clearSelection(preservingAnchorForResize: Bool = false) {
+        guard let selectedAnchor = selection else { return }
+        selectionNoteDrafts.removeValue(forKey: selectedAnchor)
         selection = nil
+        let action = preservingAnchorForResize ? "releaseSelectionAnchorAfterResize" : "clearSelectionAnchor"
+        webView?.evaluateJavaScript("window.__vellumEpub?.\(action)();", in: nil, in: .defaultClient) { _ in }
+    }
+
+    private func restoreCachedSearch(_ query: String) -> Bool {
+        guard let binding, let state = app?.epubSearchState(tabId: binding.tabId, query: query) else { return false }
+        searchQuery = query
+        searchResults = state.results
+        searchIndex = searchResults.isEmpty ? 0 : min(max(0, state.index), searchResults.count - 1)
+        searchTruncated = state.truncated
+        searchCompleted = true
+        app?.setFindSearching(false)
+        app?.setFindTruncated(searchTruncated)
+        app?.setFindResults(count: searchResults.count, current: searchResults.isEmpty ? 0 : searchIndex + 1)
+        return true
     }
 
     private func clearSearch() {
         searchGeneration = UUID(); searchTask?.cancel(); searchTask = nil
         searchQuery = nil; searchCompleted = false
         searchResults = []; searchIndex = 0; searchTruncated = false
+        if let binding { app?.clearEpubSearchState(tabId: binding.tabId) }
         if isCurrent { app?.setFindSearching(false); app?.setFindResults(count: 0, current: 0); app?.setFindTruncated(false) }
     }
 
@@ -332,6 +353,10 @@ final class EpubReaderController {
                 searchCompleted = true
                 app?.setFindSearching(false); app?.setFindTruncated(response.truncated)
                 app?.setFindResults(count: searchResults.count, current: searchResults.isEmpty ? 0 : 1)
+                if let binding {
+                    app?.setEpubSearchState(tabId: binding.tabId, query: query, results: searchResults, index: 0,
+                        truncated: searchTruncated)
+                }
                 if let first = searchResults.first { go(chapter: first.chapterNumber - 1, anchor: first.anchor) }
             } catch {
                 guard !Task.isCancelled, isCurrent, searchGeneration == generation else { return }
@@ -348,6 +373,10 @@ final class EpubReaderController {
         let result = searchResults[searchIndex]
         go(chapter: result.chapterNumber - 1, anchor: result.anchor)
         app?.setFindResults(count: searchResults.count, current: searchIndex + 1)
+        if let binding {
+            app?.setEpubSearchState(tabId: binding.tabId, query: searchQuery ?? "", results: searchResults,
+                index: searchIndex, truncated: searchTruncated)
+        }
     }
 }
 
