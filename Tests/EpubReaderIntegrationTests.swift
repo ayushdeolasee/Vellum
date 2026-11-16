@@ -608,6 +608,64 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Reactivating an EPUB reader republishes its cached Find state without navigating")
+    func findStateAfterReactivation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("epub-find-reactivation-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let oldDocuments = DocumentDataStore.rootDirectoryOverride, oldBooks = EpubLibrary.directoryOverride
+        let oldWeb = WebLibrary.storeDirOverride
+        DocumentDataStore.rootDirectoryOverride = root.appendingPathComponent("documents")
+        EpubLibrary.directoryOverride = root.appendingPathComponent("Books")
+        WebLibrary.storeDirOverride = root.appendingPathComponent("web")
+        defer {
+            DocumentDataStore.rootDirectoryOverride = oldDocuments
+            EpubLibrary.directoryOverride = oldBooks
+            WebLibrary.storeDirOverride = oldWeb
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let file = try EpubFixture.epub2().write(to: root.appendingPathComponent("book.epub"))
+        let manager = DocumentSessionManager()
+        let workspace = WorkspaceStore(sessions: manager,
+            positions: DocumentPositionService(storage: InMemoryPositionStorage()))
+        let app = workspace.focusedPane.app
+        let ai = AiStore(settings: AiSettings()); ai.app = app
+        let notes = AnnotationStore(app: app)
+        let scratchpad = ScratchpadStore()
+        await app.openFile(path: file.path)
+        let binding = try #require(app.activeDocumentBinding)
+        let session = try #require(manager.documentSession(sessionId: binding.tabId) as? EpubDocumentSession)
+        let reader = EpubReaderController()
+        reader.bind(app: app, ai: ai, annotations: notes, scratchpad: scratchpad, session: session, tabId: binding.tabId)
+        reader.activate(true)
+        await reader.drain()
+        app.performFind("Text")
+        await reader.drain()
+        app.findNext()
+        let location = try #require(reader.location)
+        let expectedCount = reader.searchResults.count
+        let expectedCurrent = reader.searchIndex + 1
+        #expect(expectedCount > 1 && expectedCurrent > 1)
+
+        reader.deactivate()
+        app.setFindSearching(true)
+        app.setFindTruncated(!reader.searchTruncated)
+        app.setFindResults(count: 0, current: 0)
+        reader.activate(true)
+        await reader.drain()
+
+        #expect(!app.findIsSearching)
+        #expect(app.findTruncated == reader.searchTruncated)
+        #expect(app.findMatchCount == expectedCount)
+        #expect(app.findCurrentMatch == expectedCurrent)
+        #expect(reader.location == location)
+
+        _ = await reader.close()
+        await app.closeFile()
+        await app.awaitPendingTabTeardowns()
+        await workspace.awaitMaintenance()
+    }
+
     @Test("Active owner scopes search/AI/annotations, generic jumps clear anchors, close joins cancelled work")
     func lifecycle() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("epub-reader-\(UUID())")

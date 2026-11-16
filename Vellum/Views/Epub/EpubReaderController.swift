@@ -310,7 +310,13 @@ final class EpubReaderController {
     }
 
     private func search(_ query: String) {
-        guard query != searchQuery else { return }
+        if query == searchQuery {
+            guard isCurrent, searchCompleted else { return }
+            app?.setFindSearching(false)
+            app?.setFindTruncated(searchTruncated)
+            app?.setFindResults(count: searchResults.count, current: searchResults.isEmpty ? 0 : searchIndex + 1)
+            return
+        }
         clearSearch()
         guard isCurrent, let session, !query.isEmpty else { return }
         searchQuery = query
