@@ -45,6 +45,8 @@ struct WebContextMenuState {
     var point: CGPoint
     var anchor: WebNoteAnchor?
     var openedAt: Date
+    /// The http(s) link under the pointer, when the right-click landed on one.
+    var linkURL: URL? = nil
 }
 
 struct WebNoteViewerState {
@@ -118,8 +120,14 @@ struct WebViewerView: View {
                         x: menu.point.x, y: menu.point.y,
                         placement: .menu, containerSize: proxy.size
                     ) {
-                        WebContextMenuView(
+                        DocumentContextMenuView(
+                            linkURL: menu.linkURL,
                             canAddNote: menu.anchor != nil,
+                            addNoteHelp: menu.anchor != nil
+                                ? "" : "No text near this spot to attach a note to",
+                            onOpenInSidebar: { controller.contextMenuOpenLinkInSidebar() },
+                            onOpenInDefaultBrowser: { controller.contextMenuOpenLinkInDefaultBrowser() },
+                            onCopyLink: { controller.contextMenuCopyLink() },
                             onAddNote: { controller.contextMenuAddNote() })
                             .onGeometryChange(for: CGRect.self) { geometry in
                                 geometry.frame(in: .global)
@@ -906,6 +914,35 @@ final class WebViewerController: NSObject {
         }
     }
 
+    // MARK: Link actions
+
+    /// A link clicked in the article opens beside it in the sidebar browser
+    /// instead of replacing the article. Falls back to the old in-reader
+    /// navigation only if there is no window workspace to show it in.
+    private func openClickedLink(_ url: URL) {
+        if !DocumentLinkActions.activate(url, workspace: app?.workspace) {
+            navigateTo(url.absoluteString)
+        }
+    }
+
+    func contextMenuOpenLinkInSidebar() {
+        guard let url = contextMenu?.linkURL else { return }
+        hideContextMenu()
+        app?.workspace?.openInSidebarBrowser(url)
+    }
+
+    func contextMenuOpenLinkInDefaultBrowser() {
+        guard let url = contextMenu?.linkURL else { return }
+        hideContextMenu()
+        DocumentLinkActions.openInDefaultBrowser(url)
+    }
+
+    func contextMenuCopyLink() {
+        guard let url = contextMenu?.linkURL else { return }
+        hideContextMenu()
+        DocumentLinkActions.copy(url)
+    }
+
     func contextMenuAddNote() {
         guard let menu = contextMenu else { return }
         // Unconditionally, and before the anchor check: the menu is going away
@@ -1494,7 +1531,8 @@ final class WebViewerController: NSObject {
             showContextMenu(WebContextMenuState(
                 point: point,
                 anchor: found ? parseNoteAnchor(data) : nil,
-                openedAt: Date()))
+                openedAt: Date(),
+                linkURL: DocumentLinkActions.browsableURL(from: data["linkURL"] as? String)))
 
         case "annotation-click":
             guard let id = data["id"] as? String, let annotationStore else { break }
@@ -1543,6 +1581,12 @@ final class WebViewerController: NSObject {
         case "navigate":
             guard let url = data["url"] as? String else { break }
             navigateTo(url)
+
+        case "open-link":
+            // A clicked link (WebContentScript's link interceptor). Untrusted
+            // page input: only absolute http(s) URLs are accepted.
+            guard let url = DocumentLinkActions.browsableURL(from: data["url"] as? String) else { break }
+            openClickedLink(url)
 
         case "open-youtube":
             // The YouTube facade (WebContentScript) hands embeds off to the system

@@ -168,6 +168,37 @@ final class WorkspaceStore {
         sidebarOpen = true
     }
 
+    // MARK: Sidebar browser hand-off
+
+    /// A one-shot "load this page in the sidebar browser" request from a
+    /// reader link. The id makes two clicks on the same link distinct changes,
+    /// so the browser reloads the link even if it is already on that URL.
+    struct BrowserOpenRequest: Equatable, Sendable {
+        let id = UUID()
+        let url: URL
+    }
+
+    /// Set by `openInSidebarBrowser`, cleared by the browser once it loads it.
+    /// Held here (not posted as a notification) so a request survives the
+    /// browser panel mounting for the first time when the inspector opens.
+    private(set) var browserOpenRequest: BrowserOpenRequest?
+
+    /// Shows the Browser panel and asks it to load `url`. http(s) only — the
+    /// browser itself refuses other schemes.
+    func openInSidebarBrowser(_ url: URL) {
+        guard focusedPane.app.document != nil,
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https"
+        else { return }
+        browserOpenRequest = BrowserOpenRequest(url: url)
+        revealSidebarTab(.browser)
+    }
+
+    /// Hands the pending request to the browser exactly once.
+    func takeBrowserOpenRequest() -> URL? {
+        defer { browserOpenRequest = nil }
+        return browserOpenRequest?.url
+    }
+
     /// Remembers user resizing while the inspector is genuinely visible.
     /// Geometry briefly collapses when a start tab suppresses the inspector;
     /// rejecting that transient measurement lets the next document reopen at
