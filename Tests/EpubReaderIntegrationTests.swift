@@ -268,6 +268,50 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Selection handle changes update the note anchor without another pointerup")
+    func selectionHandleUpdatesNoteAnchor() async throws {
+        let messages = DOMMessages()
+        let html = """
+            <html><body>
+            <p id="first">Selection handles start at each word and extend into</p>
+            <p id="second">a second paragraph and finish on target text.</p>
+            </body></html>
+            """
+        let expectedQuote = "handles start at each word and extend into a second paragraph and finish on target text."
+        try await withDOM(html, messages: messages, size: NSSize(width: 420, height: 480)) { view in
+            _ = try await js(view, configure(layout: .paged))
+            _ = try await js(view, """
+                (()=>{const node=document.querySelector('#first').firstChild,start=node.data.indexOf('each');
+                  const range=document.createRange();range.setStart(node,start);range.setEnd(node,start+4);
+                  const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+                  document.dispatchEvent(new Event('selectionchange'));
+                  document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerType:'touch'}));
+                  setTimeout(()=>window.webkit.messageHandlers.epubReader.postMessage({checkpoint:'initial-selection'}),0);})()
+                """)
+            try await messages.wait(for: "initial-selection")
+            #expect((messages.selections.last?["anchor"] as? [String: Any])?["quote"] as? String == "each")
+
+            messages.bodies.removeAll()
+            _ = try await js(view, """
+                (()=>{const startNode=document.querySelector('#first').firstChild;
+                  const endNode=document.querySelector('#second').firstChild;
+                  const start=startNode.data.indexOf('handles'),end=endNode.data.length;
+                  window.getSelection().setBaseAndExtent(startNode,start,endNode,end);
+                  setTimeout(()=>window.webkit.messageHandlers.epubReader.postMessage({checkpoint:'handles-dragged'}),50);})()
+                """)
+            try await messages.wait(for: "handles-dragged")
+            let postedAnchor = try #require(messages.selections.last?["anchor"] as? [String: Any])
+            #expect(postedAnchor["quote"] as? String == expectedQuote)
+
+            let data = try JSONSerialization.data(withJSONObject: postedAnchor)
+            let anchor = try JSONDecoder().decode(EpubTextAnchor.self, from: data)
+            _ = try await js(view, """
+                window.__vellumEpub.annotations([{id:'dragged-note',anchor:\(EpubReaderJavaScript.literal(anchor)),color:'#ff0000'}])
+                """)
+            #expect(try await js(view, annotationRectsMatchCurrentSelection()) as? Bool == true)
+        }
+    }
+
     @Test("Pencil ranges produce durable quotes and handwriting markers survive reflow")
     func pencilRangeAndHandwritingMarker() async throws {
         let html = "<html><body><p>Alpha bravo charlie delta echo</p></body></html>"
@@ -1249,6 +1293,18 @@ struct EpubReaderIntegrationTests {
             const rect=mark.getBoundingClientRect();
             return Math.abs(rect.left-text.left)<=2&&Math.abs(rect.top-text.top)<=2&&
               Math.abs(rect.width-text.width)<=2&&Math.abs(rect.height-text.height)<=2;}));})()
+        """
+    }
+
+    private func annotationRectsMatchCurrentSelection() -> String {
+        """
+        (()=>{const selection=window.getSelection();if(!selection||selection.isCollapsed||!selection.rangeCount)return false;
+          const textRects=Array.from(selection.getRangeAt(0).getClientRects());
+          const marks=Array.from(document.querySelectorAll('button[aria-label="Open annotation"]'));
+          const matches=(text,mark)=>{const rect=mark.getBoundingClientRect();
+            return Math.abs(rect.left-text.left)<=2&&Math.abs(rect.top-text.top)<=2&&
+              Math.abs(rect.width-text.width)<=2&&Math.abs(rect.height-text.height)<=2;};
+          return textRects.length>0&&marks.length===textRects.length&&textRects.every(text=>marks.some(mark=>matches(text,mark)));})()
         """
     }
 

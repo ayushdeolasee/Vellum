@@ -412,7 +412,7 @@ enum EpubReaderJavaScript {
       });
       const finishSelection=()=>{
         const anchor=selection();
-        selectionAnchor=anchor; selectionPinned=!!anchor;
+        selectionAnchor=anchor;
         if (resizePending && anchor) resizeSaved={anchor,progression:viewport?.progression||0};
         post('selection',{anchor});
       };

@@ -32,6 +32,9 @@ struct EpubReaderView: View {
                             settings: reader.settings, annotations: annotations.annotations,
                             dark: colorScheme == .dark, palette: palette,
                             handwritingNotes: reader.handwritingNotes, pencilHighlighting: reader.pencilHighlighting)
+                        #if os(iOS)
+                            .ignoresSafeArea(.keyboard)
+                        #endif
                         if let anchor = reader.selectedAnchor, reader.isCurrent {
                             SelectionPopover(
                                 selection: PdfTextSelection(text: anchor.quote,
