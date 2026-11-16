@@ -450,6 +450,48 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Paged page count includes a trailing background image block")
+    func pagedTrailingBackgroundImage() async throws {
+        let continuation = "Words fill the final page before the illustration. "
+        let paragraphs = (0..<80).map {
+            "<p>Paragraph \($0). \(String(repeating: continuation, count: 5))</p>"
+        }.joined()
+        let illustration = """
+        <div id="end-illustration" style="break-before:column;height:60vh;background-image:url('data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%20120%20120%22%3E%3Crect%20width=%22120%22%20height=%22120%22%20fill=%22red%22/%3E%3C/svg%3E');background-size:cover"></div>
+        """
+        try await withDOM("<html><body>\(paragraphs)\(illustration)</body></html>",
+            size: NSSize(width: 360, height: 460)) { view in
+            _ = try await js(view, configure(font: 28, spacing: 2.4, layout: .paged))
+            let result = try await js(view, """
+            (()=>{const api=window.__vellumEpub,illustration=document.getElementById('end-illustration');
+              const initial=api.pageInfo(),rect=illustration.getBoundingClientRect();
+              const expected=Math.max(1,Math.ceil((scrollX+rect.right)/innerWidth));
+              const illustrationPage=Math.floor((scrollX+rect.left)/innerWidth);
+              let reached=false;
+              for(let turn=0;turn<initial.count;turn++){
+                if(api.pageInfo().page===illustrationPage){reached=true;break;}
+                if(api.turn(1)!=='moved')break;
+              }
+              const page=api.pageInfo(),visibleRect=illustration.getBoundingClientRect();
+              const visible=visibleRect.width>0&&visibleRect.height>0&&visibleRect.left<innerWidth&&visibleRect.right>0;
+              const hasBackground=getComputedStyle(illustration).backgroundImage!=='none';
+              const edge=api.turn(1);
+              return [initial.count,expected,illustrationPage,page.page,reached,visible,hasBackground,edge].join('|');
+            })()
+            """) as? String
+            let values = try #require(result).split(separator: "|")
+            let count = try #require(Int(values[0]))
+            let expected = try #require(Int(values[1]))
+            let illustrationPage = try #require(Int(values[2]))
+            #expect(values.count == 8)
+            #expect(count == expected && count > 1)
+            #expect(illustrationPage == count - 1)
+            #expect(Int(values[3]) == illustrationPage && values[4] == "true")
+            #expect(values[5] == "true" && values[6] == "true")
+            #expect(values[7] == "edge")
+        }
+    }
+
     @Test("RTL EPUB text progresses through paged columns without skipping content")
     func rtlPagedPagination() async throws {
         let paragraphs = (0..<80).map {
