@@ -537,6 +537,7 @@ final class AppStore {
             updateTab(tabId) { tab in
                 tab.document = doc
                 tab.currentPage = page
+                tab.scrollFraction = resume?.scrollFraction
                 tab.numPages = doc.pageCount ?? 0
                 tab.visiblePages = []
                 tab.webVisibleRange = nil
@@ -894,6 +895,7 @@ final class AppStore {
                 id: sessionId,
                 document: opened,
                 currentPage: source.currentPage,
+                scrollFraction: source.scrollFraction,
                 numPages: source.numPages,
                 zoom: source.zoom,
                 visiblePages: [],
@@ -1061,6 +1063,7 @@ final class AppStore {
                     id: sessionId,
                     document: opened,
                     currentPage: page,
+                    scrollFraction: resume?.scrollFraction,
                     numPages: opened.pageCount ?? 0,
                     zoom: descriptor.zoom,
                     visiblePages: [],
@@ -1101,6 +1104,17 @@ final class AppStore {
         guard currentPage != page else { return }
         currentPage = page
         updateActiveTab { $0.currentPage = page }
+        recordActivePosition()
+    }
+
+    /// Fine-grained reading position inside the current page (PDF) or
+    /// document (web); see `PdfTab.scrollFraction`. Not mirrored on the pane:
+    /// only persistence and restore read it, so it lives on the tab alone.
+    func setScrollFraction(_ fraction: Double) {
+        guard fraction.isFinite, let activeTabId,
+              let tab = tabs.first(where: { $0.id == activeTabId }) else { return }
+        if let previous = tab.scrollFraction, abs(previous - fraction) < 0.001 { return }
+        updateActiveTab { $0.scrollFraction = fraction }
         recordActivePosition()
     }
 
@@ -1923,6 +1937,7 @@ final class AppStore {
             id: sessionId,
             document: doc,
             currentPage: openingPage,
+            scrollFraction: resume?.scrollFraction,
             numPages: doc.pageCount ?? 0,
             zoom: 1.0,
             visiblePages: [],

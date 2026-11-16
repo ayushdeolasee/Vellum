@@ -1424,6 +1424,9 @@ final class WebViewerController: NSObject {
             if let bookmarks = data["visibleBookmarks"] as? [Any] {
                 app.setWebVisibleBookmarks(bookmarks.compactMap { $0 as? String })
             }
+            if let fraction = doubleValue(data["scrollFraction"]) {
+                app.setScrollFraction(min(1, max(0, fraction)))
+            }
 
         case "selection":
             handleSelection(data, app: app)
@@ -1768,9 +1771,12 @@ final class WebViewerController: NSObject {
         // re-extraction must not yank the reader away from where they are.
         if restoredUrl != currentDoc.pdfPath {
             restoredUrl = currentDoc.pdfPath
-            let target = app.currentPage
-            if target > 1 {
-                post("scroll-to-page", ["page": target])
+            // Prefer the exact scroll offset; fall back to the virtual page
+            // for positions saved before offsets were recorded.
+            if let fraction = app.tab(id: tabId)?.scrollFraction, fraction > 0 {
+                post("scroll-to-fraction", ["fraction": fraction])
+            } else if app.currentPage > 1 {
+                post("scroll-to-page", ["page": app.currentPage])
             }
         }
     }

@@ -237,6 +237,13 @@ struct PdfTab: Identifiable, Equatable, Sendable {
     /// Live only: restoration makes a new binding, while a pane move keeps it.
     var documentBindingGeneration = UUID()
     var currentPage: Int
+    /// Where inside `currentPage` the reader is, so reopening lands on the
+    /// exact spot rather than the top of the page. Mirrors
+    /// `ReadingPosition.scrollFraction`: for PDFs, the viewport top's offset
+    /// from the top of `currentPage` as a fraction of that page's height (may
+    /// be slightly negative when the page starts below the viewport top); for
+    /// webpages, the whole document's vertical scroll fraction (0...1).
+    var scrollFraction: Double? = nil
     var numPages: Int
     var zoom: Double
     var visiblePages: [Int]

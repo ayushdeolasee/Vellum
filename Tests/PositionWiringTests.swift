@@ -68,6 +68,49 @@ struct PositionWiringTests {
         #expect(sessions.ensureDocumentIdCalls == 0)
     }
 
+    @Test("Opening restores the in-page scroll offset and records new offsets")
+    func openingRestoresAndRecordsScrollFraction() async throws {
+        let path = "/tmp/scroll-fraction.pdf"
+        let key = DocumentKey.pdfPath(path)
+        let t0 = PositionFixtures.date("2026-08-02T09:00:00.000000+00:00")
+        let storage = InMemoryPositionStorage()
+        storage.seed(
+            PositionFixtures.record(
+                .mac,
+                writtenAt: t0,
+                documents: [
+                    key: .init(
+                        readingPosition: Stamped(
+                            at: t0,
+                            value: ReadingPosition(page: 4, pageCount: 10, scrollFraction: 0.62)),
+                        openedAt: t0)
+                ]))
+        let sessions = StubPositionSessionService(
+            openFileInfo: DocumentInfo(
+                kind: .pdf,
+                pdfPath: path,
+                title: "Scrolled",
+                pageCount: 10,
+                lastPage: nil,
+                docId: nil))
+        let positions = service(storage: storage)
+        let workspace = WorkspaceStore(sessions: sessions, positions: positions)
+        let app = workspace.focusedPane.app
+
+        await app.openFile(path: path)
+
+        let tabId = try #require(app.activeTabId)
+        #expect(app.currentPage == 4)
+        #expect(app.tab(id: tabId)?.scrollFraction == 0.62)
+
+        app.setScrollFraction(0.25)
+        await app.flushPendingPositionRecords()
+        let document = try #require(app.document)
+        let resumed = await positions.resumePosition(for: document)
+        #expect(resumed?.page == 4)
+        #expect(resumed?.scrollFraction == 0.25)
+    }
+
     @Test("Opening a webpage through the app leaves the sidecar bytes untouched")
     func openingWebpageLeavesSidecarBytesUntouched() async throws {
         try await withScratch { scratch in

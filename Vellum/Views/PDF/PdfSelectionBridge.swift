@@ -71,6 +71,8 @@ final class PdfViewerController: HighlightResizeControlling {
     private(set) var highlightResize: (id: String, positionData: PositionData)?
 
     @ObservationIgnored private var initialPage = 1
+    /// Offset inside `initialPage` to restore (see `PdfTab.scrollFraction`).
+    @ObservationIgnored private var initialScrollFraction: Double?
     @ObservationIgnored private var didInitialScroll = false
     @ObservationIgnored private var lastScrollOrigin: CGPoint?
     @ObservationIgnored private var lastScrollScale: CGFloat?
@@ -105,6 +107,7 @@ final class PdfViewerController: HighlightResizeControlling {
         annotationStore: AnnotationStore,
         ai: AiStore,
         initialPage: Int,
+        initialScrollFraction: Double? = nil,
         tabId: String,
         runtime: LiveTabRuntime
     ) {
@@ -116,6 +119,7 @@ final class PdfViewerController: HighlightResizeControlling {
         self.tabId = tabId
         self.runtime = runtime
         self.initialPage = initialPage
+        self.initialScrollFraction = initialScrollFraction
         // Embedded annotations are stripped off-main by the caller (PdfViewerView
         // .load) before adopt, so they render ONLY from store overlays and never
         // double-draw. Stripping here would repeat that heavy work on the main
@@ -159,7 +163,8 @@ final class PdfViewerController: HighlightResizeControlling {
     }
 
     /// Called by PdfKitView once the PDFView exists with the document set:
-    /// restore the tab's reading position (last_page) and seed visible pages.
+    /// restore the tab's reading position (last_page plus the offset inside
+    /// it) and seed visible pages.
     /// Two hops of the run loop stand in for the original's double rAF.
     func documentAttached() {
         guard !didInitialScroll else { return }
@@ -169,7 +174,12 @@ final class PdfViewerController: HighlightResizeControlling {
                 guard let self, self.pdfView != nil else { return }
                 let pages = self.document?.pageCount ?? 0
                 guard pages >= 1 else { return }
-                self.scrollToPage(min(pages, max(1, self.initialPage)))
+                let page = min(pages, max(1, self.initialPage))
+                if let fraction = self.initialScrollFraction, fraction != 0 {
+                    self.scrollToPage(page, fraction: fraction)
+                } else {
+                    self.scrollToPage(page)
+                }
                 self.recomputeVisiblePages()
                 self.bumpGeometry()
             }
@@ -296,6 +306,12 @@ final class PdfViewerController: HighlightResizeControlling {
         if !visible.isEmpty {
             app.setVisiblePages(visible)
             app.setCurrentPage(dominantPage)
+            // Remember where inside that page the viewport top sits, so a
+            // reopen restores the exact spot instead of the page's top edge.
+            if let frame = pageViewFrame(pageNumber: dominantPage), frame.height > 0 {
+                let fraction = min(1, max(-1, -frame.minY / frame.height))
+                app.setScrollFraction((fraction * 10_000).rounded() / 10_000)
+            }
         }
     }
 
@@ -331,6 +347,32 @@ final class PdfViewerController: HighlightResizeControlling {
         let desired = CGPoint(x: clip.bounds.origin.x, y: targetY)
         let constrained = clip.constrainBoundsRect(
             CGRect(origin: desired, size: clip.bounds.size))
+        clip.scroll(to: constrained.origin)
+        docView.enclosingScrollView?.reflectScrolledClipView(clip)
+    }
+
+    /// Scroll so the viewport top sits `fraction` of the way down the page
+    /// (0 = page top, matching `scrollToPage(_:)`). Used to restore a saved
+    /// reading position; the horizontal pan is preserved like `scrollToPage`.
+    func scrollToPage(_ pageNumber: Int, fraction: Double) {
+        guard let pdfView, let doc = pdfView.document,
+              pageNumber >= 1, pageNumber <= doc.pageCount,
+              let page = doc.page(at: pageNumber - 1),
+              let docView = pdfView.documentView,
+              let clip = docView.superview as? NSClipView else {
+            scrollToPage(pageNumber)
+            return
+        }
+        // Page rect in PDFView space already accounts for rotation and zoom.
+        let rect = pdfView.convert(page.bounds(for: pdfView.displayBox), from: page)
+        let clamped = min(1, max(-1, fraction))
+        let viewY = pdfView.isFlipped
+            ? rect.minY + clamped * rect.height
+            : rect.maxY - clamped * rect.height
+        let docPoint = docView.convert(CGPoint(x: rect.minX, y: viewY), from: pdfView)
+        let targetY = docView.isFlipped ? docPoint.y : docPoint.y - clip.bounds.height
+        let constrained = clip.constrainBoundsRect(
+            CGRect(origin: CGPoint(x: clip.bounds.origin.x, y: targetY), size: clip.bounds.size))
         clip.scroll(to: constrained.origin)
         docView.enclosingScrollView?.reflectScrolledClipView(clip)
     }
