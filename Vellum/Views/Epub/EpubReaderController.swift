@@ -47,6 +47,8 @@ final class EpubReaderController {
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var searchTask: Task<Void, Never>?
     private var searchGeneration = UUID()
+    private var searchQuery: String?
+    private var searchCompleted = false
     private var activation = UUID()
     private var registeredAI = false
     private let handlerToken = UUID()
@@ -128,6 +130,7 @@ final class EpubReaderController {
         handwriting.listPresented = false
         #endif
         if selectionNoteDraft == nil { selection = nil }
+        if !searchCompleted { searchQuery = nil }
         searchGeneration = UUID(); tasks.values.forEach { $0.cancel() }
         if let binding {
             if registeredAI { ai?.unregisterEpubSession(binding: binding); registeredAI = false }
@@ -301,13 +304,16 @@ final class EpubReaderController {
 
     private func clearSearch() {
         searchGeneration = UUID(); searchTask?.cancel(); searchTask = nil
+        searchQuery = nil; searchCompleted = false
         searchResults = []; searchIndex = 0; searchTruncated = false
         if isCurrent { app?.setFindSearching(false); app?.setFindResults(count: 0, current: 0); app?.setFindTruncated(false) }
     }
 
     private func search(_ query: String) {
+        guard query != searchQuery else { return }
         clearSearch()
         guard isCurrent, let session, !query.isEmpty else { return }
+        searchQuery = query
         let generation = searchGeneration
         app?.setFindSearching(true)
         let id = UUID()
@@ -317,11 +323,13 @@ final class EpubReaderController {
                 let response = try await session.search(query: query, limit: 500)
                 guard !Task.isCancelled, isCurrent, searchGeneration == generation else { return }
                 searchResults = response.results; searchTruncated = response.truncated
+                searchCompleted = true
                 app?.setFindSearching(false); app?.setFindTruncated(response.truncated)
                 app?.setFindResults(count: searchResults.count, current: searchResults.isEmpty ? 0 : 1)
                 if let first = searchResults.first { go(chapter: first.chapterNumber - 1, anchor: first.anchor) }
             } catch {
                 guard !Task.isCancelled, isCurrent, searchGeneration == generation else { return }
+                searchCompleted = true
                 app?.setFindSearching(false); notice = error.localizedDescription
             }
         }

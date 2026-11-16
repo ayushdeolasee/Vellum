@@ -105,6 +105,8 @@ enum EpubReaderJavaScript {
       const whitespace = c => (c >= 9 && c <= 13) || c === 32 || c === 0x85 || c === 0xa0 ||
         c === 0x1680 || (c >= 0x2000 && c <= 0x200a) || [0x2028,0x2029,0x202f,0x205f,0x3000,0xfeff].includes(c);
       let config = null, cache = null, viewport = null, timer = null, restoring = false;
+      let resizeTimer = null, resizePending = false, resizeSaved = null, disposed = false;
+      let layoutRestoreGeneration = 0;
       let annotations = [], overlay = null;
       const element = name => document.createElementNS('http://www.w3.org/1999/xhtml', name);
       const style = element('style');
@@ -239,10 +241,22 @@ enum EpubReaderJavaScript {
         document.documentElement.style.setProperty('--vellum-page-margin',margin+'px');
         document.documentElement.style.setProperty('--vellum-page-width',Math.max(1,innerWidth-margin*2)+'px');
         document.documentElement.style.setProperty('--vellum-page-gap',margin*2+'px');
+        const width=Math.max(1,innerWidth), count=contentPageCount();
+        const page=Math.max(0,Math.min(count-1,Math.round(scrollX/width)));
+        if (page!==Math.round(scrollX/width)) scrollTo(page*width,0);
+      }
+      function contentPageCount() {
+        const width=Math.max(1,innerWidth), range=document.createRange();
+        range.selectNodeContents(document.body);
+        const right=Array.from(range.getClientRects()).reduce((value,rect)=>
+          rect.width>0&&rect.height>0 ? Math.max(value,rect.right+scrollX) : value,0);
+        return Math.max(1,Math.ceil(Math.max(0,right)/width));
       }
       function pageInfo() {
-        const width=Math.max(1,innerWidth), count=Math.max(1,Math.round(document.documentElement.scrollWidth/width));
-        return {page:Math.max(0,Math.min(count-1,Math.round(scrollX/width))),count};
+        const width=Math.max(1,innerWidth), count=contentPageCount(), rawPage=Math.round(scrollX/width);
+        const page=Math.max(0,Math.min(count-1,rawPage));
+        if (paged() && page!==rawPage) scrollTo(page*width,0);
+        return {page,count};
       }
       function goTo(page) {
         const info=pageInfo(), target=Math.max(0,Math.min(info.count-1,Math.trunc(Number(page)||0)));
@@ -292,13 +306,15 @@ enum EpubReaderJavaScript {
         return {anchor:current,progression:scrollable()?Math.min(1,scrollY/scrollable()):0};
       }
       function report() {
-        if (restoring || !config?.active) return;
+        if (restoring || resizePending || disposed || !config?.active) return;
         viewport=snapshot();
         if (paged()) post('progress',{anchor:viewport.anchor,value:viewport.progression,page:viewport.page,pageCount:viewport.pageCount});
         else post('progress',{anchor:viewport.anchor,value:viewport.progression});
       }
-      function restore(location) {
+      function restore(location, fromResize=false) {
         if (!location) return;
+        if (!fromResize) layoutRestoreGeneration++;
+        if (resizePending && !fromResize) resizeSaved=location;
         restoring=true;
         const pagedMode=paged();
         const r=location.anchor && resolve(location.anchor);
@@ -321,6 +337,17 @@ enum EpubReaderJavaScript {
           }
         }
         restoring=false; viewport=snapshot(); paint(); report();
+      }
+      function restoreAfterLayout(location) {
+        if (!location || disposed) return;
+        if (resizePending) resizeSaved=location;
+        const generation=++layoutRestoreGeneration;
+        const fontsReady=Promise.resolve(document.fonts?.ready);
+        const layoutReady=Promise.race([fontsReady,new Promise(resolve=>setTimeout(resolve,150))]);
+        layoutReady.then(()=>setTimeout(()=>{
+          if (disposed || generation!==layoutRestoreGeneration) return;
+          restore(location);
+        },0));
       }
       function paint() {
         if (!overlay) { overlay=element('div'); overlay.setAttribute('aria-label','Passage annotations');
@@ -350,7 +377,10 @@ enum EpubReaderJavaScript {
         }
         post('unresolved',{unresolved});
       }
-      const schedule=()=>{clearTimeout(timer);timer=setTimeout(report,200);};
+      const schedule=()=>{
+        if (restoring || resizePending || disposed || !config?.active) return;
+        clearTimeout(timer);timer=setTimeout(report,200);
+      };
       window.addEventListener('scroll',schedule,{passive:true});
       document.addEventListener('selectionchange',()=>{
         const anchor=selection();
@@ -360,10 +390,18 @@ enum EpubReaderJavaScript {
       const finishSelection=()=>post('selection',{anchor:selection()});
       document.addEventListener('pointerup',event=>{lastPointerWasPen=event.pointerType==='pen';finishSelection();});
       document.addEventListener('keyup',finishSelection);
-      let resizeTimer;
       window.addEventListener('resize',()=>{
-        const saved=viewport; clearTimeout(resizeTimer);
-        resizeTimer=setTimeout(()=>{ if(paged()) updatePageGeometry(); restore(saved); },100);
+        if (disposed) return;
+        if (!resizePending) { resizePending=true; resizeSaved=viewport; }
+        if (paged()) updatePageGeometry();
+        clearTimeout(resizeTimer);
+        resizeTimer=setTimeout(()=>{
+          const saved=resizeSaved;
+          clearTimeout(timer);timer=null;
+          try { restore(saved,true); }
+          finally { resizeTimer=null;resizeSaved=null;resizePending=false; }
+          if (saved) report();
+        },100);
       });
       document.addEventListener('load',()=>{ if(viewport) restore(viewport); },true);
       let lastPointerWasPen=false;
@@ -394,10 +432,13 @@ enum EpubReaderJavaScript {
           // Inherited controls retain publisher headings, emphasis, images and layout.
           if (saved) restore(saved);
         },
-        restore, selection, snapshot, pencil, pageInfo, goTo, turn,
+        restore, restoreAfterLayout, selection, snapshot, pencil, pageInfo, goTo, turn,
         annotations(items) { annotations=items.slice(0,1000); paint(); },
         text:()=>index().text, resolve:a=>!!resolve(a),
-        dispose() { config=null; clearTimeout(timer);clearTimeout(resizeTimer);overlay?.remove(); }
+        dispose() {
+          disposed=true;config=null;resizeSaved=null;resizePending=false;layoutRestoreGeneration++;
+          clearTimeout(timer);clearTimeout(resizeTimer);timer=null;resizeTimer=null;overlay?.remove();
+        }
       };
     })();
     """#

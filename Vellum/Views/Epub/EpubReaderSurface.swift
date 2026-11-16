@@ -275,7 +275,7 @@ struct EpubReaderSurface: EpubViewRepresentable {
             if pending {
                 pending = false
                 let passage = Passage(anchor: parent.location.anchor, progression: parent.location.progression, fragment: parent.location.fragment)
-                script += "window.__vellumEpub?.restore(\(EpubReaderJavaScript.literal(passage)));"
+                script += "window.__vellumEpub?.restoreAfterLayout(\(EpubReaderJavaScript.literal(passage)));"
             }
             if !script.isEmpty { view.evaluateJavaScript(script, in: nil, in: .defaultClient) { _ in } }
         }
