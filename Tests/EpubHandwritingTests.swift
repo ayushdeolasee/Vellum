@@ -376,6 +376,92 @@ struct EpubHandwritingTests {
         }
     }
 
+    @Test("Paged JavaScript turns still scroll when native WebKit scrolling is disabled")
+    func pagedJavaScriptScroll() async throws {
+        let paragraphs = (0..<100).map {
+            "<p>Paragraph \($0) contains enough words to fill multiple book pages.</p>"
+        }.joined()
+        let html = """
+        <html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>
+        <body>\(paragraphs)</body></html>
+        """
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        configuration.userContentController.addUserScript(WKUserScript(source: EpubReaderJavaScript.source,
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 420, height: 480), configuration: configuration)
+        let load = PagedDOMLoad()
+        webView.navigationDelegate = load
+        defer {
+            webView.stopLoading()
+            webView.navigationDelegate = nil
+            webView.configuration.userContentController.removeAllUserScripts()
+        }
+        webView.loadHTMLString(html, baseURL: nil)
+        try await load.wait()
+        _ = try await script(webView, """
+        window.__vellumEpub.configure({token:'test',href:'OEBPS/a.html',active:true,dark:false,
+          settings:{fontSize:18,lineSpacing:1.6,layout:'paged'},
+          colors:{well:'rgb(245,245,245)',surface:'rgb(255,255,255)',foreground:'rgb(30,30,30)',
+            primary:'rgb(0,90,200)',border:'rgb(220,220,220)'}})
+        """)
+        let count = try await script(webView, "window.__vellumEpub.pageInfo().count") as? Int ?? 0
+        #expect(count > 1)
+        webView.scrollView.isScrollEnabled = false
+        #expect(try await script(webView, "window.__vellumEpub.turn(1)") as? String == "moved")
+        for _ in 0..<20 {
+            if try await script(webView, "Math.abs(scrollX-innerWidth)<1") as? Bool == true { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(try await script(webView, "Math.abs(scrollX-innerWidth)<1") as? Bool == true)
+    }
+
+    private func script(_ webView: WKWebView, _ source: String) async throws -> Any? {
+        let result: PagedScriptResult = try await withCheckedThrowingContinuation { continuation in
+            webView.evaluateJavaScript(source, in: nil, in: .defaultClient) { result in
+                continuation.resume(with: result.map { PagedScriptResult(value: $0) })
+            }
+        }
+        return result.value
+    }
+
+    @MainActor private final class PagedDOMLoad: NSObject, WKNavigationDelegate {
+        private var continuation: CheckedContinuation<Void, Error>?
+        private var isLoaded = false
+        private var loadError: Error?
+
+        func wait() async throws {
+            if let loadError { throw loadError }
+            if isLoaded { return }
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            isLoaded = true
+            continuation?.resume()
+            continuation = nil
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            loadError = error
+            continuation?.resume(throwing: error)
+            continuation = nil
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+                     withError error: Error) {
+            loadError = error
+            continuation?.resume(throwing: error)
+            continuation = nil
+        }
+    }
+
+    private struct PagedScriptResult: @unchecked Sendable {
+        let value: Any?
+    }
+
     private final class NoteFocusWebView: WKWebView {
         var endEditingCount = 0
         var onEndEditing: (() -> Void)?

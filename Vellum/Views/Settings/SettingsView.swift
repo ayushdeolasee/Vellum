@@ -388,6 +388,8 @@ private struct GeneralSettingsTab: View {
 
 private struct ReadingSettingsTab: View {
     @Environment(WorkspaceStore.self) private var workspace
+    @AppStorage(EpubReaderSettings.layoutKey, store: AppDefaults.current)
+    private var epubLayoutRaw = EpubReaderLayout.scroll.rawValue
     #if os(iOS)
     @AppStorage(ReaderControlPreferences.alwaysShowReaderControlsKey, store: AppDefaults.current)
     private var alwaysShowReaderControls = false
@@ -429,6 +431,14 @@ private struct ReadingSettingsTab: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+
+            #if os(macOS)
+            booksSection
+            #elseif os(iOS)
+            if ShellIdiom_iOS.current == .pad {
+                booksSection
+            }
+            #endif
 
             #if os(iOS)
             if ShellIdiom_iOS.current == .phone {
@@ -501,6 +511,22 @@ private struct ReadingSettingsTab: View {
             get: { workspace.sidebarFontSize },
             set: { workspace.sidebarFontSize = $0 }
         )
+    }
+
+    private var booksSection: some View {
+        Section {
+            Picker("Page layout", selection: $epubLayoutRaw) {
+                Text("Scroll").tag(EpubReaderLayout.scroll.rawValue)
+                Text("Pages").tag(EpubReaderLayout.paged.rawValue)
+            }
+            .accessibilityIdentifier("settings.reader.epubLayout")
+        } header: {
+            Text("Books")
+        } footer: {
+            Text("Choose whether EPUB books scroll continuously or turn page by page.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

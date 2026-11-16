@@ -370,7 +370,14 @@ final class AppStore {
         let drain: () async -> Bool
         let close: () async -> Bool
     }
+    private struct EpubSearchState {
+        let query: String
+        let results: [EpubSearchResult]
+        let index: Int
+        let truncated: Bool
+    }
     @ObservationIgnored private var epubReaders: [String: EpubReaderOwner] = [:]
+    @ObservationIgnored private var epubSearchStates: [String: EpubSearchState] = [:]
     @ObservationIgnored private var epubCitationTask: Task<Void, Never>?
     @ObservationIgnored private var cancelledEpubCitationTasks: [Task<Void, Never>] = []
     private var epubCitationGeneration = UUID()
@@ -380,6 +387,7 @@ final class AppStore {
                             drain: @escaping () async -> Bool, close: @escaping () async -> Bool) {
         guard documentBinding(for: binding.tabId) == binding else { return }
         let previous = epubReaders[binding.tabId]
+        if let previous, previous.binding != binding { epubSearchStates[binding.tabId] = nil }
         epubReaders[binding.tabId] = EpubReaderOwner(binding: binding, deactivate: deactivate, drain: drain, close: close)
         if let previous {
             previous.deactivate()
@@ -388,6 +396,19 @@ final class AppStore {
                 teardowns.registerReleaseFlush(document: document) { await previous.close() }
             }
         }
+    }
+
+    func epubSearchState(tabId: String, query: String) -> (results: [EpubSearchResult], index: Int, truncated: Bool)? {
+        guard let state = epubSearchStates[tabId], state.query == query else { return nil }
+        return (state.results, state.index, state.truncated)
+    }
+
+    func setEpubSearchState(tabId: String, query: String, results: [EpubSearchResult], index: Int, truncated: Bool) {
+        epubSearchStates[tabId] = EpubSearchState(query: query, results: results, index: index, truncated: truncated)
+    }
+
+    func clearEpubSearchState(tabId: String) {
+        epubSearchStates[tabId] = nil
     }
 
     func takePendingEpubCitation(binding: DocumentBinding) -> AiEpubCitation? {
@@ -2252,6 +2273,7 @@ final class AppStore {
 
     private func registerTeardown(for tab: PdfTab, markDocumentClosed: Bool) {
         let epubReader = epubReaders.removeValue(forKey: tab.id)
+        epubSearchStates[tab.id] = nil
         epubReader?.deactivate()
         sessions.invalidatePendingOpen(sessionId: tab.id)
         let pendingPositionRecordTask = positionRecordTask
