@@ -1643,7 +1643,17 @@ enum WebContentScript {
     }
   }
 
-  var lastReported = { current: 0, visible: "", bookmarks: "" };
+  var lastReported = { current: 0, visible: "", bookmarks: "", fraction: null };
+
+  // Whole-document vertical scroll fraction (0...1), or null when the page
+  // does not scroll. The app persists it so reopening lands on the same spot.
+  function documentScrollFraction() {
+    var root = document.scrollingElement || document.documentElement;
+    var max = root.scrollHeight - window.innerHeight;
+    if (!(max > 1)) return null;
+    var f = Math.min(1, Math.max(0, window.scrollY / max));
+    return Math.round(f * 10000) / 10000;
+  }
 
   function reportScroll(force) {
     if (pages.length === 0) return;
@@ -1679,17 +1689,26 @@ enum WebContentScript {
       }
     }
     var bookmarksKey = visibleBookmarks.join(",");
+    var fraction = documentScrollFraction();
 
     var visibleKey = visible.join(",");
     if (
       !force &&
       current === lastReported.current &&
       visibleKey === lastReported.visible &&
-      bookmarksKey === lastReported.bookmarks
+      bookmarksKey === lastReported.bookmarks &&
+      (fraction === lastReported.fraction ||
+        (fraction !== null && lastReported.fraction !== null &&
+          Math.abs(fraction - lastReported.fraction) < 0.001))
     ) {
       return;
     }
-    lastReported = { current: current, visible: visibleKey, bookmarks: bookmarksKey };
+    lastReported = {
+      current: current,
+      visible: visibleKey,
+      bookmarks: bookmarksKey,
+      fraction: fraction,
+    };
     // Raw-offset span of the visible virtual pages (legacy fallback for the
     // app shell when visibleBookmarks is absent).
     var firstPage = pages[visible[0] - 1];
@@ -1700,6 +1719,7 @@ enum WebContentScript {
       visibleStart: firstPage ? firstPage.start : 0,
       visibleEnd: lastPage ? lastPage.end : 0,
       visibleBookmarks: visibleBookmarks,
+      scrollFraction: fraction,
     });
   }
 
@@ -2184,6 +2204,14 @@ enum WebContentScript {
       case "scroll-to-page":
         scrollToVirtualPage(Number(d.page) || 1);
         break;
+
+      case "scroll-to-fraction": {
+        var target = Math.min(1, Math.max(0, Number(d.fraction) || 0));
+        var scroller = document.scrollingElement || document.documentElement;
+        var maxScroll = Math.max(0, scroller.scrollHeight - window.innerHeight);
+        window.scrollTo({ top: target * maxScroll, behavior: "auto" });
+        break;
+      }
 
       case "apply-annotations":
         appliedHighlights = Array.isArray(d.highlights) ? d.highlights : [];

@@ -210,13 +210,15 @@ struct PdfViewerView: View {
             // belongs to the OLD document and must not survive into this one.
             runtime.pageTexts = cached ?? [:]
             if isActive { aiStore.restorePageTexts(runtime.pageTexts) }
-            let initialPage = app.tab(id: tabId)?.currentPage ?? 1
+            let initialTab = app.tab(id: tabId)
+            let initialPage = initialTab?.currentPage ?? 1
             controller.adopt(
                 document: document,
                 app: app,
                 annotationStore: annotationStore,
                 ai: aiStore,
                 initialPage: initialPage,
+                initialScrollFraction: initialTab?.scrollFraction,
                 tabId: tabId,
                 runtime: runtime
             )
