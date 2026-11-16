@@ -246,11 +246,25 @@ enum EpubReaderJavaScript {
         if (page!==Math.round(scrollX/width)) scrollTo(page*width,0);
       }
       function contentPageCount() {
-        const width=Math.max(1,innerWidth), range=document.createRange();
-        range.selectNodeContents(document.body);
-        const right=Array.from(range.getClientRects()).reduce((value,rect)=>
-          rect.width>0&&rect.height>0 ? Math.max(value,rect.right+scrollX) : value,0);
-        return Math.max(1,Math.ceil(Math.max(0,right)/width));
+        const width=Math.max(1,innerWidth);
+        const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT|NodeFilter.SHOW_ELEMENT,{
+          acceptNode(node) {
+            if (node.nodeType===Node.TEXT_NODE) return node.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+            return node.matches('img,svg,video,hr') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+          }
+        });
+        let node=walker.lastChild();
+        while (node) {
+          let rects;
+          if (node.nodeType===Node.TEXT_NODE) {
+            const range=document.createRange();range.selectNodeContents(node);rects=range.getClientRects();
+          } else rects=node.getClientRects();
+          let right=0;
+          for (const rect of rects) if (rect.width>0&&rect.height>0) right=Math.max(right,rect.right+scrollX);
+          if (right>0) return Math.max(1,Math.ceil(right/width));
+          node=walker.previousNode();
+        }
+        return 1;
       }
       function pageInfo() {
         const width=Math.max(1,innerWidth), count=contentPageCount(), rawPage=Math.round(scrollX/width);

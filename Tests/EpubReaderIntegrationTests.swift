@@ -414,6 +414,42 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("Paged page count includes a trailing rendered image")
+    func pagedTrailingImage() async throws {
+        let continuation = "Words fill the final page before the image. "
+        let paragraphs = (0..<100).map {
+            "<p>Paragraph \($0). \(String(repeating: continuation, count: 5))</p>"
+        }.joined()
+        let image = """
+        <svg xmlns="http://www.w3.org/2000/svg" width="320" height="300" style="break-before:column">
+          <rect width="320" height="300" fill="blue"/>
+        </svg>
+        """
+        try await withDOM("<html><body>\(paragraphs)\(image)</body></html>",
+            size: NSSize(width: 420, height: 540)) { view in
+            _ = try await js(view, configure(font: 36, spacing: 2.4, layout: .paged))
+            let result = try await js(view, """
+            (()=>{const api=window.__vellumEpub,image=document.querySelector('svg');
+              const rects=Array.from(image.getClientRects()).filter(rect=>rect.width>0&&rect.height>0);
+              const right=rects.reduce((value,rect)=>Math.max(value,rect.right+scrollX),0);
+              const expected=Math.max(1,Math.ceil(right/innerWidth)),info=api.pageInfo();
+              api.goTo(info.count-1);
+              const rect=image.getBoundingClientRect(),imagePage=Math.floor((scrollX+rect.left)/innerWidth);
+              return `${info.count},${expected},${imagePage},${api.turn(1)}`;
+            })()
+            """) as? String
+            let values = try #require(result).split(separator: ",")
+            let count = try #require(Int(values[0]))
+            let expected = try #require(Int(values[1]))
+            let imagePage = try #require(Int(values[2]))
+            #expect(values.count == 4)
+            #expect(count > 1)
+            #expect(count == expected)
+            #expect(imagePage == count - 1)
+            #expect(values[3] == "edge")
+        }
+    }
+
     @Test("Paged restore keeps a passage through reflow, resizing and layout changes")
     func pagedRestore() async throws {
         let (html, anchor) = try pagedFixture()
