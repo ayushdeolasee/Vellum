@@ -450,6 +450,45 @@ struct EpubReaderIntegrationTests {
         }
     }
 
+    @Test("RTL EPUB text progresses through paged columns without skipping content")
+    func rtlPagedPagination() async throws {
+        let paragraphs = (0..<80).map {
+            "<p>فقرة \($0) تحتوي على كلمات كافية لاختبار اتجاه النص وانتقال الصفحات في الكتاب الإلكتروني.</p>"
+        }.joined()
+        let html = "<html xmlns=\"http://www.w3.org/1999/xhtml\" dir=\"rtl\"><body>\(paragraphs)</body></html>"
+        try await withDOM(html, size: NSSize(width: 360, height: 460)) { view in
+            _ = try await js(view, configure(font: 28, spacing: 2.4, layout: .paged))
+            let result = try await js(view, """
+            (()=>{const api=window.__vellumEpub,initial=api.pageInfo(),count=initial.count;
+              let moved=0;
+              for(let page=1;page<count;page++){
+                if(api.turn(1)!=='moved'||api.pageInfo().page!==page)break;
+                moved++;
+              }
+              const last=api.pageInfo(),range=document.createRange();
+              range.selectNodeContents(document.querySelector('p:last-child'));
+              const lastVisible=Array.from(range.getClientRects()).some(rect=>
+                rect.width>0&&rect.height>0&&rect.left>=0&&rect.left<innerWidth&&rect.top<innerHeight&&rect.bottom>0);
+              const edge=api.turn(1),pagedRoot=getComputedStyle(document.documentElement).direction;
+              const pagedBody=getComputedStyle(document.body).direction;
+              return [count,initial.page,last.page,moved,lastVisible,edge,pagedRoot,pagedBody].join('|');
+            })()
+            """) as? String
+            let values = try #require(result).split(separator: "|")
+            let count = try #require(Int(values[0]))
+            #expect(values.count == 8)
+            #expect(count > 1 && Int(values[1]) == 0)
+            #expect(Int(values[2]) == count - 1 && Int(values[3]) == count - 1)
+            #expect(values[4] == "true" && values[5] == "edge")
+            #expect(values[6] == "ltr" && values[7] == "rtl")
+
+            _ = try await js(view, configure(layout: .scroll))
+            let scrollDirections = try await js(view,
+                "getComputedStyle(document.documentElement).direction+'|'+(document.body.style.direction||'empty')") as? String
+            #expect(scrollDirections == "rtl|empty")
+        }
+    }
+
     @Test("Paged restore keeps a passage through reflow, resizing and layout changes")
     func pagedRestore() async throws {
         let (html, anchor) = try pagedFixture()

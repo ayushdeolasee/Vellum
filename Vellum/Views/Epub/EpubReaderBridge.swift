@@ -107,6 +107,7 @@ enum EpubReaderJavaScript {
       let config = null, cache = null, viewport = null, timer = null, restoring = false;
       let resizeTimer = null, resizePending = false, resizeSaved = null, disposed = false;
       let layoutRestoreGeneration = 0;
+      let pagedBodyDirection = false;
       let annotations = [], overlay = null;
       const element = name => document.createElementNS('http://www.w3.org/1999/xhtml', name);
       const style = element('style');
@@ -119,7 +120,7 @@ enum EpubReaderJavaScript {
         a { color:var(--vellum-epub-primary) !important; }
         img,svg,video { max-width:100%; height:auto; } pre { white-space:pre-wrap; }
         html[data-vellum-dark] { color-scheme:dark; }
-        html[data-vellum-paged] { height:100vh; box-sizing:border-box;
+        html[data-vellum-paged] { direction:ltr !important; height:100vh; box-sizing:border-box;
           padding:2.5em var(--vellum-page-margin) 3em; column-width:var(--vellum-page-width);
           column-gap:var(--vellum-page-gap); column-fill:auto; overflow:hidden;
           background:var(--vellum-epub-surface) !important; scroll-behavior:auto !important; }
@@ -430,10 +431,18 @@ enum EpubReaderJavaScript {
       });
       window.__vellumEpub={
         configure(c) {
+          const root=document.documentElement, body=document.body;
+          const originalDirection=getComputedStyle(root).direction;
           const saved=config && snapshot(); config=c;
-          const root=document.documentElement;
           root.toggleAttribute('data-vellum-dark',c.dark);
-          root.toggleAttribute('data-vellum-paged',c.settings.layout==='paged');
+          const pagedMode=c.settings.layout==='paged';
+          if (pagedMode && originalDirection==='rtl' && !body.hasAttribute('dir') && !body.style.direction) {
+            body.style.direction='rtl'; pagedBodyDirection=true;
+          }
+          if (!pagedMode && pagedBodyDirection) {
+            body.style.removeProperty('direction'); pagedBodyDirection=false;
+          }
+          root.toggleAttribute('data-vellum-paged',pagedMode);
           root.style.colorScheme=c.dark?'dark':'light';
           root.style.setProperty('--vellum-epub-well',c.colors.well);
           root.style.setProperty('--vellum-epub-surface',c.colors.surface);
