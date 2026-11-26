@@ -24,6 +24,19 @@ static int fifo, no_progress, last_progress, paint_priority;
 
 typedef struct { gint64 last, gap; int count; } Observer;
 static Observer clicks, paints;
+static int idle_calls, jobs_with_idle[2];
+
+static gboolean competing_idle(gpointer unused) {
+    static gint64 until;
+    static int initial[2];
+    if (idle_calls++ == 0) {
+        until = g_get_monotonic_time() + 150000;
+        memcpy(initial, work, sizeof(initial));
+    }
+    if (g_get_monotonic_time() < until) return G_SOURCE_CONTINUE;
+    for (int i = 0; i < 2; ++i) jobs_with_idle[i] = work[i] - initial[i];
+    return G_SOURCE_REMOVE;
+}
 
 static void observe(Observer *observer, gint64 now) {
     if (!start || now > deadline) return;
@@ -90,6 +103,7 @@ static void clicked(GtkButton *button, gpointer unused) {
     deadline = start + duration_us;
     if (under_load) {
         clicks.last = paints.last = start;
+        g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, competing_idle, NULL, NULL);
         input_source = g_timeout_add_full(G_PRIORITY_DEFAULT_IDLE, 5, emit_input, NULL, NULL);
         tick = gtk_widget_add_tick_callback(bar, request_frame, NULL, NULL);
     }
@@ -147,7 +161,10 @@ static gboolean finish_when_drained(gpointer unused) {
                 "lanes_per_path=%d actor_jobs=%d dispatch_jobs=%d\n",
                 clicks.count, (long)clicks.gap, paints.count, (long)paints.gap,
                 paint_priority, PROBE_LANES, work[0], work[1]);
-        if (!clicks.count || !paints.count || paint_priority <= G_PRIORITY_DEFAULT ||
+        g_print("always_ready_calls=%d concurrent_actor_jobs=%d concurrent_dispatch_jobs=%d\n",
+                idle_calls, jobs_with_idle[0], jobs_with_idle[1]);
+        if (idle_calls < 2 || MIN(jobs_with_idle[0], jobs_with_idle[1]) == 0 ||
+            !clicks.count || !paints.count || paint_priority <= G_PRIORITY_DEFAULT ||
             clicks.gap > starvation_us || paints.gap > starvation_us ||
             MIN(work[0], work[1]) <= PROBE_LANES)
             result = 1;
