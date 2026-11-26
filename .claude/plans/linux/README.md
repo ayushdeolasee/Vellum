@@ -24,7 +24,7 @@ The map is done when nothing is left to decide before someone starts building.
 ## Notes
 
 - Domain: macOS app on `main` (this repo). iPhone/iPad code is not ported.
-- Agents consulted while charting: Gemini 4 Neon and GPT 6.2 Astra (research round 1, review round 2).
+- Agents consulted while charting: Gemini 4 Neon and GPT 6.2 Astra (round 1 research, round 2 review, round 3 work items).
 - Standing preferences: native feel over convenience; personal use first, public later;
   every step must keep the Mac app building and behaving the same.
 - `project.yml` stays the source of truth for Apple targets. Linux builds with SwiftPM.
@@ -53,9 +53,9 @@ The map is done when nothing is left to decide before someone starts building.
 
 ## Open questions (frontier)
 
-- **N1 Licence** — What licence will Vellum have when public? Blocks the PDF engine choice (`02-pdf-engine.md`).
-- **N2 Library location** — Which folder-sync tool carries the shared library (`01-shared-library.md`).
-- **N3 Container runtime** — OrbStack, Docker Desktop, colima or Apple `container` (`03-core-and-shell.md`).
+- **N1 Licence** — What licence will Vellum have when public? The work items assume PDFium (fits any licence); only switching to MuPDF depends on this (`02-pdf-engine.md`).
+- **N2 Library location** — The work items assume Syncthing. Blocks M3, not M0–M2 (`01-shared-library.md`).
+- **N3 Container runtime** — the work items assume **colima** (Astra's scripts use `docker --context colima`); OrbStack also works with a one-line change (`03-core-and-shell.md`). Blocks C0.
 - **N7 v1 feature list** — Proposed below; tabs/panes, read-later integrations and capture are undecided.
 
 ### Proposed v1 feature list (N7)
@@ -72,7 +72,41 @@ reader on a disposable copy of the library, verified to write nothing → (3) sh
 mode and conflict handling → (4) Linux PDF annotation writer → (5) ink. Two machines writing to one
 library is only allowed after a two-machine offline-edit conflict test passes.
 
+## Milestones (round 3: every work item, rolled up)
+
+Every layer now has numbered work items with files, code sketches, tests, acceptance criteria and sizes.
+IDs: `C*` core + Linux app (`03-core-and-shell.md`), `S*` shared library (`01`), `P*` PDF (`02`), `I*` ink (`04`).
+Effort is in **agent-days** (one agent session ≈ S 0.5 · M 1 · L 2.5). It's a rough planning number,
+not a promise.
+
+| # | Milestone | Items | Effort | Done when |
+|---|---|---|---|---|
+| M0 | Foundations | C0, C1, P7, I0 | ~2 | Container builds; `VellumCore` exists and the Mac + iOS Debug builds pass; fixtures committed |
+| M1 | Shared formats in `VellumCore` | C2, C3, C4 | ~6 | Same hashes, positions and `.vellumweb` bytes read identically on Mac and Linux |
+| M2 | **Read-only Linux reader** | C5a, P1, C5b, I1, C5c, I2 | ~6.5 | GTK window shows library, PDF pages (with iPad ink) and an offline article; library checksum unchanged |
+| M3 | Shared library sync | S1–S9 | ~10.5 | Mac and Linux share one Syncthing folder; two-peer offline conflict test recovers everything |
+| M4 | Linux edits PDFs | P4/C6, P3/C7a, P2, P5/C7b, P6 | ~10.5 | Linux highlights and notes read back identically on the Mac, including on xref-stream PDFs |
+| M5 | Portable ink | I3–I8 | ~5.5 | iPad writes portable strokes; Linux shows web ink |
+| M6 | Linux draws ink | I9–I12 | ~5 | Mixed-version iPad + Mac + Linux round trip loses nothing |
+| — | Network seams | C8 | ~2 | Streaming AI and libsecret credentials work on Linux |
+| — | Linux app screens (not itemized yet, see fog) | — | ~10 (guess) | Library/search UI, highlight + note UI, scratchpad, AI chat, settings |
+
+**Personal-use v1 = M0–M4 + C8 + the app screens + I1/I2 ≈ 48 agent-days.** M5–M6 follow.
+P6 (xref streams) stays in v1 because many modern PDFs use them; without it Linux could annotate only some files.
+
+**Critical path:** C0 → C1 → C2 → C3/C4 → C5b → C6 → C7a → C7b. Track S (shared library) runs in parallel from
+C1, and must finish before Linux may write to a library that the Mac also writes.
+
+**Parallel tracks after M0:**
+- Track A: C2 → C3/C4 → C5a/C5b/C5c (Linux reader)
+- Track B: S2, S3, then S1 → S4/S5 → S6/S7 → S8 → S9 (mostly Mac-side work)
+- Track C: I3 → I4 → I5/I6 → I7 (iPad-side ink work, independent of Linux)
+
 ## Not yet specified (fog)
+
+- **Linux app screens beyond the reader**, to be itemized after C5b shows what the thin C adapter costs
+  per screen: library + home search UI (reusing `HomeSearchRanker`), highlight/note creation UI, scratchpad editor,
+  AI chat panel (needs C8), settings (storage folder, API keys), and continue-reading writes.
 
 - How the agent verifies Linux UI (headless Wayland + screenshots, or an AT-SPI driver).
 - API keys per device via libsecret, or synced.
