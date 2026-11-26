@@ -4,17 +4,18 @@ import Glibc
 import VellumCore
 
 /// An open library directory. Moving or replacing its name does not redirect the reader.
-public actor RootDirectory {
-    public nonisolated let url: URL
+public final class RootDirectory: Sendable {
+    public let url: URL
     private let components: [String]
     private let descriptor: Int32
 
-    @concurrent
     public static func open(_ url: URL = URL(fileURLWithPath: "/library", isDirectory: true)) async throws -> RootDirectory {
         let components = try pathComponents(of: url)
-        let fd = library_open_root("/" + components.joined(separator: "/"))
-        guard fd >= 0 else { throw fileError(errno, at: url) }
-        return RootDirectory(url: url, components: components, descriptor: fd)
+        return try await LibraryIO.run { _ in
+            let fd = library_open_root("/" + components.joined(separator: "/"))
+            guard fd >= 0 else { throw fileError(errno, at: url) }
+            return RootDirectory(url: url, components: components, descriptor: fd)
+        }
     }
 
     private init(url: URL, components: [String], descriptor: Int32) {
@@ -23,7 +24,10 @@ public actor RootDirectory {
         self.descriptor = descriptor
     }
 
-    isolated deinit { _ = close(descriptor) }
+    deinit {
+        let fd = descriptor
+        LibraryIO.queue.addOperation { _ = close(fd) }
+    }
 
     private static func pathComponents(of url: URL) throws -> [String] {
         guard url.isFileURL, url.baseURL == nil,
@@ -53,32 +57,35 @@ public actor RootDirectory {
         return relative.isEmpty ? "." : relative.joined(separator: "/")
     }
 
-    func readRegularFile(_ url: URL, byteLimit: Int) throws -> Data? {
-        try Task.checkCancellation()
-        var info = stat()
-        let fd = library_open_file(descriptor, try relativePath(to: url), &info)
-        guard fd >= 0 else {
-            if errno == ENOENT { return nil }
-            throw Self.fileError(errno, at: url)
+    func readRegularFile(_ url: URL, byteLimit: Int) async throws -> Data? {
+        let path = try relativePath(to: url)
+        return try await LibraryIO.run { [self] checkCancellation in
+            var info = stat()
+            let fd = withExtendedLifetime(self) { library_open_file(descriptor, path, &info) }
+            guard fd >= 0 else {
+                if errno == ENOENT { return nil }
+                throw Self.fileError(errno, at: url)
+            }
+            defer { _ = close(fd) }
+            guard info.st_size <= byteLimit else { throw ReaderFileError.fileTooLarge }
+            return try Self.readBytes(from: fd, byteLimit: byteLimit, checkCancellation: checkCancellation)
         }
-        defer { _ = close(fd) }
-        guard info.st_size <= byteLimit else { throw ReaderFileError.fileTooLarge }
-        return try Self.readBytes(from: fd, byteLimit: byteLimit)
     }
 
     // A regular file can grow after fstat or report a zero size despite having bytes.
-    static func readBytes(from fd: Int32, byteLimit: Int) throws -> Data {
+    static func readBytes(from fd: Int32, byteLimit: Int,
+                          checkCancellation: () throws -> Void = Task.checkCancellation) throws -> Data {
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            try Task.checkCancellation()
+            try checkCancellation()
             let remaining = byteLimit - data.count
             let count = buffer.withUnsafeMutableBytes {
-                Glibc.read(fd, $0.baseAddress, min($0.count, remaining + 1))
+                Glibc.read(fd, $0.baseAddress, remaining < $0.count ? remaining + 1 : $0.count)
             }
             if count < 0 {
                 if errno == EINTR { continue }
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                throw ioError(errno)
             }
             if count == 0 { return data }
             guard count <= remaining else { throw ReaderFileError.fileTooLarge }
@@ -86,35 +93,46 @@ public actor RootDirectory {
         }
     }
 
-    func listDirectory(_ url: URL, suffix: String?) throws -> [LibraryFileEntry] {
-        try Task.checkCancellation()
-        guard let stream = library_open_directory(descriptor, try relativePath(to: url)) else {
-            if errno == ENOENT { return [] }
-            throw Self.fileError(errno, at: url)
+    func listDirectory(_ url: URL, suffix: String?) async throws -> [LibraryFileEntry] {
+        let path = try relativePath(to: url)
+        return try await LibraryIO.run { [self] checkCancellation in
+            let directory = withExtendedLifetime(self) { library_open_directory(descriptor, path) }
+            guard let stream = directory else {
+                if errno == ENOENT { return [] }
+                throw Self.fileError(errno, at: url)
+            }
+            defer { _ = closedir(stream) }
+            var entries: [LibraryFileEntry] = []
+            while let rawName = library_next_name(stream) {
+                try checkCancellation()
+                guard let name = String(validatingCString: rawName),
+                      !name.hasPrefix("."), !name.contains(".sync-conflict-"),
+                      suffix.map({ name.hasSuffix($0) }) ?? true else { continue }
+                var info = stat()
+                let result = library_entry_info(stream, rawName, &info)
+                guard result >= 0 else { throw Self.fileError(errno, at: url) }
+                if result == 0 { continue }
+                let isDirectory = info.st_mode & S_IFMT == S_IFDIR
+                let modified = Double(info.st_mtim.tv_sec) + Double(info.st_mtim.tv_nsec) / 1e9
+                entries.append(LibraryFileEntry(
+                    url: url.appendingPathComponent(name, isDirectory: isDirectory),
+                    name: name, readiness: .current, byteSize: Int64(info.st_size),
+                    contentModifiedAt: Date(timeIntervalSince1970: modified)))
+            }
+            guard errno == 0 else { throw Self.fileError(errno, at: url) }
+            return entries.sorted { $0.name < $1.name }
         }
-        defer { _ = closedir(stream) }
-        var entries: [LibraryFileEntry] = []
-        var info = stat()
-        while let rawName = library_next_regular(stream, &info) {
-            try Task.checkCancellation()
-            guard let name = String(validatingCString: rawName),
-                  !name.contains(".sync-conflict-"),
-                  suffix.map({ name.hasSuffix($0) }) ?? true else { continue }
-            let modified = Double(info.st_mtim.tv_sec) + Double(info.st_mtim.tv_nsec) / 1e9
-            entries.append(LibraryFileEntry(
-                url: url.appendingPathComponent(name, isDirectory: false),
-                name: name, readiness: .current, byteSize: Int64(info.st_size),
-                contentModifiedAt: Date(timeIntervalSince1970: modified)))
-        }
-        guard errno == 0 else { throw Self.fileError(errno, at: url) }
-        return entries.sorted { $0.name < $1.name }
+    }
+
+    private static func ioError(_ code: Int32) -> LibraryFileError {
+        .io(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO).localizedDescription)
     }
 
     private static func fileError(_ code: Int32, at url: URL) -> LibraryFileError {
         switch code {
         case ELOOP: return .symbolicLink(url)
         case EXDEV: return .outsideAllowedRoot(url)
-        default: return .io(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO).localizedDescription)
+        default: return ioError(code)
         }
     }
 }

@@ -7,22 +7,18 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-// The kernel checks every component during one fd-relative lookup, including
-// concurrent renames. Descendants cannot cross a mount inside the library.
-static int open_path(int parent, const char *path, int flags, unsigned long long resolve) {
-    struct open_how how = {
-        .flags = flags | O_CLOEXEC | O_NOFOLLOW,
-        .resolve = resolve | RESOLVE_NO_SYMLINKS,
-    };
-    return syscall(SYS_openat2, parent, path, &how, sizeof(how));
-}
-
 int library_open_root(const char *absolute_path) {
-    return open_path(AT_FDCWD, absolute_path, O_RDONLY | O_DIRECTORY, 0);
+    // Ancestors may be aliases (e.g. /home -> /var/home). Pin the selected
+    // directory itself without following a final symlink.
+    return open(absolute_path, O_DIRECTORY | O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
 }
 
 static int open_child(int parent, const char *path, int flags) {
-    return open_path(parent, path, flags, RESOLVE_BENEATH | RESOLVE_NO_XDEV);
+    struct open_how how = {
+        .flags = flags | O_CLOEXEC | O_NOFOLLOW,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_SYMLINKS,
+    };
+    return syscall(SYS_openat2, parent, path, &how, sizeof(how));
 }
 
 static int close_with_error(int fd, int error) {
@@ -48,22 +44,19 @@ DIR *library_open_directory(int root, const char *relative_path) {
     return directory;
 }
 
-const char *library_next_regular(DIR *directory, struct stat *info) {
-    for (;;) {
-        errno = 0;
-        struct dirent *entry = readdir(directory);
-        if (!entry) return NULL;
-        if (entry->d_name[0] == '.') continue;
-        int fd = open_child(dirfd(directory), entry->d_name, O_PATH);
-        if (fd < 0) {
-            if (errno == ENOENT || errno == EXDEV || errno == ELOOP) continue;
-            return NULL;
-        }
-        if (fstat(fd, info) < 0) {
-            close_with_error(fd, errno);
-            return NULL;
-        }
-        close(fd);
-        if (S_ISREG(info->st_mode)) return entry->d_name;
+const char *library_next_name(DIR *directory) {
+    errno = 0;
+    struct dirent *entry = readdir(directory);
+    return entry ? entry->d_name : NULL;
+}
+
+int library_entry_info(DIR *directory, const char *name, struct stat *info) {
+    int fd = open_child(dirfd(directory), name, O_PATH);
+    if (fd < 0) {
+        if (errno == ENOENT || errno == EXDEV || errno == ELOOP) return 0;
+        return -1;
     }
+    if (fstat(fd, info) < 0) return close_with_error(fd, errno);
+    close(fd);
+    return S_ISREG(info->st_mode) || S_ISDIR(info->st_mode);
 }
