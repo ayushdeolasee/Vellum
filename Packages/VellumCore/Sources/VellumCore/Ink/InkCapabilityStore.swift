@@ -14,6 +14,16 @@ public enum InkCapabilityStore {
         root.appendingPathComponent(".vellum/capabilities", isDirectory: true)
     }
 
+    /// Recovery filenames are not always attributable to a device. Any
+    /// retained capability conflict blocks publication until it is resolved.
+    public static func hasPublicationConflict(liveNames: [String], hasRecovery: Bool) -> Bool {
+        hasRecovery || liveNames.contains(where: isUnresolvedEvidence)
+    }
+
+    private static func isUnresolvedEvidence(_ name: String) -> Bool {
+        name.contains(".sync-conflict-") || name.hasSuffix(".icloud")
+    }
+
     public typealias Read = @Sendable (URL, Int) async throws -> Data?
     public typealias Replace = @Sendable (URL, Data, Data?) async throws -> Bool
 
@@ -22,7 +32,7 @@ public enum InkCapabilityStore {
     /// if that build preserves unknown keys or has a different clock.
     public static func advertise(
         in root: URL, device: DeviceID, appBuild: String, now: Date = .now,
-        read: Read, replace: Replace
+        read: Read, canPublish: @Sendable () async throws -> Bool = { true }, replace: Replace
     ) async throws {
         guard validBuild(appBuild), validDevice(device) else { throw LibraryFileError.unavailable }
         let positions = root.appendingPathComponent(".vellum/positions", isDirectory: true)
@@ -45,6 +55,7 @@ public enum InkCapabilityStore {
             }
             let data = try PositionCoding.encoder.encode(record)
             guard data.count <= byteLimit else { throw LibraryFileError.unavailable }
+            guard try await canPublish() else { return }
             if try await replace(url, data, original) { return }
         }
         throw LibraryFileError.retryable
@@ -86,7 +97,7 @@ public enum InkCapabilityStore {
             for name in names {
                 // Our own atomic-write staging and sync-daemon temporary data
                 // are not participants. A conflict or offline placeholder is.
-                if name.contains(".sync-conflict-") || name.hasSuffix(".icloud") {
+                if isUnresolvedEvidence(name) {
                     complete = false
                 } else if SyncArtifact.matches(name) {
                     continue
