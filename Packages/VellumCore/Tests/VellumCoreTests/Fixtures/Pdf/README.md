@@ -66,3 +66,17 @@ BOM. macOS CGPDF decoded the raw string `<EFBBBF616263>` as “ï»¿abc”
 while the portable display decoder reads “abc”. A BOM-prefixed UTF-8 string
 therefore cannot identify an annotation or witness a shared document ID.
 An existing ambiguous stamp is preserved, and the shared file uses its byte hash.
+
+## Modern annotation exchange
+
+`linux-modern-exchange.pdf` is the final 5,395-byte snapshot emitted from
+`xref-stream-objstm.pdf` by the P6 exchange run on arm64 Linux, Swift 6.4.3,
+at `9a1d1008`. Linux appended a stamp and title, a bookmark, a highlight
+and a note, then updated the annotations, bookmark and title. The first
+4,734 bytes are the edited PDF (SHA-256
+`140a36f31c51014b48c19ba5fd0ec7e7bc6dfffc40b54e1e1575b8ca56816c32`).
+The first 5,067 bytes include the highlight deletion. The full file includes
+the note deletion (SHA-256
+`0affacfdd2b60f79ef96c569e161ecf55f6ee91dee96324d14bb5e11d8b312ba`).
+Both hosted bundles open all three revisions in
+`PdfAnnotationExchangeTests.testHostedReaderPreservesModernLinuxExchangeAcrossDeletions`.
