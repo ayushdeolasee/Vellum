@@ -119,9 +119,12 @@ shutil.rmtree(source)
         except subprocess.CalledProcessError:
             return False
 
-    def connected(self, peer):
+    def connection(self, peer):
         connections = json.loads(self.api("system/connections"))["connections"]
-        return connections.get(peer.device, {}).get("connected", False)
+        return connections.get(peer.device, {})
+
+    def connected(self, peer):
+        return self.connection(peer).get("connected", False)
 
     def up_to_date(self, other):
         state = json.loads(self.api("db/status?folder=synthetic"))
@@ -181,6 +184,9 @@ def run(stage, build_container, package, live):
                 else:
                     command = [*opts, "--package-path", package, "--scratch-path", stage / "build"]
                 if verify_only:
+                    # SwiftPM cannot nest its manifest sandbox under Seatbelt.
+                    # Keep the outer read-only policy active for all children.
+                    command.append("--disable-sandbox")
                     command = ["sandbox-exec", "-D", "LIBRARY=" + str(peer.library.resolve()),
                                "-p", '(version 1)(allow default)(deny file-write* (subpath (param "LIBRARY")))',
                                *command]
@@ -301,9 +307,13 @@ def run(stage, build_container, package, live):
             eventually("both conflict directories fully replicated", lambda: mac.up_to_date(linux) and linux.up_to_date(mac))
             print("Six real conflict siblings replicated to each peer.", flush=True)
             if live:
-                assert mac.connected(linux) and linux.connected(mac)
+                def sessions():
+                    connections = [mac.connection(linux), linux.connection(mac)]
+                    assert all(c["connected"] and c["startedAt"] for c in connections)
+                    return [c["startedAt"] for c in connections]
+                started = sessions()
                 phase(linux, "recover")
-                assert mac.connected(linux) and linux.connected(mac)
+                assert sessions() == started
                 linux.scan()
                 def delivered():
                     mac.export()
@@ -313,6 +323,7 @@ def run(stage, build_container, package, live):
                             and files == ledger(linux) and any("/conflicts/" in p for p in files)
                             and mac.up_to_date(linux) and linux.up_to_date(mac))
                 eventually("live Linux recovery delivered to Mac", delivered)
+                assert sessions() == started
                 print("Connected Linux resolver archived six conflicts on the live daemon volume; "
                       "Mac received the recovery before restart.", flush=True)
             # The independent pass consumes two frozen copies with the shipping Mac
