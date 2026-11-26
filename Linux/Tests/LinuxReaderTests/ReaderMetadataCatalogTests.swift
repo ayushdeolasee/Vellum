@@ -89,6 +89,12 @@ import VellumCore
     let bytes = try #require(try await store.read(original.appendingPathComponent(archivePath)))
     let decoded = try ArchiveCodec.decode(bytes)
     #expect(decoded.inkJSON == nil)
+    // The archive remains readable without the peer/record catalog. Its own
+    // normalized manifest URL still identifies this document under shared editing.
+    let (_, standalone) = try await ArchiveResourceMap.load(
+        from: store, file: original.appendingPathComponent(archivePath), catalog: nil)
+    #expect(standalone.storageKey == web.hash && standalone.displayTitle == "Archive title")
+    #expect(standalone.position == ReadingPosition(page: 2, pageCount: 8) && !standalone.hasInkSidecar)
     let selected = try await catalog.web(manifest: decoded.manifest, fallbackTitle: "Filename")
     #expect(selected.displayTitle == "My 東京 title")
     #expect(selected.position == anchor && selected.lastPage == 4 && selected.hasInkSidecar)

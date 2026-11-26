@@ -43,11 +43,12 @@ public struct ArchiveResourceMap: Sendable {
 
     @concurrent
     public static func load(from store: ReadOnlyLibraryFileStore, file: URL,
-                            catalog: ReaderMetadataCatalog) async throws -> (Self, ReaderDocumentMetadata) {
+                            catalog: ReaderMetadataCatalog?) async throws -> (Self, ReaderDocumentMetadata) {
         guard let data = try await store.read(file) else { throw CocoaError(.fileNoSuchFile) }
         try Task.checkCancellation()
         let archive = try ArchiveCodec.decode(data)
-        let metadata = try await catalog.web(manifest: archive.manifest, fallbackTitle: file.lastPathComponent)
+        let metadata = try await ReaderMetadataCatalog.web(manifest: archive.manifest, fallbackTitle: file.lastPathComponent,
+                                                           catalog: catalog)
         try Task.checkCancellation()
         return (Self(archive: archive, documentToken: UUID(), hasInkSidecar: metadata.hasInkSidecar), metadata)
     }

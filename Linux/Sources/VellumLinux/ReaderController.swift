@@ -472,8 +472,10 @@ final class ReaderController {
         reader_set_message(window, title, "Opening offline archive…")
         replaceWork { [self] token in
             do {
-                let metadataCatalog = try await self.catalog(in: store, token: token)
-                let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
+                // Read-only listing already attempted the catalog. Shared edits can invalidate its snapshot.
+                let catalog = self.writeContext == nil ? self.metadataCatalog : try? await self.catalog(in: store, token: token)
+                guard self.isCurrent(token) else { return }
+                let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: catalog)
                 guard self.isCurrent(token) else { return }
                 self.bindPosition(key: metadata.storageKey.flatMap { DocumentKey(rawValue: "web:" + $0) },
                                   storageKey: metadata.storageKey, restored: metadata.position, window: window)
@@ -491,11 +493,23 @@ final class ReaderController {
                         "Saved page \(position.page)" + (position.pageCount.map { " of \($0)" } ?? "")
                     }
                     reader_web_ready(window, metadata.displayTitle, position ?? "")
+                    if self.writeContext != nil && metadata.storageKey == nil {
+                        reader_show_status(window, "Offline archive · Read only")
+                    }
                 }
             } catch {
                 guard self.isCurrent(token) else { return }
                 self.scratchpad?.select(nil)
-                reader_set_message(window, title, "Could not open archive: \(error.localizedDescription)")
+                let message: String
+                switch error {
+                case ReaderFileError.fileTooLarge:
+                    message = "This article exceeds the reader’s archive size limit of \(ArchiveCodec.maxArchiveBytes / (1024 * 1024)) MiB."
+                case let codecError as ArchiveCodecError:
+                    message = "Could not open archive: \(codecError.localizedDescription)"
+                default:
+                    message = "Could not read this article. Check that the file is available and you have permission to read it."
+                }
+                reader_set_message(window, title, message)
             }
         }
     }
