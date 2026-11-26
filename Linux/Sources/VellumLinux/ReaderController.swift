@@ -24,6 +24,7 @@ final class ReaderController {
     private var selection: URL?
     private var bytes: Data?
     private var pdfTitle: String?
+    private var pdfIdentityChecked = false
     private var pageIndex = 0
     private var pageCount = 0
     private var generation = 0
@@ -330,6 +331,7 @@ final class ReaderController {
         selection = nil
         bytes = nil
         pdfTitle = nil
+        pdfIdentityChecked = false
         pageCount = 0
         pageIndex = 0
         webPage = nil
@@ -441,10 +443,12 @@ final class ReaderController {
                     let opening = try await PdfiumDocument.openingInfo(in: loaded)
                     guard self.isCurrent(token) else { return }
                     var restored: ReadingPosition?
-                    var storageKey: String?
+                    var storageKey = opening.stableIdentifier
+                    self.pdfIdentityChecked = storageKey != nil
                     if let catalog = try? await self.catalog(in: store, token: token),
                        let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
                                                                stamp: opening.stableIdentifier, fallbackTitle: title) {
+                        self.pdfIdentityChecked = true
                         restored = saved.position
                         storageKey = saved.storageKey
                         title = saved.displayTitle
@@ -480,7 +484,9 @@ final class ReaderController {
                                     Int32(bitmap.width), Int32(bitmap.height), bitmap.bytesPerRow)
                 }
                 await self.annotations.bind(window: window, bytes: data, index: index, info: info,
-                                            replace: self.pdfReplacement(for: file), recoveredComment: recoveredComment, reload: { draft in
+                                            replace: self.pdfReplacement(for: file), storageKey: self.documentStorageKey,
+                                            identityChecked: self.pdfIdentityChecked,
+                                            recoveredComment: recoveredComment, reload: { draft in
                     self.bytes = nil
                     self.showPage(index, window: window, recoveredComment: draft)
                 }, publish: { edited, visible in

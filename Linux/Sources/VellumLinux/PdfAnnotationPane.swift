@@ -14,21 +14,21 @@ private struct AnnotationPage: Sendable {
     @concurrent
     static func load(_ data: Data, index: Int) async -> Self {
         async let text = try? PdfiumDocument.readText(in: data, at: index)
-        let records: [Annotation]
-        let restriction: String?
-        switch PdfEditEligibility.classify(data) {
-        case .editable:
-            do {
-                records = try PdfAnnotationPureReader.annotations(on: index + 1, in: data, now: "")
-                    .filter { $0.type != .bookmark }
-                restriction = nil
-            } catch {
-                records = []
-                restriction = "Could not read this page’s annotation records."
+        let eligibility = PdfEditEligibility.classify(data)
+        var restriction: String?
+        var records: [Annotation] = []
+        do {
+            switch eligibility {
+            case .editable: break
+            case .readOnly(let reason):
+                restriction = reason.localizedDescription
+                guard reason == .inspectionLimit else { throw reason }
+                try PdfEditEligibility.validateForReading(data)
             }
-        case .readOnly(let reason):
-            records = []
-            restriction = reason.localizedDescription
+            records = try PdfAnnotationPureReader.annotations(on: index + 1, in: data, now: "")
+                .filter { $0.type != .bookmark }
+        } catch {
+            restriction = restriction ?? "Could not read this page’s annotation records."
         }
         return await Self(text: text, records: records, restriction: restriction)
     }
@@ -74,7 +74,7 @@ final class PdfAnnotationPane {
     }
 
     func bind(window: OpaquePointer, bytes: Data, index: Int, info: PdfiumPageInfo,
-              replace: PdfConditionalReplace?, recoveredComment: String?, reload: @escaping (String) -> Void,
+              replace: PdfConditionalReplace?, storageKey: String?, identityChecked: Bool, recoveredComment: String?, reload: @escaping (String) -> Void,
               publish: @escaping (Data, Bool) -> Void) async {
         let panel = reader_pdf_annotations(window)!
         pdf_annotations_reset(panel)
@@ -85,17 +85,17 @@ final class PdfAnnotationPane {
         width = info.widthPt
         height = info.heightPt
         number = index + 1
-        admissionError = nil
+        admissionError = replace != nil && !identityChecked ? "Could not verify the shared PDF identity. Reopen the folder to edit." : nil
         carryComment = recoveredComment?.isEmpty == false
         saving = false
-        if let replace, page.restriction == nil {
+        if let replace, page.restriction == nil, admissionError == nil {
             mutate = { [weak self] edit in
                 guard let self, !self.saving, self.admissionError == nil else { return }
                 self.saving = true
                 self.refresh("Saving annotation…")
                 self.pending = Task {
                     do {
-                        let result = try await Self.save(edit, bytes: bytes, replace: replace)
+                        let result = try await Self.save(edit, bytes: bytes, storageKey: storageKey, replace: replace)
                         let visible = self.panel != nil
                         self.pending = nil
                         self.saving = false
@@ -114,6 +114,8 @@ final class PdfAnnotationPane {
                             self.admissionError = reason.localizedDescription
                             reader_show_status(window, reason.localizedDescription)
                             self.refresh("The original is still open.")
+                        } else if case PdfCoreError.invalidDocument(let reason) = error {
+                            self.refresh("Could not save the annotation. \(reason)")
                         } else {
                             self.refresh("Could not save the annotation. \(error.localizedDescription)")
                         }
@@ -139,13 +141,17 @@ final class PdfAnnotationPane {
         } else {
             refresh(nil)
         }
-        if replace != nil, let reason = page.restriction { reader_show_status(window, "Read only · \(reason)") }
+        if replace != nil, let reason = admissionError ?? page.restriction { reader_show_status(window, "Read only · \(reason)") }
     }
 
     private struct ChangedPDF: Error {}
     @concurrent
-    private static func save(_ edit: PdfAnnotationEdit, bytes: Data, replace: PdfConditionalReplace) async throws -> Data {
-        let edited = try PdfAnnotationIncrement.applying(edit, to: bytes, now: Date().ISO8601Format())
+    private static func save(_ edit: PdfAnnotationEdit, bytes: Data, storageKey: String?, replace: PdfConditionalReplace) async throws -> Data {
+        let edited = try PdfAnnotationIncrement.applying(edit, to: bytes, now: Date().ISO8601Format(),
+                                                        preservingStorageKey: storageKey)
+        if let storageKey, try await PdfiumDocument.openingInfo(in: edited).stableIdentifier != storageKey {
+            throw PdfCoreError.invalidDocument("The shared PDF identity could not be preserved.")
+        }
         guard try await replace(bytes, edited) else { throw ChangedPDF() }
         return edited
     }
