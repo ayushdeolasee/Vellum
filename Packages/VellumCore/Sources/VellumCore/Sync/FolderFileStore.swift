@@ -64,6 +64,20 @@ public struct LocalFolderFileStore: FolderFileStore {
 
     public func read(_ url: URL) async throws -> Data? { try bytes(checked(url)) }
 
+    /// Synchronous reads for callers already on a file I/O executor. A pipe,
+    /// directory or symlink cannot supply a PDF or identity record.
+    public func readRegularFile(_ url: URL) throws -> Data? {
+        let file = try checked(url)
+        do {
+            guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                throw LibraryFileError.unavailable
+            }
+            return try bytes(file)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return nil
+        }
+    }
+
     // Include directories, broken symlinks and special files as occupied names
     // without following or opening them during archive placement.
     public func occupiedNames(in directory: URL) throws -> [String] {

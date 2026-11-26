@@ -8,6 +8,140 @@ import VellumCore
 
 @Suite("Shared folder storage", .serialized, .isolatedStorage)
 struct SyncedFolderStorageTests {
+    @Test("A shared PDF keeps the matching legacy byte-hash notes, chat and reading position")
+    @MainActor
+    func sharedLegacyHashIdentity() async throws {
+        for fixture in ["resume-stream-string", "classic-two-column"] {
+            try await checkLegacyHashIdentity(fixture)
+        }
+    }
+
+    @MainActor
+    private func checkLegacyHashIdentity(_ fixture: String) async throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: tmp) }
+        let root = tmp.appendingPathComponent("shared")
+        let pdf = root.appendingPathComponent("PDFs/Modern.pdf")
+        try fm.createDirectory(at: pdf.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let input = try Data(contentsOf: PdfFixtureBuilder.fixtureURL(fixture))
+        let bytes = SharedPDFIdentity.prepare(input, readID: SharedPDFImport.readID).bytes
+        let hash = DocumentIdentity.byteHash(bytes)
+        let stamp = try #require(SharedPDFImport.readID(bytes))
+        #expect(hash != stamp)
+        try bytes.write(to: pdf)
+        let saved = DocumentInfo(kind: .pdf, pdfPath: pdf.path, title: "Modern", pageCount: 1, lastPage: 1, docId: hash)
+        let suite = "vellum.legacy-pdf." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try await AppDefaults.withDefaults(defaults) {
+            WebStorageSettings.selectSyncedFolder(path: root.path, bookmark: Data())
+            let coordinator = StorageCoordinator(storeDir: tmp.appendingPathComponent("local/web"),
+                rootResolver: { nil }, containerFactory: { nil }, conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+            await coordinator.start()
+            defer {
+                AiPersistence.invalidateCachedConversation(forKey: hash)
+                AiPersistence.invalidateCachedConversation(forKey: stamp)
+            }
+            do {
+                let resolver = try await DocumentAccessResolver.live.configured(for: coordinator)
+                let sessions = DocumentSessionManager()
+                let positions = DocumentPositionService(storage: CoordinatedPositionStorage(coordinator: coordinator))
+                let message = AiPersistence.makeMessage(role: .user, content: "legacy chat")
+                let position = ReadingPosition(page: 1, pageCount: 1, scrollFraction: 0.75)
+                // A session already open when an older peer's record arrives must
+                // recheck the selected identity before its next PDF write.
+                let early = try await resolver.openPickedPDF(url: pdf, sessionId: "early", open: sessions.openFile)
+                #expect(early.docId == SharedPDFIdentity.storageKey(in: bytes, readerID: stamp))
+                let metaURL = root.appendingPathComponent(".vellum/documents/" + hash + "/meta.json")
+                try fm.createDirectory(at: metaURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let record = DocumentDataStore.Meta(version: 1, kind: "pdf", title: "Legacy",
+                    lastKnownPath: "PDFs/Modern.pdf", lastOpened: "2026-01-01T00:00:00Z")
+                try JSONEncoder().encode(record).write(to: metaURL)
+                await #expect(throws: SessionServiceError.self) {
+                    try await sessions.createAnnotation(sessionId: "early", input: .init(type: .note, pageNumber: 1))
+                }
+                try await sessions.closeFile(sessionId: "early")
+                try await DocumentDataStore.saveScratchpad(forKey: hash, text: "legacy notes", coordinator: coordinator)
+                #expect(AiPersistence.saveConversation(for: saved, messages: [message], coordinator: coordinator))
+                #expect(await AiPersistence.awaitPendingFlush())
+                AiPersistence.invalidateCachedConversation(forKey: hash)
+                await positions.recordMoved(document: saved, position: position)
+                await positions.flush()
+                let opened = try await resolver.openPickedPDF(url: pdf, sessionId: "picked", open: sessions.openFile)
+                let key = try #require(opened.docId)
+                #expect(key == hash)
+                #expect(try await DocumentDataStore.loadScratchpad(forKey: key, coordinator: coordinator) == "legacy notes")
+                #expect(await AiPersistence.loadConversation(for: opened, coordinator: coordinator) == [message])
+                #expect(await positions.resumePosition(for: opened) == position)
+                try await DocumentDataStore.touch(document: opened, coordinator: coordinator)
+                #expect(!fm.fileExists(atPath: root.appendingPathComponent(".vellum/documents/" + stamp).path))
+                try await sessions.closeFile(sessionId: "picked")
+                let restored = try await resolver.restoreSavedPDF(saved, sessionId: "restored",
+                    resolveExistingPath: { _ in nil }, open: sessions.openFile)
+                #expect(restored.docId == hash)
+                await #expect(throws: SessionServiceError.self) {
+                    try await sessions.createAnnotation(sessionId: "restored", input: .init(type: .note, pageNumber: 1))
+                }
+                #expect(try Data(contentsOf: pdf) == bytes)
+                try await sessions.closeFile(sessionId: "restored")
+
+                let next = pdf.deletingLastPathComponent().appendingPathComponent("Moved.pdf")
+                let recent = RecentDocument(pdfPath: pdf.path, kind: .pdf, title: nil, pageCount: 1, openedAt: "", docId: hash)
+                #expect(await RecentFilesService.sharedPath(for: recent, coordinator: coordinator) == pdf.path)
+                try fm.moveItem(at: pdf, to: next)
+                try await resolver.relink(key: hash, isDocIdKeyed: true, to: next, coordinator: coordinator).get()
+                #expect(await RecentFilesService.sharedPath(for: recent, coordinator: coordinator) == next.path)
+                let relinked = try await resolver.restoreSavedPDF(saved, sessionId: "moved",
+                    resolveExistingPath: { _ in nil }, open: sessions.openFile)
+                #expect(relinked.docId == hash)
+                #expect(try relinked.pdfPath == PdfDocumentLoader.canonicalize(next.path))
+                #expect(await positions.resumePosition(for: relinked) == position)
+                try await sessions.closeFile(sessionId: "moved")
+
+                // Identical bytes elsewhere do not adopt the old locator's sidecars.
+                if SharedPDFIdentity.stamp(in: bytes, readerID: stamp) != nil {
+                    let copy = pdf.deletingLastPathComponent().appendingPathComponent("Independent.pdf")
+                    try bytes.write(to: copy)
+                    let other = try await resolver.openPickedPDF(url: copy, sessionId: "independent", open: sessions.openFile)
+                    #expect(other.docId == stamp)
+                    try await sessions.closeFile(sessionId: "independent")
+                    await #expect(throws: DocumentAccessError.self) {
+                        try await resolver.relink(key: hash, isDocIdKeyed: true, to: copy, coordinator: coordinator).get()
+                    }
+                    try fm.removeItem(at: copy)
+                }
+                let metaBytes = try Data(contentsOf: metaURL)
+                let different = try PdfDocumentSession.verifiedSharedEdit(
+                    Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column")), expectedID: stamp)
+                let wrong = pdf.deletingLastPathComponent().appendingPathComponent("Other.pdf")
+                try (different + Data("\n".utf8)).write(to: wrong)
+                await #expect(throws: DocumentAccessError.self) {
+                    try await resolver.relink(key: hash, isDocIdKeyed: true, to: wrong, coordinator: coordinator).get()
+                }
+                #expect(try Data(contentsOf: metaURL) == metaBytes)
+                if SharedPDFIdentity.stamp(in: bytes, readerID: stamp) != nil {
+                    var meta = try JSONDecoder().decode(DocumentDataStore.Meta.self, from: metaBytes)
+                    for (kind, path) in [("web", "PDFs/Moved.pdf"), ("pdf", "../PDFs/Moved.pdf"), ("pdf", next.path)] {
+                        meta.kind = kind
+                        meta.lastKnownPath = path
+                        try JSONEncoder().encode(meta).write(to: metaURL)
+                        let other = try await resolver.openPickedPDF(url: next, sessionId: "wrong-record", open: sessions.openFile)
+                        #expect(other.docId == stamp)
+                        try await sessions.closeFile(sessionId: "wrong-record")
+                        await #expect(throws: DocumentAccessError.self) {
+                            try await resolver.relink(key: hash, isDocIdKeyed: true, to: next, coordinator: coordinator).get()
+                        }
+                    }
+                }
+            } catch {
+                await coordinator.stop()
+                throw error
+            }
+            await coordinator.stop()
+        }
+    }
+
     @Test("Shared PDFs import, reopen and relink by verified identity without deleting the prior PDF")
     @MainActor
     func sharedPDFLifecycle() async throws {

@@ -1496,11 +1496,16 @@ final class AppStore {
             if source.resolvingSymlinksInPath().path == destination.resolvingSymlinksInPath().path { return true }
             let bytes = try Data(contentsOf: source)
             if let location = access.sharedPDFs {
+                let stamp = SharedPDFImport.stamp(in: bytes)
                 guard let id = original.docId,
-                      SharedPDFIdentity.storageKey(in: bytes, readerID: SharedPDFImport.readID(bytes)) == id else {
+                      try SharedPDFImport.key(for: bytes, verifiedStamp: stamp, at: source, in: location) == id else {
                     throw DocumentAccessError.unavailable(source.path)
                 }
                 if location.relativePath(for: destination) != nil {
+                    guard try SharedPDFImport.key(for: bytes, verifiedStamp: stamp,
+                                                  at: destination, in: location) == id else {
+                        throw SessionServiceError.io("Use Relink in Settings > Storage to move this PDF with its existing notes.")
+                    }
                     let store = LocalFolderFileStore(root: location.root)
                     let before = try await store.read(destination)
                     guard before == nil || before == bytes,
@@ -1687,8 +1692,13 @@ final class AppStore {
         var payload = imported
         if let shared {
             guard shared.relativePath(for: destination) != nil else { throw DocumentAccessError.unavailable(destination.path) }
-            let prepared = await Task.detached(priority: .userInitiated) {
-                SharedPDFIdentity.prepare(imported.documentData, preferredID: imported.manifest.docId, readID: SharedPDFImport.readID)
+            let prepared = try await Task.detached(priority: .userInitiated) {
+                let bytes = imported.documentData
+                let hash = DocumentIdentity.byteHash(bytes)
+                if try SharedPDFImport.matchesRecord(for: hash, at: destination, bytes: bytes, in: shared) {
+                    return (bytes: bytes, key: hash)
+                }
+                return SharedPDFIdentity.prepare(bytes, preferredID: imported.manifest.docId, readID: SharedPDFImport.readID)
             }.value
             payload.documentData = prepared.bytes
             payload.manifest.docId = prepared.key
@@ -1747,7 +1757,7 @@ final class AppStore {
                     let store = LocalFolderFileStore(root: shared.root)
                     guard try await store.replace(destination, with: imported.documentData, ifCurrent: nil),
                           let saved = try await store.read(destination), saved == imported.documentData,
-                          SharedPDFIdentity.storageKey(in: saved, readerID: SharedPDFImport.readID(saved)) == key else {
+                          try SharedPDFImport.key(for: saved, verifiedStamp: SharedPDFImport.stamp(in: saved), at: destination, in: shared) == key else {
                         throw SessionServiceError.io("Could not confirm the imported PDF. Its sidecar was kept unchanged.")
                     }
                     installedKey = key

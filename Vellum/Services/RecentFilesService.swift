@@ -156,11 +156,9 @@ enum RecentFilesService {
         guard entry.kind == .pdf, let id = entry.docId, DocumentIdentity.isCanonicalKey(id) else { return nil }
         return try? await coordinator.withStorageContext { context in
             guard context.layout.pdfsDir != nil else { return nil }
-            let target = context.layout.documentsDir.appendingPathComponent(id).appendingPathComponent("meta.json")
-            guard let data = try await context.fileStore.read(target),
-                  let meta = try? JSONDecoder().decode(DocumentDataStore.Meta.self, from: data), meta.kind == "pdf",
-                  let url = SharedPDFLocation(root: context.layout.rootDir).resolve(meta.lastKnownPath),
-                  try SharedPDFImport.key(at: url) == id else { return nil }
+            let location = SharedPDFLocation(root: context.layout.rootDir)
+            guard let url = try SharedPDFImport.recordedURL(for: id, in: location),
+                  try SharedPDFImport.key(at: url, in: location) == id else { return nil }
             return url.path
         }
     }
