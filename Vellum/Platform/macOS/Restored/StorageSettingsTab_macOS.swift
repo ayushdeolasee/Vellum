@@ -40,6 +40,9 @@ struct StorageSettingsTab: View {
     @State private var relocationReloadTask: Task<Void, Never>?
     @State private var pendingLocation: PendingLocation?
     @State private var isPickingSharedFolder = false
+    @State private var migratingPDFs = false
+    @State private var migrationMessage: String?
+    @State private var confirmPDFRollback = false
 
     // Pending destructive confirmations (user data confirms with the title).
     @State private var pendingDeleteAll: StorageInventory.DocumentRow?
@@ -341,7 +344,7 @@ struct StorageSettingsTab: View {
                     .disabled(relocationStatus.isInProgress || relocationStatus.needsRecovery)
             }
             .accessibilityIdentifier("storage.locationPicker")
-            .disabled(isPickingSharedFolder)
+            .disabled(isPickingSharedFolder || migratingPDFs)
 
             if relocationStatus.isInProgress {
                 ProgressView(relocationStatus.message)
@@ -390,8 +393,25 @@ struct StorageSettingsTab: View {
                 .accessibilityIdentifier("storage.changeFolder")
             }
             if storageMode == .syncedFolder {
+                Button("Migrate Local PDFs…") {
+                    let picker = NSOpenPanel()
+                    picker.allowedContentTypes = [.pdf]
+                    picker.allowsMultipleSelection = true
+                    picker.message = "Choose the original PDFs whose notes, attachments, chats and reading positions to copy into this library."
+                    guard picker.runModal() == .OK else { return }
+                    runPDFMigration(picker.urls)
+                }.disabled(migratingPDFs)
+                Button("Resume PDF Migration") { runPDFMigration([]) }.disabled(migratingPDFs)
+                Button("Undo PDF Migration…") { confirmPDFRollback = true }.disabled(migratingPDFs)
+                    .confirmationDialog("Undo the PDF migration?", isPresented: $confirmPDFRollback) {
+                        Button("Undo Migration") { runPDFMigration([], rollback: true) }
+                    } message: {
+                        Text("The original PDFs and local data are preserved. Migrated copies are moved to the shared folder’s trash.")
+                    }
+                if migratingPDFs { ProgressView("Updating shared PDFs…") }
+                if let migrationMessage { Text(migrationMessage).font(.footnote) }
                 Button("Change Shared Folder…", action: chooseSyncedFolder)
-                    .disabled(isPickingSharedFolder)
+                    .disabled(isPickingSharedFolder || migratingPDFs)
                     .accessibilityIdentifier("storage.changeSharedFolder")
             }
         } header: {
@@ -431,7 +451,7 @@ struct StorageSettingsTab: View {
         case .local:
             return "Everything stays in Vellum's private app folder on this Mac. No syncing."
         case .syncedFolder:
-            return "Vellum saved this folder for shared-library setup. Your library uses local storage in this build."
+            return "PDFs open in place in the shared folder. Migrate Local PDFs copies selected PDFs and their reading data from this Mac."
         }
     }
 
@@ -471,6 +491,20 @@ struct StorageSettingsTab: View {
             guard let selection = await WebStorageRelocator.pickSyncedFolder() else { return }
             WebStorageRelocator.selectSyncedFolder(selection, coordinator: workspace.storageCoordinator)
             refreshSettings()
+        }
+    }
+
+    private func runPDFMigration(_ sources: [URL], rollback: Bool = false) {
+        guard !migratingPDFs else { return }
+        migratingPDFs = true
+        migrationMessage = nil
+        Task {
+            defer { migratingPDFs = false }
+            do {
+                try await workspace.migrateSharedPDFs(sources, rollback: rollback)
+                migrationMessage = rollback ? "PDF migration undone." : "PDF migration complete."
+                await reload()
+            } catch { migrationMessage = error.localizedDescription }
         }
     }
 

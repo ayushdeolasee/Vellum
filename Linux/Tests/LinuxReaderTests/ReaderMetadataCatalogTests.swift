@@ -124,3 +124,39 @@ import VellumCore
         #expect(try Data(contentsOf: moved.appendingPathComponent(relative)) == bytes)
     }
 }
+
+@Test func sharedReadOnlyPDFResumesOnlyFromItsBytesAndPortableLocator() async throws {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? fm.removeItem(at: tmp) }
+    let root = tmp.appendingPathComponent("home/alice/Vellum", isDirectory: true)
+    let relative = "PDFs/Papers/Signed.pdf"
+    let file = root.appendingPathComponent(relative)
+    let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let bytes = try Data(contentsOf: repo.appendingPathComponent(
+        "Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf/digitally-signed.pdf"))
+    func write(_ data: Data, _ url: URL) throws {
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url)
+    }
+    try write(bytes, file)
+    let opening = try await PdfiumDocument.openingInfo(in: bytes)
+    #expect(opening.stableIdentifier == nil)
+    let key = DocumentIdentity.byteHash(bytes)
+    let meta = root.appendingPathComponent(".vellum/documents/\(key)/meta.json")
+    let record = PositionDeviceRecord(deviceID: DeviceID("mac"), deviceName: "Mac", devicePlatform: "macos",
+        writtenAt: Date(), documents: [.pdf(stableIdentifier: key): .init(
+            readingPosition: .init(at: Date(), value: .init(page: 1)))])
+    try write(PositionCoding.encoder.encode(record), root.appendingPathComponent(".vellum/positions/mac.v1.json"))
+    let store = ReadOnlyLibraryFileStore(root: try await RootDirectory.open(root))
+    let catalog = try await ReaderMetadataCatalog.load(in: store)
+    #expect(try await LibraryCatalog.pdfs(in: store).map(\.name) == ["Signed.pdf"])
+    for path in [relative, file.path, "PDFs/Papers/../../Signed.pdf"] {
+        try write(JSONEncoder().encode(["kind": "pdf", "title": "Signed paper", "last_known_path": path]), meta)
+        let resolved = try await catalog.sharedPDF(bytes: bytes, file: file, stamp: opening.stableIdentifier, fallbackTitle: "File")
+        #expect(resolved.lastPage == (path == relative ? 1 : nil))
+        #expect(resolved.displayTitle == (path == relative ? "Signed paper" : "File"))
+    }
+    #expect(try await store.read(file) == bytes)
+}

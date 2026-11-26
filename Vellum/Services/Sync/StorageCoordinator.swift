@@ -492,6 +492,19 @@ actor StorageCoordinator {
         }
     }
 
+    func performExclusiveSharedPDFOperation(root: URL, operation: @escaping @Sendable () async -> Result<Void, Error>)
+        async -> Result<Void, Error> {
+        await performExclusiveStorageOperation {
+            guard await self.isActiveSharedFolder(root) else { return .failure(LibraryFileError.unavailable) }
+            return await operation()
+        }
+    }
+
+    private func isActiveSharedFolder(_ root: URL) -> Bool {
+        layout.backend == .syncedFolder && access.container != nil
+            && layout.rootDir.standardizedFileURL.resolvingSymlinksInPath().path == root.path
+    }
+
     /// Lend both sides of a relocation while normal storage admission and
     /// conflict delivery are closed. Either side may be the coordinated iCloud
     /// layout; local/custom sides receive the direct adapter. A nil context

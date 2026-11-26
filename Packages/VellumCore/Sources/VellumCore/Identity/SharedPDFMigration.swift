@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 /// A local write-ahead journal. The private library stays intact. Only the
 /// selected PDFs' state is published, under the identity proved by their bytes.
@@ -28,6 +33,12 @@ public struct SharedPDFMigration: Sendable {
         let root: URL
         let local: URL
         let id: UUID
+        struct PDF: Codable {
+            let source: URL
+            let relative: String
+            let key: String
+        }
+        var pdfs: [PDF] = []
         var inputs: [Source] = []
         var directories: [String: [String]] = [:]
         var changes: [Change] = []
@@ -54,8 +65,31 @@ public struct SharedPDFMigration: Sendable {
         else { throw Failure.invalid("overlapping library roots") }
     }
 
+    /// The lock lives outside the transaction directory so retiring a completed
+    /// rollback cannot admit a second process while the first still holds it.
+    private func lockJournal() throws -> FileHandle {
+        let parent = journalDir.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let fd = open(journalDir.path + ".lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw Failure.invalid(parent.path) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw Failure.changed("another migration is running") }
+        return handle
+    }
+
+    private func persist(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+        let file = try FileHandle(forWritingTo: url)
+        try file.synchronize()
+        try file.close()
+        let dir = open(url.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard dir >= 0 else { throw Failure.invalid(url.path) }
+        defer { close(dir) }
+        guard fsync(dir) == 0 else { throw Failure.invalid(url.path) }
+    }
+
     private func save(_ journal: Journal) throws {
-        try JSONEncoder().encode(journal).write(to: manifest, options: .atomic)
+        try persist(JSONEncoder().encode(journal), to: manifest)
     }
 
     private func blob(_ digest: String) -> URL { journalDir.appendingPathComponent(digest) }
@@ -63,7 +97,7 @@ public struct SharedPDFMigration: Sendable {
     private func snapshot(_ data: Data) throws -> String {
         let digest = DocumentIdentity.byteHash(data)
         let url = blob(digest)
-        if !fm.fileExists(atPath: url.path) { try data.write(to: url, options: .atomic) }
+        if !fm.fileExists(atPath: url.path) { try persist(data, to: url) }
         guard try Data(contentsOf: url) == data else { throw Failure.changed(url.path) }
         return digest
     }
@@ -80,7 +114,7 @@ public struct SharedPDFMigration: Sendable {
         do { data = try Data(contentsOf: manifest) }
         catch let error as CocoaError where error.code == .fileReadNoSuchFile { return nil }
         let j = try JSONDecoder().decode(Journal.self, from: data)
-        guard j.root == location.root, j.local == local, (0...j.changes.count).contains(j.completed),
+        guard j.root.path == location.root.path, j.local.path == local.path, (0...j.changes.count).contains(j.completed),
               !j.pending || j.completed < j.changes.count else { throw Failure.invalid(manifest.path) }
         return j
     }
@@ -117,25 +151,44 @@ public struct SharedPDFMigration: Sendable {
     /// Calling migrate with no sources resumes the recorded batch after a crash.
     public func migrate(_ sources: [URL], readID: (Data) -> String?,
                         checkpoint: (Int) throws -> Void = { _ in }) async throws {
+        let lock = try lockJournal()
+        defer { try? lock.close() }
         if var prior = try journal() {
             guard !prior.reversing else { throw Failure.invalid("rollback in progress") }
             guard sources.isEmpty || Set(sources.map(\.standardizedFileURL.path)) ==
-                    Set(prior.inputs.filter { $0.url.pathExtension.lowercased() == "pdf" }.map(\.url.path)) else {
+                    Set(prior.pdfs.map(\.source.path)) else {
                 throw Failure.invalid("a previous batch is recorded; finish or undo that migration first")
             }
             try await apply(&prior, checkpoint: checkpoint)
             return
         }
         guard !sources.isEmpty else { throw Failure.invalid("no pending migration") }
-        try fm.createDirectory(at: journalDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: journalDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var j = Journal(root: location.root, local: local, id: UUID())
         var positions = [DocumentKey: DocumentKey]()
         for url in sources {
             try await plan(url.standardizedFileURL, readID: readID, journal: &j, positions: &positions)
         }
+        let payloads = j.changes.filter { $0.relative.hasPrefix("PDFs/") }
+        j.changes.removeAll { $0.relative.hasPrefix("PDFs/") }
         try await planPositions(positions, journal: &j)
+        j.changes += payloads
         try save(j) // every byte and inverse is durable before the first shared mutation
         try await apply(&j, checkpoint: checkpoint)
+    }
+
+    /// A device-local recent still names the original. Resolve only after the
+    /// entire transaction commits, and prove the destination's identity again.
+    public func migratedURL(for source: URL, readID: (Data) -> String?) async throws -> URL? {
+        guard let j = try journal(),
+              let pdf = j.pdfs.first(where: { $0.source.standardizedFileURL.path == source.standardizedFileURL.path })
+        else { return nil }
+        guard !j.reversing, j.completed == j.changes.count,
+              let url = location.resolve(pdf.relative), let bytes = try await store.read(url),
+              SharedPDFIdentity.storageKey(in: bytes, readerID: readID(bytes)) == pdf.key else {
+            throw Failure.changed(source.path)
+        }
+        return url
     }
 
     private func plan(_ source: URL, readID: (Data) -> String?, journal j: inout Journal,
@@ -145,7 +198,7 @@ public struct SharedPDFMigration: Sendable {
         else { throw Failure.invalid(source.path) }
         let original = try Data(contentsOf: source)
         guard original.starts(with: "%PDF-".utf8) else { throw Failure.invalid(source.path) }
-        j.inputs.append(Source(url: source, digest: DocumentIdentity.byteHash(original)))
+        j.inputs.append(Source(url: source, digest: try snapshot(original)))
         let prepared = SharedPDFIdentity.prepare(original, writable: fm.isWritableFile(atPath: source.path), readID: readID)
         let oldID = readID(original).flatMap { DocumentIdentity.isCanonicalKey($0) ? $0 : nil }
         let stable = DocumentKey.pdf(stableIdentifier: prepared.key)
@@ -168,6 +221,7 @@ public struct SharedPDFMigration: Sendable {
             number += 1
             relative = "PDFs/\(base) \(number).pdf"
         }
+        j.pdfs.append(.init(source: source, relative: relative, key: prepared.key))
         let prefix = ".vellum/documents/" + prepared.key + "/"
         guard try files(in: location.root.appendingPathComponent(prefix)).isEmpty else { throw Failure.changed(prefix) }
         var metadata: [String: Any] = ["version": 1, "kind": "pdf", "last_opened": ISO8601DateFormatter().string(from: Date())]
@@ -179,7 +233,7 @@ public struct SharedPDFMigration: Sendable {
             for name in names {
                 let input = dir.appendingPathComponent(name)
                 let data = try Data(contentsOf: input)
-                j.inputs.append(Source(url: input, digest: DocumentIdentity.byteHash(data)))
+                j.inputs.append(Source(url: input, digest: try snapshot(data)))
                 if name == "meta.json" {
                     guard !foundMeta, let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                           object["kind"] as? String == "pdf", object["version"] as? Int == 1,
@@ -210,7 +264,7 @@ public struct SharedPDFMigration: Sendable {
             let data = try Data(contentsOf: source)
             let record = try parsed.decode(data)
             guard record.deviceID == parsed.device, PositionMerge.isUsable(record) else { throw Failure.invalid(name) }
-            j.inputs.append(Source(url: source, digest: DocumentIdentity.byteHash(data)))
+            j.inputs.append(Source(url: source, digest: try snapshot(data)))
             let selected = record.documents.filter { keys[$0.key] != nil }
             guard !selected.isEmpty else { continue }
             let relative = ".vellum/positions/" + name
@@ -276,6 +330,8 @@ public struct SharedPDFMigration: Sendable {
     }
 
     public func rollback() async throws {
+        let lock = try lockJournal()
+        defer { try? lock.close() }
         guard var j = try journal() else { return }
         try verifySources(j)
         if j.pending {
@@ -284,6 +340,19 @@ public struct SharedPDFMigration: Sendable {
             if current == (try contents(step.after)) { j.completed += 1 }
             else if current != (try step.before.map(contents)) { throw Failure.changed(step.relative) }
             j.pending = false
+        }
+        for pdf in j.pdfs {
+            let prefix = ".vellum/documents/" + pdf.key + "/"
+            let known = Set(j.changes.filter { $0.relative.hasPrefix(prefix) }.map { String($0.relative.dropFirst(prefix.count)) })
+            guard try Set(files(in: location.root.appendingPathComponent(prefix))).isSubset(of: known)
+            else { throw Failure.changed(prefix) }
+        }
+        for step in j.changes.prefix(j.completed) {
+            let bytes = try await store.read(location.root.appendingPathComponent(step.relative))
+            let before = try step.before.map(contents)
+            if bytes != (try contents(step.after)), !(j.reversing && bytes == before) {
+                throw Failure.changed(step.relative)
+            }
         }
         j.reversing = true
         try save(j)

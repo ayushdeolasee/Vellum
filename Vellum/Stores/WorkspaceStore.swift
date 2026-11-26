@@ -3,6 +3,7 @@ import AppKit
 #endif
 import Foundation
 import Observation
+import VellumCore
 
 // Window-level owner of the split-screen layout. Holds the pane tree, which pane
 // is focused, the one shared SessionService, and the app-global shell state that
@@ -472,6 +473,43 @@ final class WorkspaceStore {
         _ conflict: StorageCoordinator.ArchivedConflict,
         operation: @escaping @MainActor () async throws -> Void
     ) async throws {
+        try await performLibraryRecovery(path: conflict.originalURL.path, key: conflict.storageKey, operation: operation)
+    }
+
+    #if os(macOS)
+    func migrateSharedPDFs(_ sources: [URL], rollback: Bool) async throws {
+        let coordinator = storageCoordinator
+        let location = try await DocumentAccessResolver.live.configured(for: coordinator).sharedPDFs
+        guard let location else { throw LibraryFileError.unavailable }
+        try await performLibraryRecovery(path: location.root.path, key: nil) {
+            guard self.root.allLeaves().allSatisfy({ !$0.app.hasPendingDocumentAdmission && $0.app.tabs.allSatisfy { $0.document == nil } })
+            else { throw SessionServiceError.io("Close the open documents before migrating PDFs.") }
+            guard await self.flushScratchpadsForTermination(), await AiPersistence.awaitPendingFlush() else {
+                throw ConflictRecoveryError.pendingChanges
+            }
+            try await self.positions.store.prepareForExternalRekey()
+            let local = WebLibrary.storeDir.deletingLastPathComponent()
+            let result = await coordinator.performExclusiveSharedPDFOperation(root: location.root) {
+                do {
+                    let migration = try SharedPDFMigration(root: location.root, localData: local,
+                        journals: local.appendingPathComponent("PDF Migration Journals", isDirectory: true))
+                    if rollback { try await migration.rollback() }
+                    else {
+                        // Keep the selected external originals readable throughout planning and verification.
+                        let scopes = sources.filter { $0.startAccessingSecurityScopedResource() }
+                        defer { for url in scopes { url.stopAccessingSecurityScopedResource() } }
+                        try await migration.migrate(sources, readID: SharedPDFImport.readID)
+                    }
+                    return Result<Void, Error>.success(())
+                } catch { return .failure(error) }
+            }
+            try result.get()
+        }
+    }
+    #endif
+
+    private func performLibraryRecovery(path: String, key: String?,
+                                        operation: @escaping @MainActor () async throws -> Void) async throws {
         // Join startup before registering recovery: startup may itself open a
         // document, whose admission joins recovery. Registering first deadlocks.
         await awaitMaintenance()
@@ -487,8 +525,8 @@ final class WorkspaceStore {
         conflictRecoveryTask = task
         let drain = Task { @MainActor in _ = try? await task.value }
         tabTeardowns.register(tabId: recoveryId,
-            document: DocumentInfo(kind: .pdf, pdfPath: conflict.originalURL.path,
-                title: nil, pageCount: nil, lastPage: nil, docId: conflict.storageKey), task: drain)
+            document: DocumentInfo(kind: .pdf, pdfPath: path,
+                title: nil, pageCount: nil, lastPage: nil, docId: key), task: drain)
         defer { conflictRecoveryTask = nil }
         try await task.value
     }
