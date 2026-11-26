@@ -10,8 +10,11 @@ final class LegacyWireModelTests: XCTestCase {
     private func assertEncoding<T: Encodable>(
         _ value: T, _ expected: String, file: StaticString = #filePath, line: UInt = #line
     ) throws {
-        let actual = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? NSDictionary
-        let object = try JSONSerialization.jsonObject(with: Data(expected.utf8)) as? NSDictionary
+        let encoded = try JSONEncoder().encode(value)
+        let actual = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? NSDictionary,
+                                   file: file, line: line)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(expected.utf8)) as? NSDictionary,
+                                   file: file, line: line)
         XCTAssertEqual(actual, object, file: file, line: line)
     }
 

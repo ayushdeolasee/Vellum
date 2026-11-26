@@ -32,6 +32,7 @@ final class WebProxyUrlTests: XCTestCase {
         }
         #else
         XCTAssertEqual(try WebUrl.normalize("http://example.com"), "http://example.com/")
+        try assertRoundTrip("http://example.test:8080/a b?q=a%26b")
         #endif
     }
 
