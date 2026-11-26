@@ -43,7 +43,8 @@ public final class FolderDirectoryWatcher: FolderDirectoryWatching, @unchecked S
                 source = events
                 events.resume()
             }
-            guard let fd = source?.handle else { return }
+            guard let source else { return }
+            let fd = Int32(source.handle)
             var retained: Set<Int32> = []
             for dir in directories {
                 let mask = IN_CREATE | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM | IN_CLOSE_WRITE

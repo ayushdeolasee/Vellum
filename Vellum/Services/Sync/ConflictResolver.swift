@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import VellumCore
 
 typealias ConflictResolver = VellumCore.ConflictResolver
@@ -32,7 +33,10 @@ extension PreserveLosersConflictResolver {
     }
 }
 
+/// Typed Apple merge policies shared by coordinated and shared-folder recovery.
 enum ConflictMerge {
+    private static let logger = Logger(subsystem: "com.ayushdeolasee.vellum", category: "Storage")
+
     static func decide(_ event: ConflictEvent, reading: PreserveLosersConflictResolver.Reader) async throws
         -> PreserveLosersConflictResolver.Decision {
         let url = event.url
@@ -50,6 +54,9 @@ enum ConflictMerge {
         }
         if url.lastPathComponent == "meta.json", let data = try await mergeMeta(event, reading: reading) {
             return .merged(data)
+        }
+        if url.deletingLastPathComponent().lastPathComponent == "positions" {
+            logger.notice("Multiple peers modified one device position record; preserving every version.")
         }
         return .preserve
     }

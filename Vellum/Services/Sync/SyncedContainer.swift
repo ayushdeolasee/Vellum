@@ -92,8 +92,7 @@ enum StorageAccess: Sendable {
     var isCoordinated: Bool { container != nil }
 }
 
-/// The selected bookmark scope is held by StorageCoordinator for this
-/// container's lifetime. Creating the backend never creates a missing root.
+/// Open the root selected and scoped by WebStorageSettings.
 enum SharedFolderContainerFactory {
     static func make(root: URL) async -> (any SyncedContainer)? {
         await Task.detached(priority: .utility) {

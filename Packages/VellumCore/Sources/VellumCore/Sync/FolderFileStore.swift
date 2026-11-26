@@ -66,7 +66,12 @@ public struct LocalFolderFileStore: FolderFileStore {
                     let values = try item.resourceValues(forKeys: keys)
                     guard values.isSymbolicLink != true,
                           values.isDirectory == true || values.isRegularFile == true else { return nil }
-                    return FolderEntry(url: item, isDirectory: values.isDirectory == true)
+                    // Foundation may enumerate /var through /private/var. Keep
+                    // descendants in the selected root's URL namespace even
+                    // when a later archive destination does not yet exist.
+                    let isDirectory = values.isDirectory == true
+                    let child = dir.appendingPathComponent(item.lastPathComponent, isDirectory: isDirectory)
+                    return FolderEntry(url: child, isDirectory: isDirectory)
                 }
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             return []
@@ -128,9 +133,15 @@ public struct LocalFolderFileStore: FolderFileStore {
             // A sync daemon does not take our lock. Exchange, then inspect the
             // actual displaced inode. If it raced, restore it without unlinking
             // anything an uncoordinated writer may have put at either path.
-            if try bytes(temp) == expected {
-                try fm.removeItem(at: temp)
-                return true
+            do {
+                if try bytes(temp) == expected {
+                    try fm.removeItem(at: temp)
+                    return true
+                }
+            } catch {
+                // A non-regular or unreadable replacement is still user data.
+                try exclusiveMove(temp, to: recoveryURL(for: path))
+                throw error
             }
             if try bytes(path) == data { _ = vellum_rename(temp.path, path.path, 1) }
             let recovery = try recoveryURL(for: path)

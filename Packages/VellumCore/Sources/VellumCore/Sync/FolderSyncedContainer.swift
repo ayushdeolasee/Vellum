@@ -49,7 +49,8 @@ public actor FolderSyncedContainer: SyncedContainer {
     }
 
     public func list(_ directory: URL, matching filter: SyncedItemFilter) async throws -> [SyncedItem] {
-        try await store.list(directory, suffix: nil).map {
+        guard changes != nil else { throw SyncedContainerError.unavailable }
+        return try await store.list(directory, suffix: nil).map {
             SyncedItem(url: $0.url, name: $0.name, readiness: $0.readiness, byteSize: $0.byteSize,
                        contentModifiedAt: $0.contentModifiedAt, hasUnresolvedConflicts: versions[$0.url] != nil)
         }.filter(filter.matches)
@@ -133,10 +134,13 @@ public actor FolderSyncedContainer: SyncedContainer {
             for entry in entries {
                 let name = entry.url.lastPathComponent
                 if entry.isDirectory {
-                    if !["conflicts", "trash"].contains(name), !name.hasPrefix("."), !SyncArtifact.matches(name) {
+                    // Only the sidecar tree has managed trash, but every file
+                    // type can have a sibling recovery directory.
+                    let trash = root.appendingPathComponent(".vellum/trash", isDirectory: true)
+                    if name != "conflicts", entry.url != trash, !SyncArtifact.matches(name) {
                         pending.append(entry.url)
                     }
-                } else if let (canonical, sibling) = parse(entry.url) {
+                } else if name.contains(".sync-conflict-"), let (canonical, sibling) = parse(entry.url) {
                     groups[canonical, default: []].append(sibling)
                 }
             }
