@@ -193,6 +193,10 @@ public struct SharedPDFMigration: Sendable {
         guard let j = try journal(),
               let pdf = j.pdfs.first(where: { $0.source.standardizedFileURL.path == source.standardizedFileURL.path })
         else { return nil }
+        if fm.fileExists(atPath: source.path) {
+            guard let input = j.inputs.first(where: { $0.url.path == pdf.source.path }),
+                  try DocumentIdentity.byteHash(Data(contentsOf: source)) == input.digest else { throw Failure.changed(source.path) }
+        }
         guard !j.reversing, j.completed == j.changes.count,
               let url = location.resolve(pdf.relative), let bytes = try await store.read(url),
               SharedPDFIdentity.storageKey(in: bytes, readerID: readID(bytes)) == pdf.key else {
