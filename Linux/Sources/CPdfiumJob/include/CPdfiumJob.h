@@ -15,7 +15,9 @@ typedef enum {
 typedef struct {
     uint32_t unicode;
     double left, bottom, right, top;
-    bool generated;
+    double selection_left, selection_bottom, selection_right, selection_top;
+    double origin_y;
+    bool generated, discretionary_hyphen;
 } PdfCharacter;
 
 typedef struct {
@@ -23,7 +25,7 @@ typedef struct {
     size_t document_id_units;        // Excludes the terminator; zero means unavailable.
     int pages, rotation;             // Clockwise degrees; dimensions are already rotated.
     double width_pt, height_pt;
-    double visible_left, visible_bottom; // Unrotated media/crop intersection in PDF user space.
+    double visible_left, visible_bottom, visible_right, visible_top; // Unrotated media/crop intersection in PDF user space.
     int width, height, stride;
     uint8_t *pixels;                 // Top-down opaque BGRA, malloc-owned.
     int character_count;

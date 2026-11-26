@@ -160,6 +160,10 @@ targets:
         type: folder
         buildPhase: resources
       - path: Tests/DocumentActionsTests.swift
+      - path: Tests/PdfTextComparisonHarnessTests.swift
+      - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/PdfTextGolden
+        type: folder
+        buildPhase: resources
       - path: Tests/PdfSearchTests.swift
       - path: Tests/DocumentAccessBookmarkStoreTests.swift
       - path: Tests/HomeDropTests.swift
@@ -201,6 +205,7 @@ targets:
           # JSON fixtures out of the test bundle at runtime, so the
           # Raindrop/Readwise subdirectory layout has to survive into it.
           - Integrations/Fixtures
+          - PdfTextComparisonHarnessTests.swift
       - path: Tests/Integrations/Fixtures
         type: folder
         buildPhase: resources

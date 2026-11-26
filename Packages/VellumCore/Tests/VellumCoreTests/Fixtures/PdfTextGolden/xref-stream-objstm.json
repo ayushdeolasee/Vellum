@@ -1,0 +1,48 @@
+{
+  "fixture" : "xref-stream-objstm.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 792,
+        "width" : 612,
+        "x" : 0,
+        "y" : 0
+      },
+      "displayHeight" : 792,
+      "displayWidth" : 612,
+      "drags" : [
+
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 26,
+      "pdfkitText" : "Compressed page dictionary",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              0,
+              26
+            ]
+          ],
+          "pdfkitSelectionText" : "Compressed page dictionary",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 178.17800000000003,
+              "x" : 72,
+              "y" : 81.2197265625
+            }
+          ],
+          "query" : "Compressed page dictionary",
+          "utf16Range" : [
+            0,
+            26
+          ]
+        }
+      ],
+      "rotation" : 0
+    }
+  ],
+  "pdfSHA256" : "d53aeb0e78214f83d94a6b57616834e70b85f1a0535cee7231b2ec7e6cfcc909",
+  "version" : 1
+}

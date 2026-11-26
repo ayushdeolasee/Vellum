@@ -72,8 +72,38 @@ static PdfStatus extract(FPDF_PAGE page, PdfJobResult *out) {
                 free(chars);
                 goto close;
             }
+            FS_RECTF loose;
+            // Preserve P1's ink box. Selection uses the typographic advance,
+            // which includes side bearings and the width of authored spaces.
+            if (FPDFText_GetLooseCharBox(text, i, &loose) &&
+                isfinite(loose.left) && isfinite(loose.bottom) &&
+                isfinite(loose.right) && isfinite(loose.top) &&
+                loose.right >= loose.left && loose.top >= loose.bottom) {
+                c->selection_left = loose.left;
+                c->selection_bottom = loose.bottom;
+                c->selection_right = loose.right;
+                c->selection_top = loose.top;
+                FS_MATRIX matrix;
+                if (!generated && FPDFText_GetMatrix(text, i, &matrix) &&
+                    matrix.b == 0 && matrix.c == 0 && matrix.d > 0) {
+                    // Use a nominal-em line box for horizontal text, leaving
+                    // the native descent and accommodating overhanging ink.
+                    double em = FPDFText_GetFontSize(text, i) * matrix.d;
+                    if (isfinite(em) && em > 0)
+                        c->selection_top = fmax(c->top, fmin(loose.top, loose.bottom + em));
+                }
+            } else {
+                c->selection_left = c->left;
+                c->selection_bottom = c->bottom;
+                c->selection_right = c->right;
+                c->selection_top = c->top;
+            }
+            double origin_x, origin_y;
+            c->origin_y = FPDFText_GetCharOrigin(text, i, &origin_x, &origin_y) && isfinite(origin_y)
+                ? origin_y : c->bottom;
             c->generated = generated != 0;
             c->unicode = FPDFText_GetUnicode(text, i);
+            c->discretionary_hyphen = c->unicode == 2 && FPDFText_IsHyphen(text, i) == 1;
         }
         out->characters = chars;
         out->character_count = count;
@@ -152,6 +182,8 @@ PdfStatus pdf_run_job(PdfOperation op, const void *bytes, size_t length,
     }
     out->visible_left = visible.left;
     out->visible_bottom = visible.bottom;
+    out->visible_right = visible.right;
+    out->visible_top = visible.top;
     out->rotation = turns * 90;
     switch (op) {
     case PDF_INFO: status = PDF_OK; break;

@@ -1,0 +1,439 @@
+{
+  "fixture" : "text-selection-edge-cases.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 434.625,
+        "width" : 560.5,
+        "x" : 20.25,
+        "y" : 40.5
+      },
+      "displayHeight" : 434.625,
+      "displayWidth" : 560.5,
+      "drags" : [
+        {
+          "edge" : "end",
+          "initialQuery" : "quick brown",
+          "name" : "extend end",
+          "result" : {
+            "page_height" : 434.625,
+            "page_width" : 560.5,
+            "rects" : [
+              {
+                "height" : 18,
+                "width" : 159.04800000000003,
+                "x" : 55.768,
+                "y" : 31.2646484375
+              }
+            ],
+            "selected_text" : "quick brown fox jum"
+          },
+          "x" : 207.31900000000002,
+          "y" : 40.2646484375
+        },
+        {
+          "edge" : "start",
+          "initialQuery" : "fox",
+          "name" : "extend start",
+          "result" : {
+            "page_height" : 434.625,
+            "page_width" : 560.5,
+            "rects" : [
+              {
+                "height" : 18,
+                "width" : 150.06600000000003,
+                "x" : 30.747999999999998,
+                "y" : 31.2646484375
+              }
+            ],
+            "selected_text" : "he quick brown fox"
+          },
+          "x" : 35.751999999999995,
+          "y" : 40.2646484375
+        },
+        {
+          "edge" : "end",
+          "initialQuery" : "quick brown",
+          "name" : "clamp end past page",
+          "result" : {
+            "page_height" : 434.625,
+            "page_width" : 560.5,
+            "rects" : [
+              {
+                "height" : 18,
+                "width" : 320.1300000000001,
+                "x" : 55.768,
+                "y" : 31.2646484375
+              }
+            ],
+            "selected_text" : "quick brown fox jumps over the lazy dog"
+          },
+          "x" : 1560.5,
+          "y" : 40.2646484375
+        },
+        {
+          "edge" : "end",
+          "initialQuery" : "quick brown",
+          "name" : "cross pinned start",
+          "x" : 35.751999999999995,
+          "y" : 40.2646484375
+        },
+        {
+          "edge" : "start",
+          "initialQuery" : "fox",
+          "name" : "cross pinned end",
+          "x" : 207.31900000000002,
+          "y" : 40.2646484375
+        },
+        {
+          "edge" : "end",
+          "initialQuery" : "first line",
+          "name" : "extend across lines",
+          "result" : {
+            "page_height" : 434.625,
+            "page_width" : 560.5,
+            "rects" : [
+              {
+                "height" : 14,
+                "width" : 94.15000000000002,
+                "x" : 32.980000000000004,
+                "y" : 80.3447265625
+              },
+              {
+                "height" : 14,
+                "width" : 89.47400000000002,
+                "x" : 19.75,
+                "y" : 104.3447265625
+              }
+            ],
+            "selected_text" : "first line of text.\nWrapping sele"
+          },
+          "x" : 105.33200000000002,
+          "y" : 111.3447265625
+        }
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 108,
+      "pdfkitText" : "The quick brown fox jumps over the lazy dog\nA first line of text.\nWrapping selection and a hyphen-\nated word",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              4,
+              15
+            ]
+          ],
+          "pdfkitSelectionText" : "quick brown",
+          "pdfkitUiRects" : [
+            {
+              "height" : 18,
+              "width" : 96.03000000000003,
+              "x" : 55.768,
+              "y" : 31.2646484375
+            }
+          ],
+          "query" : "quick brown",
+          "utf16Range" : [
+            4,
+            15
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              46,
+              56
+            ]
+          ],
+          "pdfkitSelectionText" : "first line",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 48.230000000000004,
+              "x" : 32.980000000000004,
+              "y" : 80.3447265625
+            }
+          ],
+          "query" : "first line",
+          "utf16Range" : [
+            46,
+            56
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              66,
+              84
+            ]
+          ],
+          "pdfkitSelectionText" : "Wrapping selection",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 119.042,
+              "x" : 19.75,
+              "y" : 104.3447265625
+            }
+          ],
+          "query" : "wrapping selection",
+          "utf16Range" : [
+            66,
+            84
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              91,
+              103
+            ]
+          ],
+          "pdfkitSelectionText" : "hyphen-\nated",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 50.58200000000005,
+              "x" : 181.604,
+              "y" : 104.3447265625
+            },
+            {
+              "height" : 18,
+              "width" : 35.028000000000006,
+              "x" : 19.75,
+              "y" : 136.2646484375
+            }
+          ],
+          "query" : "hyphen- ated",
+          "utf16Range" : [
+            91,
+            103
+          ]
+        }
+      ],
+      "rotation" : 0
+    },
+    {
+      "cropBox" : {
+        "height" : 434.625,
+        "width" : 560.5,
+        "x" : 20.25,
+        "y" : 40.5
+      },
+      "displayHeight" : 434.625,
+      "displayWidth" : 560.5,
+      "drags" : [
+
+      ],
+      "page" : 2,
+      "pdfkitCharacterCount" : 20,
+      "pdfkitText" : "A 🙂 é fi after\nEnd",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              2,
+              4
+            ]
+          ],
+          "pdfkitSelectionText" : "🙂",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 9.337999999999994,
+              "x" : 32.980000000000004,
+              "y" : 34.3447265625
+            }
+          ],
+          "query" : "🙂",
+          "utf16Range" : [
+            2,
+            4
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              5,
+              7
+            ]
+          ],
+          "pdfkitSelectionText" : "é",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 10.10799999999999,
+              "x" : 46.21000000000001,
+              "y" : 34.3447265625
+            }
+          ],
+          "query" : "é",
+          "utf16Range" : [
+            5,
+            7
+          ]
+        },
+        {
+          "query" : "ﬁ"
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              11,
+              17
+            ]
+          ],
+          "pdfkitSelectionText" : "after",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 28.01400000000001,
+              "x" : 74.21000000000001,
+              "y" : 34.3447265625
+            }
+          ],
+          "query" : "after",
+          "utf16Range" : [
+            11,
+            16
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              17,
+              20
+            ]
+          ],
+          "pdfkitSelectionText" : "End",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 24.906000000000006,
+              "x" : 19.75,
+              "y" : 58.3447265625
+            }
+          ],
+          "query" : "End",
+          "utf16Range" : [
+            17,
+            20
+          ]
+        }
+      ],
+      "rotation" : 0
+    },
+    {
+      "cropBox" : {
+        "height" : 434.625,
+        "width" : 560.5,
+        "x" : 20.25,
+        "y" : 40.5
+      },
+      "displayHeight" : 434.625,
+      "displayWidth" : 560.5,
+      "drags" : [
+
+      ],
+      "page" : 3,
+      "pdfkitCharacterCount" : 129,
+      "pdfkitText" : "Long spanning title stretching over the gutter and both columns\nLeft first\nLeft second\nRight first with space\nRight second\nFooter",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              5,
+              19
+            ]
+          ],
+          "pdfkitSelectionText" : "spanning title",
+          "pdfkitUiRects" : [
+            {
+              "height" : 18,
+              "width" : 106.05600000000004,
+              "x" : 64.786,
+              "y" : 15.2646484375
+            }
+          ],
+          "query" : "spanning title",
+          "utf16Range" : [
+            5,
+            19
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              75,
+              87
+            ]
+          ],
+          "pdfkitSelectionText" : "Left second",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 72.38,
+              "x" : 19.75,
+              "y" : 70.3447265625
+            }
+          ],
+          "query" : "left second",
+          "utf16Range" : [
+            75,
+            86
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              87,
+              98
+            ]
+          ],
+          "pdfkitSelectionText" : "Right first",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 59.122000000000014,
+              "x" : 329.75,
+              "y" : 48.3447265625
+            }
+          ],
+          "query" : "right first",
+          "utf16Range" : [
+            87,
+            98
+          ]
+        },
+        {
+          "query" : "Outside crop"
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              123,
+              129
+            ]
+          ],
+          "pdfkitSelectionText" : "Footer",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 40.46000000000001,
+              "x" : 19.75,
+              "y" : 184.3447265625
+            }
+          ],
+          "query" : "Footer",
+          "utf16Range" : [
+            123,
+            129
+          ]
+        }
+      ],
+      "rotation" : 0
+    }
+  ],
+  "pdfSHA256" : "3ec9f1f8cee7dcff1e7743f1c6dbf9790abec97752ee3e699fb5bc8bf4a4789c",
+  "version" : 1
+}

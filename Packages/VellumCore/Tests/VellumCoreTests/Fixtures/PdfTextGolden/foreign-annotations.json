@@ -1,0 +1,51 @@
+{
+  "fixture" : "foreign-annotations.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 792,
+        "width" : 612,
+        "x" : 0,
+        "y" : 0
+      },
+      "displayHeight" : 792,
+      "displayWidth" : 612,
+      "drags" : [
+
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 16,
+      "pdfkitText" : "Highlighted text",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              0,
+              16
+            ]
+          ],
+          "pdfkitSelectionText" : "Highlighted text",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 96.488,
+              "x" : 72,
+              "y" : 81.2197265625
+            }
+          ],
+          "query" : "Highlighted text",
+          "utf16Range" : [
+            0,
+            16
+          ]
+        },
+        {
+          "query" : "Margin note"
+        }
+      ],
+      "rotation" : 0
+    }
+  ],
+  "pdfSHA256" : "9b9c25082a811b4c1becae372f7b31b332cb5673e5061d682cc1127823c4e2ac",
+  "version" : 1
+}

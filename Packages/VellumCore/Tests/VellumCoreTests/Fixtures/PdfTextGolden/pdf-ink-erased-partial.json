@@ -1,0 +1,29 @@
+{
+  "fixture" : "pdf-ink-erased-partial.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 240,
+        "width" : 320,
+        "x" : 0,
+        "y" : 0
+      },
+      "displayHeight" : 240,
+      "displayWidth" : 320,
+      "drags" : [
+
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 0,
+      "pdfkitText" : "",
+      "probes" : [
+        {
+          "query" : "missing quote"
+        }
+      ],
+      "rotation" : 0
+    }
+  ],
+  "pdfSHA256" : "de4fcca7e2699991faec1a58da3ef9e2f81836b9222fe92df542f7ca3ecad484",
+  "version" : 1
+}
