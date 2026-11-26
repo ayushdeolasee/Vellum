@@ -43,11 +43,23 @@ final class PdfAnnotationPane {
     private var height = 0.0
     private var position: PositionData?
     private var picked: Annotation?
+    private var restoringPick = false
     private var mutate: ((PdfAnnotationEdit) -> Void)?
     private var saving = false
     private var carryComment = false
     private var admissionError: String?
     private(set) var pending: Task<Bool, Never>?
+
+    var hasDraft: Bool {
+        guard let panel, !saving else { return false }
+        return String(cString: pdf_annotations_content(panel)) != (picked?.content ?? "")
+    }
+
+    func showDraft() {
+        guard let panel else { return }
+        pdf_annotations_show_discard(panel, true)
+        refresh("Save the comment or discard its changes before leaving.")
+    }
 
     // Called synchronously before any navigation, including normal window close.
     // The replacement keeps its captured file and baseline even after detach.
@@ -142,6 +154,7 @@ final class PdfAnnotationPane {
         guard let page, let panel, !saving else { return }
         switch action {
         case PDF_DRAG, PDF_FIND:
+            if picked != nil && hasDraft { showDraft(); return }
             let selection: PdfTextLocatorPortable.Selection?
             if action == PDF_FIND {
                 let query = String(cString: pdf_annotations_query(panel))
@@ -157,6 +170,7 @@ final class PdfAnnotationPane {
             position = selection?.positionData
             refresh(position == nil ? "No text selected." : nil)
         case PDF_POINT:
+            if picked != nil && hasDraft { showDraft(); return }
             if let i = page.records.lastIndex(where: { record in
                 guard let pos = record.positionData else { return false }
                 let px = x * pos.pageWidth, py = y * pos.pageHeight
@@ -172,7 +186,15 @@ final class PdfAnnotationPane {
                 refresh("Note location selected.")
             }
         case PDF_PICK:
+            guard !restoringPick else { return }
             let index = Int(pdf_annotations_picked(panel))
+            if hasDraft && !carryComment {
+                restoringPick = true
+                pdf_annotations_pick(panel, Int32(page.records.firstIndex { $0.id == picked?.id } ?? -1))
+                restoringPick = false
+                showDraft()
+                return
+            }
             picked = page.records.indices.contains(index) ? page.records[index] : nil
             position = picked?.positionData
             if !carryComment { pdf_annotations_set_content(panel, picked?.content ?? "") }
@@ -188,6 +210,11 @@ final class PdfAnnotationPane {
                                   id: UUID().uuidString.lowercased())))
         case PDF_UPDATE:
             if let picked { mutate?(.update(.init(id: picked.id, content: String(cString: pdf_annotations_content(panel))))) }
+        case PDF_DISCARD:
+            pdf_annotations_set_content(panel, picked?.content ?? "")
+            carryComment = false
+            pdf_annotations_show_discard(panel, false)
+            refresh(nil)
         case PDF_DELETE:
             if let picked { mutate?(.delete(id: picked.id)) }
         default: break

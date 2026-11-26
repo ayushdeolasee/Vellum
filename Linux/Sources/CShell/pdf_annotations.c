@@ -4,7 +4,7 @@
 
 struct PdfAnnotations {
     GtkWidget *picture, *canvas, *query, *content, *picker, *status;
-    GtkWidget *highlight, *note, *update, *remove;
+    GtkWidget *highlight, *note, *update, *remove, *discard, *expander;
     GtkStringList *items;
     GArray *rects;
     PdfAnnotationCallback callback;
@@ -126,7 +126,7 @@ GtkWidget *pdf_annotations_new(GtkWidget *picture, PdfAnnotations **out) {
     g_signal_connect(drag, "drag-end", G_CALLBACK(ended), p);
     gtk_widget_add_controller(p->canvas, GTK_EVENT_CONTROLLER(drag));
 
-    GtkWidget *expander = gtk_expander_new("Annotations");
+    GtkWidget *expander = p->expander = gtk_expander_new("Annotations");
     gtk_accessible_update_property(GTK_ACCESSIBLE(expander), GTK_ACCESSIBLE_PROPERTY_LABEL, "Annotations", -1);
     gtk_box_append(GTK_BOX(box), expander);
     GtkWidget *tools = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -151,6 +151,8 @@ GtkWidget *pdf_annotations_new(GtkWidget *picture, PdfAnnotations **out) {
     p->remove = button(edit, "Delete", PDF_DELETE, p);
     gtk_widget_set_tooltip_text(p->remove, "Earlier PDF revisions retain edited or deleted comments.");
     gtk_widget_set_tooltip_text(p->update, "Earlier PDF revisions retain the previous comment.");
+    p->discard = button(tools, "Discard comment changes", PDF_DISCARD, p);
+    gtk_widget_set_visible(p->discard, FALSE);
     p->status = gtk_label_new(NULL);
     gtk_label_set_selectable(GTK_LABEL(p->status), TRUE);
     gtk_label_set_ellipsize(GTK_LABEL(p->status), PANGO_ELLIPSIZE_END);
@@ -165,6 +167,7 @@ void pdf_annotations_bind(PdfAnnotations *p, PdfAnnotationCallback cb, void *ctx
 void pdf_annotations_reset(PdfAnnotations *p) {
     p->callback = NULL;
     p->started = FALSE;
+    pdf_annotations_show_discard(p, FALSE);
     const char *initial[] = { "Page annotations", NULL };
     gtk_string_list_splice(p->items, 0, g_list_model_get_n_items(G_LIST_MODEL(p->items)), initial);
     gtk_drop_down_set_selected(GTK_DROP_DOWN(p->picker), 0);
@@ -173,6 +176,10 @@ void pdf_annotations_reset(PdfAnnotations *p) {
     pdf_annotations_clear_rects(p);
     pdf_annotations_controls(p, FALSE, FALSE, FALSE);
     pdf_annotations_message(p, "Loading annotations…");
+}
+void pdf_annotations_show_discard(PdfAnnotations *p, bool show) {
+    gtk_widget_set_visible(p->discard, show);
+    if (show) gtk_expander_set_expanded(GTK_EXPANDER(p->expander), TRUE);
 }
 void pdf_annotations_add(PdfAnnotations *p, const char *name) { gtk_string_list_append(p->items, name); }
 int pdf_annotations_picked(PdfAnnotations *p) { return (int)gtk_drop_down_get_selected(GTK_DROP_DOWN(p->picker)) - 1; }

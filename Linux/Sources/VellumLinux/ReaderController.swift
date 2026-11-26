@@ -156,6 +156,14 @@ final class ReaderController {
 
     private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
         guard !closing, transition == nil else { return }
+        if annotations.hasDraft {
+            annotations.showDraft()
+            let message = "Save or discard your comment in the PDF’s Annotations panel."
+            reader_show_status(window, message)
+            reader_settings_set_library(reader_settings(window), libraryRoot?.path ?? "", message, false)
+            if let selectedEntry { reader_reselect_entry(window, Int32(selectedEntry)) }
+            return
+        }
         let annotationSave = annotations.pending
         if annotationSave == nil && positionSession == nil && scratchpad?.pendingSave == nil &&
             (!flushDrafts || scratchpad == nil) { proceed(); return }
@@ -398,7 +406,7 @@ final class ReaderController {
     }
 
     private func navigatePage(_ index: Int, window: OpaquePointer) {
-        if annotations.pending == nil { showPage(index, window: window) }
+        if annotations.pending == nil && !annotations.hasDraft { showPage(index, window: window) }
         else { leaveDocument(window, flushDrafts: false) { self.showPage(index, window: window) } }
     }
 
