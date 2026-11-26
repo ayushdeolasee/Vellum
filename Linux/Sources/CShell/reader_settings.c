@@ -10,7 +10,7 @@ struct ReaderSettings {
     ReaderWindow *reader;
     ReaderCallback callback;
     FolderRequest *folder_request;
-    GtkWidget *page, *path, *library_status, *choose, *reopen;
+    GtkWidget *page, *path, *library_status, *choose, *reopen, *editing;
     GtkWidget *providers, *provider_status, *key_section, *key, *save, *remove, *key_status;
     unsigned provider_count;
     gboolean changing_provider, key_busy;
@@ -59,6 +59,15 @@ static void choose_folder(GtkButton *button, ReaderSettings *s) {
     request->cancellable = g_cancellable_new();
     s->folder_request = request;
     gtk_file_dialog_select_folder(dialog, s->parent, request->cancellable, folder_response, request);
+}
+
+static void toggle_editing(GtkButton *button, ReaderSettings *s) {
+    notify(s, READER_TOGGLE_EDITING, -1, NULL);
+}
+
+void reader_settings_set_editing(ReaderSettings *s, bool enabled, bool available) {
+    gtk_button_set_label(GTK_BUTTON(s->editing), enabled ? "Use Read Only" : "Enable Shared Editing");
+    gtk_widget_set_sensitive(s->editing, available);
 }
 
 static void reopen(GtkButton *button, ReaderSettings *s) {
@@ -147,6 +156,8 @@ ReaderSettings *reader_settings_new(GtkWindow *parent, ReaderWindow *reader, Rea
     gtk_box_append(GTK_BOX(library), GTK_WIDGET(library_buttons));
     s->choose = button(library_buttons, "Choose Folder…", G_CALLBACK(choose_folder), s);
     s->reopen = button(library_buttons, "Reopen", G_CALLBACK(reopen), s);
+    s->editing = button(library_buttons, "Enable Shared Editing", G_CALLBACK(toggle_editing), s);
+    reader_settings_set_editing(s, false, false);
     s->library_status = label(NULL, "dim-label");
     gtk_box_append(GTK_BOX(library), s->library_status);
     reader_settings_set_library(s, "", "", TRUE);

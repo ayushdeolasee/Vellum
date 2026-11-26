@@ -38,7 +38,7 @@ final class WebProbe {
         if message.event == "external-image-denied" { externalImageDenied = true; return }
         if message.event == nil, message.anchor == "Harbor café 東京", message.width == 17, message.height == 11 {
             ready.insert(message.uri)
-            print("Swift received \(message.uri) anchor=\(message.anchor) image=\(message.width)x\(message.height)")
+            print("Swift received \(message.uri) anchor=\(message.anchor ?? "") image=\(message.width ?? 0)x\(message.height ?? 0)")
         }
     }
 

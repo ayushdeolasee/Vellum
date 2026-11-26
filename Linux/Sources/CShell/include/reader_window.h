@@ -10,7 +10,7 @@ typedef struct ReaderSettings ReaderSettings;
 typedef enum {
     READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE, READER_SEARCH,
     READER_SETTINGS_DONE, READER_CHOOSE_LIBRARY, READER_REOPEN_LIBRARY,
-    READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY, READER_CLOSE_REQUEST
+    READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY, READER_CLOSE_REQUEST, READER_TOGGLE_EDITING
 } ReaderEvent;
 // Text, when supplied, is borrowed only for the duration of the callback.
 typedef void (*ReaderCallback)(ReaderWindow *, ReaderEvent, int entry, const char *text, void *context);
@@ -34,6 +34,7 @@ const char *reader_search_query(ReaderWindow *reader);
 void reader_clear_rows(ReaderWindow *reader);
 void reader_show_no_matches(ReaderWindow *reader);
 void reader_add_row(ReaderWindow *reader, int entry, const char *title, const char *filename);
+void reader_reselect_entry(ReaderWindow *reader, int entry);
 void reader_select_row(ReaderWindow *reader, int index);
 void reader_set_message(ReaderWindow *reader, const char *title, const char *message);
 void reader_page_message(ReaderWindow *reader, const char *title, const char *message, int number, int count);
@@ -45,5 +46,8 @@ void reader_web_ready(ReaderWindow *reader, const char *title, const char *posit
 void reader_settings_add_provider(ReaderSettings *settings, const char *name);
 void reader_settings_set_provider(ReaderSettings *settings, unsigned index, const char *message);
 void reader_settings_set_library(ReaderSettings *settings, const char *path, const char *message, bool busy);
+void reader_set_editing(ReaderWindow *reader, bool enabled, bool available);
+void reader_settings_set_editing(ReaderSettings *settings, bool enabled, bool available);
+void reader_show_status(ReaderWindow *reader, const char *message);
 void reader_settings_set_key(ReaderSettings *settings, const char *message, bool busy, bool removable);
 bool reader_settings_key_is_open(ReaderSettings *settings);

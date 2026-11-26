@@ -139,3 +139,22 @@ void web_reader_free(WebReader *r) {
     g_free(r->uri);
     g_free(r);
 }
+
+typedef struct {
+    WebEvent reply;
+    void *owner;
+} LocationReply;
+
+static void location_ready(GObject *view, GAsyncResult *result, gpointer data) {
+    g_autofree LocationReply *reply = data;
+    g_autoptr(JSCValue) value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(view), result, NULL);
+    g_autofree char *json = value && jsc_value_is_object(value) ? jsc_value_to_json(value, 0) : NULL;
+    reply->reply(reply->owner, json);
+}
+
+void web_reader_location(WebReader *r, WebEvent callback, void *owner) {
+    LocationReply *reply = g_new(LocationReply, 1);
+    *reply = (LocationReply){callback, owner};
+    webkit_web_view_evaluate_javascript(r->view, "window.vellumLocation?.()", -1, world,
+                                        NULL, NULL, location_ready, reply);
+}
