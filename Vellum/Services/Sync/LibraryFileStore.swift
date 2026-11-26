@@ -96,11 +96,13 @@ struct DirectLibraryFileStore: LibraryFileStore {
         }
         var entries: [String: LibraryFileEntry] = [:]
         for candidate in urls {
+            guard !SyncArtifact.matches(candidate.lastPathComponent) else { continue }
             let candidate = try checkedURL(candidate)
             let url: URL
             let isPlaceholder: Bool
             if let logical = WebICloud.logicalURL(forPlaceholder: candidate) {
-                guard allowedRoot != nil else { continue }
+                guard allowedRoot != nil,
+                      !SyncArtifact.matches(logical.lastPathComponent) else { continue }
                 url = try checkedURL(logical)
                 isPlaceholder = true
             } else {

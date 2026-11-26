@@ -98,7 +98,7 @@ public actor RootDirectory {
         while let rawName = library_next_regular(stream, &info) {
             try Task.checkCancellation()
             guard let name = String(validatingCString: rawName),
-                  !name.contains(".sync-conflict-"),
+                  !SyncArtifact.matches(name),
                   suffix.map({ name.hasSuffix($0) }) ?? true else { continue }
             let modified = Double(info.st_mtim.tv_sec) + Double(info.st_mtim.tv_nsec) / 1e9
             entries.append(LibraryFileEntry(
