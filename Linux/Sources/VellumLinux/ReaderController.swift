@@ -219,12 +219,17 @@ final class ReaderController {
             }
             do {
                 let next = enabling ? try await SharedLibraryWriteContext.activate(root: store.root) : nil
-                try await preferences.saveEditing(enabling, for: store.root)
+                var message = enabling ? "Shared editing enabled for this folder." : "This folder is read only."
+                do { try await preferences.saveEditing(enabling, for: store.root) }
+                catch {
+                    if enabling { throw error }
+                    message = "Read only for this session. Could not save the setting for next launch."
+                }
                 await scratchpad?.shutdown()
                 await writeContext?.retire()
                 guard !closing else { await next?.retire(); return }
                 writeContext = next
-                let storage = await scratchpadStorage(files: store)
+                let storage = await scratchpadStorage(files: store, context: next)
                 guard !closing else { return }
                 scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
                 scratchpad?.select(documentStorageKey)
@@ -232,7 +237,6 @@ final class ReaderController {
                 webPage?.session = positionSession
                 if let point = await webPage?.location() ?? displayedPosition { positionSession?.moved(point) }
                 reader_set_editing(window, enabling, true)
-                let message = enabling ? "Shared editing enabled for this folder." : "This folder is read only."
                 reader_settings_set_library(panel, store.root.url.path, message, false)
                 reader_show_status(window, message)
                 if bytes != nil { showPage(pageIndex, window: window) }
@@ -285,14 +289,15 @@ final class ReaderController {
                     catch { message = "Could not remember this folder." }
                 }
                 guard self.isCurrent(token) else { return }
+                var context: SharedLibraryWriteContext?
                 if await self.preferences.editingEnabled(for: root) {
-                    do { self.writeContext = try await SharedLibraryWriteContext.activate(root: root) }
+                    do { context = try await SharedLibraryWriteContext.activate(root: root) }
                     catch { message = "Could not enable shared editing. This folder is read only." }
                 }
-                guard self.isCurrent(token) else { return }
-                reader_set_editing(window, self.writeContext != nil, true)
-                let storage = await self.scratchpadStorage(files: store)
-                guard self.isCurrent(token) else { return }
+                let storage = await self.scratchpadStorage(files: store, context: context)
+                guard self.isCurrent(token) else { await context?.retire(); return }
+                self.writeContext = context
+                reader_set_editing(window, context != nil, true)
                 self.scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
                 self.store = store
                 self.metadataCatalog = catalog
@@ -330,8 +335,8 @@ final class ReaderController {
         webPage = nil
     }
 
-    private func scratchpadStorage(files: ReadOnlyLibraryFileStore) async -> ScratchpadStorage {
-        if let writeContext {
+    private func scratchpadStorage(files: ReadOnlyLibraryFileStore, context: SharedLibraryWriteContext?) async -> ScratchpadStorage {
+        if let writeContext = context {
             return ScratchpadStorage(files: files, importDirectory: files.root.url) { url, data, expected in
                 try await writeContext.replace(url, with: data, ifCurrent: expected)
             }

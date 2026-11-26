@@ -111,11 +111,13 @@ public struct ReaderMetadataCatalog: Sendable {
             let title: String?
             let last_known_path: String
         }
-        let location = SharedPDFLocation(root: store.root.url)
+        // Both bytes and sidecar came through the pinned directory. Resolving
+        // the original absolute path here could inspect a replacement library.
+        let relative = try store.root.relativePath(to: file)
         if DocumentIdentity.isCanonicalKey(key),
            let data = try await store.read(base.appendingPathComponent("meta.json")),
            let meta = try? JSONDecoder().decode(Meta.self, from: data), meta.kind == "pdf",
-           let relative = location.relativePath(for: file), meta.last_known_path == relative {
+           relative.hasPrefix("PDFs/"), meta.last_known_path.utf8.elementsEqual(relative.utf8) {
             let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
             return ReaderDocumentMetadata(storageKey: result.storageKey,
                                           displayTitle: Self.title(meta.title) ?? result.displayTitle,
