@@ -104,26 +104,64 @@ public struct ReaderMetadataCatalog: Sendable {
     @concurrent
     public func sharedPDF(bytes: Data, file: URL, stamp: String?,
                           fallbackTitle: String) async throws -> ReaderDocumentMetadata {
-        let key = SharedPDFIdentity.storageKey(in: bytes, readerID: stamp)
-        let base = store.root.url.appendingPathComponent(".vellum/documents/").appendingPathComponent(key)
+        let identity = try await Self.resolvePDF(bytes: bytes, file: file, stamp: stamp, store: store)
+        let result = pdf(stableIdentifier: identity.key, fallbackTitle: fallbackTitle)
+        return ReaderDocumentMetadata(storageKey: result.storageKey, displayTitle: Self.title(identity.title) ?? result.displayTitle,
+                                      position: result.position, hasInkSidecar: false)
+    }
+
+    static func resolvePDF(bytes: Data, file: URL, stamp: String?, store: ReadOnlyLibraryFileStore) async throws
+        -> (key: String?, title: String?) {
+        let verified = SharedPDFIdentity.stamp(in: bytes, readerID: stamp)
+        let directory = store.root.url.appendingPathComponent(".vellum/documents")
         struct Meta: Decodable {
             let kind: String
             let title: String?
             let last_known_path: String
         }
-        // Both bytes and sidecar came through the pinned directory. Resolving
-        // the original absolute path here could inspect a replacement library.
         let relative = try store.root.relativePath(to: file)
-        if DocumentIdentity.isCanonicalKey(key),
-           let data = try await store.read(base.appendingPathComponent("meta.json")),
-           let meta = try? JSONDecoder().decode(Meta.self, from: data), meta.kind == "pdf",
-           relative.hasPrefix("PDFs/"), meta.last_known_path.utf8.elementsEqual(relative.utf8) {
-            let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
-            return ReaderDocumentMetadata(storageKey: result.storageKey,
-                                          displayTitle: Self.title(meta.title) ?? result.displayTitle,
-                                          position: result.position, hasInkSidecar: false)
+        if relative.hasPrefix("PDFs/") {
+            // Older imports of these exact bytes could only use their hash.
+            // Their matched sidecars and reading positions keep that identity.
+            let hash = DocumentIdentity.byteHash(bytes)
+            for key in [hash, verified].compactMap({ $0 }) {
+                let url = directory.appendingPathComponent(key).appendingPathComponent("meta.json")
+                guard let data = try await store.read(url),
+                      let meta = try? JSONDecoder().decode(Meta.self, from: data),
+                      meta.kind == "pdf",
+                      try await matchesLocator(meta.last_known_path, selected: relative,
+                                               hashBytes: key == hash ? bytes : nil, store: store) else { continue }
+                return (key, meta.title)
+            }
         }
-        return pdf(stableIdentifier: SharedPDFIdentity.stamp(in: bytes, readerID: stamp), fallbackTitle: fallbackTitle)
+        return (verified, nil)
+    }
+
+    private static func matchesLocator(_ recorded: String, selected: String, hashBytes: Data?,
+                                       store: ReadOnlyLibraryFileStore) async throws -> Bool {
+        // The selected relative path has already passed shared PDF path validation.
+        guard recorded == selected else { return false }
+        if recorded.utf8.elementsEqual(selected.utf8) { return true }
+        guard let hashBytes else { return false }
+
+        // Linux can store both spellings. Walk directory entries by canonical
+        // equivalence, retaining their actual spelling until the whole path matches.
+        let parts = selected.split(separator: "/")
+        var candidates = [store.root.url]
+        for (index, part) in parts.enumerated() {
+            var next: [URL] = []
+            for directory in candidates {
+                for entry in try await store.list(directory, suffix: nil)
+                    where entry.name == part && entry.url.hasDirectoryPath == (index < parts.count - 1) {
+                    next.append(entry.url)
+                }
+            }
+            candidates = next
+        }
+        guard candidates.count == 1, let candidate = candidates.first,
+              candidate.path.utf8.elementsEqual(store.root.url.appendingPathComponent(selected).path.utf8)
+        else { return false }
+        return try await store.read(candidate) == hashBytes
     }
 
     private static func webKey(_ url: String) -> DocumentKey? {

@@ -5,7 +5,7 @@
 # runtime files enter the container that permits WebKit's nested bubblewrap sandbox.
 set -euo pipefail
 mode=${1:-web}
-[[ $mode == web || $mode == chat || $mode == chat-write ]] || exit 64
+[[ $mode == web || $mode == chat || $mode == chat-write || $mode == pdf-sidecars ]] || exit 64
 here=$(cd "$(dirname "$0")" && pwd -P)
 repo=$(cd "$here/../.." && pwd -P)
 key=$(printf '%s' "$repo" | shasum -a 256 | cut -c1-16)
@@ -62,8 +62,11 @@ docker --context colima-vellum run --rm --network none \
 chmod 755 "$stage/runtime/vellum-linux"
 
 # Docker 29.5.2 uses moby/profiles/seccomp v0.2.3. Only setup fetches this pin.
-curl -fsSL --retry 2 https://raw.githubusercontent.com/moby/profiles/seccomp/v0.2.3/seccomp/default.json \
-  -o "$stage/default.json"
+if [[ -n ${VELLUM_SECCOMP_PROFILE:-} ]]; then
+  cp "$VELLUM_SECCOMP_PROFILE" "$stage/default.json"
+else
+  curl -fsSL --retry 2 https://raw.githubusercontent.com/moby/profiles/seccomp/v0.2.3/seccomp/default.json -o "$stage/default.json"
+fi
 python3 - "$stage" <<'PY'
 import hashlib, json, pathlib, sys
 stage = pathlib.Path(sys.argv[1])
@@ -91,11 +94,12 @@ args=(--rm --platform linux/arm64 --network none --cap-drop ALL
       --mount "type=bind,src=$stage/runtime,dst=/runtime,readonly"
       --mount "type=bind,src=$stage/library,dst=/library,readonly"
       -e VELLUM_READER_BINARY=/runtime/vellum-linux)
-if [[ $mode == chat || $mode == chat-write ]]; then
-  if [[ $mode == chat-write ]]; then args+=(-e VELLUM_EXPECT_CHAT_SAVE=1); fi
+if [[ $mode == chat || $mode == chat-write || $mode == pdf-sidecars ]]; then
+  if [[ $mode == pdf-sidecars ]]; then args+=(-e VELLUM_PDF_SIDECAR_TEST=1); fi
+  if [[ $mode == chat-write || $mode == pdf-sidecars ]]; then args+=(-e VELLUM_EXPECT_CHAT_SAVE=1); fi
   # Only this container trusts the one-day fixture certificate. All provider
   # names resolve to loopback and the production binary has no endpoint override.
-  cp "$here"/{chat-acceptance.py,with-test-keyring.sh} "$here/../Tests/GTKReader/force-chat-quit.c" "$stage/runtime/"
+  cp "$here"/{chat-acceptance.py,pdf_sidecar_acceptance.py,with-test-keyring.sh} "$here/../Tests/GTKReader/force-chat-quit.c" "$stage/runtime/"
   hosts=(generativelanguage.googleapis.com api.openai.com openrouter.ai opencode.ai)
   for host in "${hosts[@]}"; do args+=(--add-host "$host:127.0.0.1"); done
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=chat-fixture \
@@ -129,7 +133,8 @@ PYCHAT
   manifest > "$stage/before"
   docker --context colima-vellum run "${args[@]}" "$image" bash -c '
     bash /runtime/with-test-keyring.sh python3 /runtime/chat-acceptance.py >&2 &&
-    cd /tmp && tar -czf - reader-before.png reader-chat*.png'
+    if [[ -n ${VELLUM_PDF_SIDECAR_TEST:-} ]]; then cat /tmp/reader-identity-unavailable.png;
+    else cd /tmp && tar -czf - reader-before.png reader-chat*.png; fi'
   manifest > "$stage/after"
   diff -u "$stage/before" "$stage/after" >&2
   exit

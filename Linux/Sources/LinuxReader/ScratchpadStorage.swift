@@ -135,23 +135,24 @@ public struct ScratchpadStorage: Sendable {
     }
 
     @concurrent
-    public func prepareImage(_ url: URL) async throws -> Image {
+    public func prepareImage(_ url: URL, for target: ReaderSidecarTarget) async throws -> Image {
         let ext = url.pathExtension.lowercased()
         guard canEdit, let importDirectory, Self.formats.contains(ext),
               url.pathComponents.starts(with: importDirectory.pathComponents),
               let data = try await files.root.readRegularFile(url, byteLimit: Self.imageBytes)
         else { throw Failure.unsupportedImage }
+        try await target.validate(in: files)
         let id = UUID().uuidString.lowercased()
         return Image(name: "\(id).\(ext)", data: data)
     }
 
     @concurrent
-    public func save(_ key: String, text: String, baseline: Data?, staged: [Image]) async throws -> Data {
+    public func save(_ target: ReaderSidecarTarget, text: String, baseline: Data?, staged: [Image]) async throws -> Data {
         guard let replace else { throw ReaderFileError.readOnly }
         guard !text.utf8.contains(0) else { throw Failure.invalidNote }
         guard text.count <= 200_000, text.utf8.count <= Self.noteBytes else { throw Failure.oversizedNote }
 
-        let directory = try directory(key)
+        let directory = try directory(target.key)
         let note = directory.appendingPathComponent("scratchpad.md")
         guard try await files.root.readRegularFile(note, byteLimit: Self.noteBytes) == baseline else {
             throw Failure.changedOnDisk
@@ -166,6 +167,7 @@ public struct ScratchpadStorage: Sendable {
                 .appendingPathComponent(image.name)
             let current = try await files.root.readRegularFile(path, byteLimit: Self.imageBytes)
             if current == nil {
+                try await target.validate(in: files)
                 _ = try await replace(path, image.data, nil)
             }
             guard try await files.root.readRegularFile(path, byteLimit: Self.imageBytes) == image.data else {
@@ -177,6 +179,7 @@ public struct ScratchpadStorage: Sendable {
         let data = Data(text.utf8)
         // An empty edit publishes empty Markdown. It never deletes the note or
         // its images, and is subject to the same conditional replace.
+        try await target.validate(in: files)
         guard try await replace(note, data, baseline) else { throw Failure.changedOnDisk }
         return data
     }

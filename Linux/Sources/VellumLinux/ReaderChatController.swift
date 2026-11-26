@@ -71,6 +71,14 @@ final class ReaderChatController {
         if let failure { throw failure }
     }
 
+    /// A fresh read can resolve the same locator to another document.
+    func detach(_ panel: OpaquePointer) -> Task<Void, Never>? {
+        guard document != nil else { return nil }
+        let pending = drain(panel)
+        reset(panel)
+        return pending
+    }
+
     func reset(_ panel: OpaquePointer) {
         work?.cancel()
         saveFailed = false
@@ -209,7 +217,7 @@ final class ReaderChatController {
     /// Serialize append-only saves and keep the old document's owner alive
     /// across selection/close. A failed CAS leaves the turns in memory for retry.
     func save(panel: OpaquePointer, retry: Bool = false) {
-        guard let key = sessionKey, document?.key != nil, let store, let writer, pending[key]?.isEmpty == false else { return }
+        guard let key = sessionKey, let target = document?.sidecarTarget, let store, let writer, pending[key]?.isEmpty == false else { return }
         if retry { reader_chat_state(panel, "Retrying shared save…", false, false) }
         let prior = persistence
         persistence = Task {
@@ -224,7 +232,8 @@ final class ReaderChatController {
                 let latest = try await ReaderConversation.load(key: key.document, from: store)
                 let additions = turns.filter { !latest.messageIDs.contains($0.id) }
                 let exchanged = try await latest.save(appending: additions) { url, bytes, expected in
-                    try await writer.replace(url, with: bytes, ifCurrent: expected)
+                    try await target.validate(in: store)
+                    return try await writer.replace(url, with: bytes, ifCurrent: expected)
                 }
                 guard exchanged else { throw LibraryFileError.retryable }
                 let committed = Set(turns.map(\.id))
@@ -238,6 +247,7 @@ final class ReaderChatController {
             } catch {
                 guard !closing, sessionKey == key, loaded else { return }
                 saveFailed = true
+                if let changed = error as? ReaderSidecarTarget.ChangedPDF { historyNotice = changed.localizedDescription }
             }
             if !busy && (retry || previousNotice != historyNotice || previouslyFailed != saveFailed) { ready(panel: panel) }
         }

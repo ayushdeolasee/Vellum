@@ -13,7 +13,7 @@ final class ReaderController {
     private var store: ReadOnlyLibraryFileStore?
     private(set) var writeContext: SharedLibraryWriteContext?
     private var positionSession: ReaderPositionSession?
-    private var documentKey: DocumentKey?
+    private var sidecarTarget: ReaderSidecarTarget?
     private var displayedPosition: ReadingPosition?
     private var transition: Task<Void, Never>?
     private var closing = false
@@ -24,6 +24,7 @@ final class ReaderController {
     private var searchWork: Task<Void, Never>?
     private var selection: URL?
     private var bytes: Data?
+    private var pdfMetadataUnavailable = false
     private var pdfTitle: String?
     private var pageIndex = 0
     private var pageCount = 0
@@ -307,8 +308,8 @@ final class ReaderController {
                 let storage = await scratchpadStorage(files: store, context: next)
                 guard !closing else { return }
                 scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
-                scratchpad?.select(documentStorageKey)
-                positionSession = positionWriter(key: documentKey, restored: nil, window: window)
+                scratchpad?.select(sidecarTarget)
+                positionSession = positionWriter(restored: nil, window: window)
                 webPage?.session = positionSession
                 if let point = await webPage?.location() ?? displayedPosition { positionSession?.moved(point) }
                 reader_set_editing(window, enabling, true)
@@ -320,20 +321,19 @@ final class ReaderController {
         }
     }
 
-    private var documentStorageKey: String?
+    private var documentStorageKey: String? { sidecarTarget?.key }
 
-    private func positionWriter(key: DocumentKey?, restored: ReadingPosition?, window: OpaquePointer) -> ReaderPositionSession? {
+    private func positionWriter(restored: ReadingPosition?, window: OpaquePointer) -> ReaderPositionSession? {
         let name = selection?.lastPathComponent ?? "this document"
-        return ReaderPositionSession(context: writeContext, key: key, restored: restored) {
+        return ReaderPositionSession(context: writeContext, target: sidecarTarget, restored: restored) {
             reader_notice(window, "Could not save the reading position for \(name). Its previous position was kept.")
         }
     }
 
-    private func bindPosition(key: DocumentKey?, storageKey: String?, restored: ReadingPosition?, window: OpaquePointer) {
-        documentKey = key
-        documentStorageKey = storageKey
-        positionSession = positionWriter(key: key, restored: restored, window: window)
-        scratchpad?.select(storageKey)
+    private func bindPosition(target: ReaderSidecarTarget?, restored: ReadingPosition?, window: OpaquePointer) {
+        sidecarTarget = target
+        positionSession = positionWriter(restored: restored, window: window)
+        scratchpad?.select(target)
     }
 
     private func openLibrary(_ path: URL, remember: Bool = false, window: OpaquePointer) {
@@ -402,8 +402,7 @@ final class ReaderController {
     }
 
     private func resetDocument() {
-        documentKey = nil
-        documentStorageKey = nil
+        sidecarTarget = nil
         displayedPosition = nil
         positionSession = nil
         if writeContext != nil { metadataCatalog = nil }
@@ -411,6 +410,7 @@ final class ReaderController {
         selectedEntry = nil
         selection = nil
         bytes = nil
+        pdfMetadataUnavailable = false
         pdfTitle = nil
         pageCount = 0
         pageIndex = 0
@@ -475,8 +475,7 @@ final class ReaderController {
                 let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
-                self.bindPosition(key: metadata.storageKey.flatMap { DocumentKey(rawValue: "web:" + $0) },
-                                  storageKey: metadata.storageKey, restored: metadata.position, window: window)
+                self.bindPosition(target: metadata.storageKey.map { .web(key: $0) }, restored: metadata.position, window: window)
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
                                            probe: self.webProbe, restoring: metadata.position, session: self.positionSession,
                                            onLocation: { point in
@@ -514,6 +513,12 @@ final class ReaderController {
                 if let cached = self.bytes {
                     data = cached
                 } else {
+                    let oldChat = self.chat.detach(reader_chat_panel(window))
+                    let oldPosition = self.positionSession
+                    self.bindPosition(target: nil, restored: nil, window: window)
+                    await oldChat?.value
+                    await oldPosition?.flush()
+                    guard self.isCurrent(token) else { return }
                     guard let loaded = try await store.read(file) else {
                         throw CocoaError(.fileNoSuchFile)
                     }
@@ -522,19 +527,23 @@ final class ReaderController {
                     guard self.isCurrent(token) else { return }
                     var restored: ReadingPosition?
                     var storageKey: String?
-                    if let catalog = try? await self.catalog(in: store, token: token),
-                       let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
-                                                               stamp: opening.stableIdentifier, fallbackTitle: title) {
+                    do {
+                        let catalog = try await self.catalog(in: store, token: token)
+                        let saved = try await catalog.sharedPDF(bytes: loaded, file: file,
+                                                                stamp: opening.stableIdentifier, fallbackTitle: title)
+                        guard self.isCurrent(token) else { return }
+                        self.pdfMetadataUnavailable = false
                         restored = saved.position
                         storageKey = saved.storageKey
                         title = saved.displayTitle
                         if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
+                    } catch {
+                        guard self.isCurrent(token) else { return }
+                        self.pdfMetadataUnavailable = true
                     }
-                    guard self.isCurrent(token) else { return }
-                    self.bindPosition(key: storageKey.map { .pdf(stableIdentifier: $0) },
-                                      storageKey: storageKey, restored: restored, window: window)
+                    self.bindPosition(target: storageKey.map { .pdf(key: $0, file: file) }, restored: restored, window: window)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index
@@ -553,13 +562,18 @@ final class ReaderController {
                 let point = ReadingPosition(page: index + 1, pageCount: info.pageCount)
                 self.displayedPosition = point
                 self.positionSession?.moved(point)
-                self.chat.bind(.pdf(data, key: self.documentStorageKey, file: file, title: title, page: index),
-                               store: store, context: self.writeContext, provider: self.settings.provider,
-                               panel: reader_chat_panel(window))
+                if !self.pdfMetadataUnavailable {
+                    self.chat.bind(.pdf(data, key: self.documentStorageKey, file: file, title: title, page: index),
+                                   store: store, context: self.writeContext, provider: self.settings.provider,
+                                   panel: reader_chat_panel(window))
+                }
                 bitmap.pixels.withUnsafeBytes { buffer in
                     reader_set_page(window, title, Int32(index + 1), Int32(info.pageCount),
                                     buffer.bindMemory(to: UInt8.self).baseAddress,
                                     Int32(bitmap.width), Int32(bitmap.height), bitmap.bytesPerRow)
+                }
+                if self.pdfMetadataUnavailable {
+                    reader_show_status(window, "PDF open · Could not verify shared metadata. Restore access, then reopen the folder in Settings.")
                 }
             } catch {
                 guard self.isCurrent(token) else { return }

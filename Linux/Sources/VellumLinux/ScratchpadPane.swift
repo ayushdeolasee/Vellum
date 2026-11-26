@@ -27,6 +27,7 @@ final class ScratchpadPane {
     }
 
     private struct Draft {
+        let target: ReaderSidecarTarget
         var text: String
         var baseline: Data?
         var savedText: String
@@ -39,7 +40,8 @@ final class ScratchpadPane {
 
     private let panel: OpaquePointer
     private let storage: ScratchpadStorage
-    private var key: String?
+    private var target: ReaderSidecarTarget?
+    private var key: String? { target?.key }
     private var drafts: [String: Draft] = [:]
     private var generation = 0
     private var load: Task<Void, Never>?
@@ -69,13 +71,13 @@ final class ScratchpadPane {
         retarget(nil, message: "Opening document…")
     }
 
-    func select(_ key: String?) {
-        retarget(key, message: key == nil
+    func select(_ target: ReaderSidecarTarget?) {
+        retarget(target, message: target == nil
                  ? "This document has no shared scratchpad identity."
                  : "Loading scratchpad…")
     }
 
-    private func retarget(_ next: String?, message: String) {
+    private func retarget(_ next: ReaderSidecarTarget?, message: String) {
         generation += 1
         load?.cancel()
         attach?.cancel()
@@ -83,7 +85,7 @@ final class ScratchpadPane {
         if let key, key != savingKey, drafts[key]?.dirty == false {
             drafts.removeValue(forKey: key)
         }
-        key = next
+        target = next
         selectionMessage = message
         showDraft()
         loadIfNeeded()
@@ -118,14 +120,15 @@ final class ScratchpadPane {
             }
         case SCRATCHPAD_ATTACH:
             guard let text else { return }
-            prepareImage(at: URL(fileURLWithPath: text), for: key)
+            prepareImage(at: URL(fileURLWithPath: text), for: draft.target)
         default:
             break
         }
     }
 
     private func loadIfNeeded() {
-        guard scratchpad_panel_visible(panel), let key, drafts[key] == nil, !closed else { return }
+        guard scratchpad_panel_visible(panel), let target, drafts[target.key] == nil, !closed else { return }
+        let key = target.key
         let prior = load
         let token = generation
         prior?.cancel()
@@ -136,7 +139,7 @@ final class ScratchpadPane {
                 if let draft = try await storage.recovered(key) {
                     let previews = await Preview.decode(draft.staged)
                     guard isCurrent(token) else { return }
-                    drafts[key] = Draft(text: draft.text, baseline: draft.baseline,
+                    drafts[key] = Draft(target: target, text: draft.text, baseline: draft.baseline,
                                         savedText: String(decoding: draft.baseline ?? Data(), as: UTF8.self),
                                         previews: previews, hasUnavailableImages: false, staged: draft.staged,
                                         message: "Recovered local draft. The shared note has been preserved.")
@@ -146,7 +149,7 @@ final class ScratchpadPane {
                 let note = try await storage.load(key)
                 let previews = await Preview.decode(note.images)
                 guard isCurrent(token) else { return }
-                drafts[key] = Draft(text: note.text, baseline: note.baseline,
+                drafts[key] = Draft(target: target, text: note.text, baseline: note.baseline,
                                     savedText: note.text, previews: previews,
                                     hasUnavailableImages: note.unavailableImages > 0 ||
                                         previews.count != note.images.count)
@@ -163,7 +166,8 @@ final class ScratchpadPane {
         generation == token && !closed && !Task.isCancelled
     }
 
-    private func prepareImage(at url: URL, for key: String) {
+    private func prepareImage(at url: URL, for target: ReaderSidecarTarget) {
+        let key = target.key
         let prior = attach
         let token = generation
         preparingImage = true
@@ -179,7 +183,7 @@ final class ScratchpadPane {
                 }
             }
             do {
-                let image = try await storage.prepareImage(url)
+                let image = try await storage.prepareImage(url, for: target)
                 let preview = await Preview.decode([image]).first
                 guard isCurrent(token), var draft = drafts[key], key != savingKey else { return }
                 guard let preview else { throw ScratchpadStorage.Failure.unsupportedImage }
@@ -212,7 +216,7 @@ final class ScratchpadPane {
         }
         do {
             let referenced = await ScratchpadStorage.referencedImageIDs(in: draft.text)
-            draft.baseline = try await storage.save(key, text: draft.text,
+            draft.baseline = try await storage.save(draft.target, text: draft.text,
                                                    baseline: draft.baseline, staged: draft.staged.filter { referenced.contains($0.id) })
             try await storage.removeRecovery(key)
             if key == self.key {

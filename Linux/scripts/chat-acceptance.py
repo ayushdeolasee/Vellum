@@ -472,7 +472,12 @@ weston = subprocess.Popen(["weston", "--no-config", "--backend=headless", "--ren
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
     wait(lambda: (runtime / "chat").exists(), "Wayland display")
-    exercise()
+    if os.environ.get("VELLUM_PDF_SIDECAR_TEST"):
+        import sys
+        from pdf_sidecar_acceptance import exercise as exercise_sidecars
+        exercise_sidecars(sys.modules[__name__])
+    else:
+        exercise()
     assert manifest(second_root) == second_before
     if not writable:
         assert manifest() == before
