@@ -247,6 +247,9 @@ final class PdfAnnotationPane {
         if let message { hint = message }
         else if let selected = position?.selectedText { hint = selected }
         else if let picked { hint = "Selected \(picked.type.rawValue)." }
+        else if !writable {
+            hint = page.records.isEmpty ? "Drag or find text to select it." : "Choose a page annotation to read its comment."
+        }
         else if page.text?.lines.isEmpty != false { hint = "No selectable text. Click to place a note, or add one at page center." }
         else { hint = "Drag or find text to highlight. Click to place a note, or add one at page center." }
         let reason = admissionError ?? page.restriction ?? (mutate == nil ? "Library editing is off." : nil)

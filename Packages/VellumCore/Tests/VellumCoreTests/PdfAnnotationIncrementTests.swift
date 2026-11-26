@@ -74,6 +74,23 @@ final class PdfAnnotationIncrementTests: XCTestCase {
         }
     }
 
+    func testAnnotationRevisionPreservesOnlyTheVerifiedStorageKey() throws {
+        let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column"))
+        let key = DocumentIdentity.byteHash(original)
+        let note = PdfAnnotationEdit.create(.init(type: .note, pageNumber: 1, content: "Saved", id: "note"))
+        let stamped = try PdfAnnotationIncrement.applying(note, to: original, now: now, preservingStorageKey: key)
+        XCTAssertTrue(stamped.starts(with: original))
+        XCTAssertEqual(SharedPDFIdentity.stamp(in: stamped, readerID: key), key)
+        XCTAssertEqual(try read(stamped).first?.content, "Saved")
+        let update = PdfAnnotationEdit.update(.init(id: "note", content: "Updated"))
+        let next = try PdfAnnotationIncrement.applying(update, to: stamped, now: now, preservingStorageKey: key)
+        let info = try XCTUnwrap(ClassicPdfFile(data: stamped).infoNumber)
+        XCTAssertEqual(try ClassicPdfFile(data: next).objectOffsets[info], try ClassicPdfFile(data: stamped).objectOffsets[info])
+        XCTAssertThrowsError(try PdfAnnotationIncrement.applying(note, to: original, now: now, preservingStorageKey: "12345678"))
+        XCTAssertThrowsError(try PdfAnnotationIncrement.applying(update, to: stamped, now: now,
+                                                                  preservingStorageKey: DocumentIdentity.byteHash(stamped)))
+    }
+
     func testRawForeignSlotAndIdentitySurviveEarlierDeletion() throws {
         let original = PdfFixtureBuilder.foreignAnnotationsPdf()
         let (first, old) = try page(original)
