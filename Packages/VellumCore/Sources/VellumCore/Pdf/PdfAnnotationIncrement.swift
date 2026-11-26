@@ -53,7 +53,10 @@ public enum PdfAnnotationIncrement {
     /// edit on the same snapshot reproducible. No file or renderer is opened.
     /// Editing/deleting changes the latest revision only. Previous revisions
     /// retain the original note contents; this operation never erases history.
-    public static func applying(_ edit: PdfAnnotationEdit, to original: Data, now: String) throws -> Data {
+    /// A supplied key must already identify this original through its typed stamp
+    /// or a verified shared sidecar keyed by the SHA-256 of these exact bytes.
+    public static func applying(_ edit: PdfAnnotationEdit, to original: Data, now: String,
+                                preservingStorageKey key: String? = nil) throws -> Data {
         if case let .readOnly(reason) = PdfEditEligibility.classify(original) { throw reason }
         let file = try ClassicPdfFile(data: original)
         guard let root = file.rootNumber, let catalog = file.objectSource(root) else { throw PdfReadOnlyReason.malformed }
@@ -77,10 +80,21 @@ public enum PdfAnnotationIncrement {
             }
         }
         guard found != nil else { throw PdfCoreError.invalidDocument("Annotation or page does not exist") }
-        let output = increment.appended()
+        var info: Int?
+        if let key, SharedPDFIdentity.stamp(in: original, readerID: key) != key {
+            guard DocumentIdentity.byteHash(original) == key else {
+                throw PdfCoreError.invalidDocument("The shared storage key does not identify this PDF.")
+            }
+            info = try PdfInfoIncrement.setMetadata(in: &increment, file: file, entries: [("doc_id", key)],
+                                                    requiringAbsentKey: "VellumDocId")
+        }
+        let output = increment.appended(infoNumber: info)
+        if let key, SharedPDFIdentity.stamp(in: output, readerID: key) != key {
+            throw PdfCoreError.invalidDocument("The edited PDF does not retain its shared storage key.")
+        }
         // New caller-supplied IDs, object numbers and revision size must also
         // meet the same proof before a session may commit these bytes.
-        try PdfEditEligibility.inspect(output, reservingRevision: false)
+        try PdfEditEligibility.validateOutput(output)
         return output
     }
 

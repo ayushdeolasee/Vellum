@@ -581,6 +581,9 @@ public struct ClassicPdfFile {
     let data: Data
     private let bytes: [UInt8]
     private(set) var objectOffsets: [Int: Int] = [:]
+    private var compressedSources: [Int: ArraySlice<UInt8>] = [:]
+    private(set) var usesXrefStreams = false
+    fileprivate var usesPrimaryTable: Bool { PdfSyntax.keyword("xref", in: bytes, at: startXref) }
     private(set) var trailer: PdfDictSource
     let startXref: Int
 
@@ -589,6 +592,21 @@ public struct ClassicPdfFile {
     public var infoNumber: Int? { trailer.reference(forKey: "Info") }
 
     public init(data: Data) throws {
+        try self.init(data: data, forEditing: true)
+    }
+
+    /// Recover original metadata for a PDFKit rewrite. This returns only a
+    /// dictionary, so a read-only proof cannot be passed to an increment.
+    public static func infoForRecovery(in original: Data) throws -> PdfDictSource? {
+        let file = try ClassicPdfFile(data: original, forEditing: false)
+        if let number = file.infoNumber {
+            guard let raw = file.rawObjectValue(number), raw.starts(with: "<<".utf8) else { throw PdfReadOnlyReason.malformed }
+            return PdfDictSource(raw)
+        }
+        return file.trailer.inlineDictionary(forKey: "Info").map(PdfDictSource.init)
+    }
+
+    private init(data: Data, forEditing: Bool) throws {
         self.data = data
         self.bytes = [UInt8](data)
 
@@ -602,25 +620,47 @@ public struct ClassicPdfFile {
         }
         startXref = offset
 
-        let latest = try Self.xrefSection(in: bytes, at: offset)
-        var entries = latest.entries
-        var seenOffsets: Set<Int> = [offset]
-        var sectionTrailer = latest.trailer
-        while sectionTrailer.hasKey("Prev") {
-            guard let previous = sectionTrailer.integer(forKey: "Prev"), seenOffsets.insert(previous).inserted else {
-                throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid cross-reference offset")
+        var entries: [Int: XrefEntry] = [:]
+        var seenOffsets = Set<Int>()
+        var latest: PdfDictSource?
+        var newerSize: Int?
+        var position = offset
+        while true {
+            guard bytes.indices.contains(position), seenOffsets.insert(position).inserted else {
+                throw PdfCoreError.invalidDocument("Invalid cross-reference revision")
             }
-            let section = try Self.xrefSection(in: bytes, at: previous)
-            // A newer free entry also supersedes every older version.
-            entries.merge(section.entries) { current, _ in current }
-            guard let previousSize = section.trailer.integer(forKey: "Size"),
-                  let currentSize = sectionTrailer.integer(forKey: "Size"), previousSize > 0,
-                  currentSize >= previousSize else {
-                throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid trailer size")
+            let section = PdfSyntax.keyword("xref", in: bytes, at: position)
+                ? try Self.xrefSection(in: bytes, at: position) : nil
+            if let section, !section.trailer.hasKey("XRefStm") {
+                guard let size = section.trailer.integer(forKey: "Size"), size > 0,
+                      size <= (newerSize ?? Int.max) else {
+                    throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid trailer size")
+                }
+                if latest == nil { latest = section.trailer }
+                newerSize = size
+                entries.merge(section.entries) { current, _ in current }
+                guard section.trailer.hasKey("Prev") else { break }
+                guard let previous = section.trailer.integer(forKey: "Prev") else {
+                    throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid cross-reference offset")
+                }
+                position = previous
+            } else {
+                // Before a stream-backed file reaches any writer, prove every
+                // revision and use that exact object map for all subsequent reads.
+                guard data.count <= 128 * 1024 * 1024 else { throw PdfReadOnlyReason.inspectionLimit }
+                let structure = PdfClassicStructure(bytes: bytes)
+                try structure.inspect(forEditing: forEditing)
+                guard structure.usesXrefStreams, let size = structure.latestTrailer.integer(forKey: "Size")
+                else { throw PdfReadOnlyReason.malformed }
+                self.size = size
+                trailer = structure.latestTrailer
+                objectOffsets = structure.offsets
+                compressedSources = structure.compressedSources
+                usesXrefStreams = true
+                return
             }
-            sectionTrailer = section.trailer
         }
-        guard let size = latest.trailer.integer(forKey: "Size"),
+        guard let latest, let size = latest.integer(forKey: "Size"),
               size > (entries.keys.max() ?? 0), size <= Int(UInt32.max) else {
             throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid trailer size")
         }
@@ -629,7 +669,7 @@ public struct ClassicPdfFile {
             if case .inUse(let offset, _) = entry { return offset }
             return nil
         }
-        trailer = latest.trailer
+        trailer = latest
     }
 
     private enum XrefEntry {
@@ -716,6 +756,9 @@ public struct ClassicPdfFile {
     }
 
     public func objectSource(_ number: Int) -> PdfDictSource? {
+        if let source = compressedSources[number] {
+            return source.starts(with: "<<".utf8) ? PdfDictSource(Array(source)) : nil
+        }
         guard let span = objectValueSpan(number), bytes[span].starts(with: [60, 60]) else { return nil }
         return PdfDictSource(Array(bytes[span]))
     }
@@ -738,6 +781,7 @@ public struct ClassicPdfFile {
     /// PDFKit's `/Annots` array object (`[ 12 0 R ... ]`), which is not a
     /// dictionary and therefore cannot be returned by `objectSource`.
     public func rawObjectValue(_ number: Int) -> [UInt8]? {
+        if let source = compressedSources[number] { return Array(source) }
         guard let span = objectValueSpan(number) else { return nil }
         let end = PdfSyntax.skipTrivia(bytes, from: span.upperBound, to: bytes.count)
         guard PdfSyntax.keyword("endobj", in: bytes, at: end) else { return nil }
@@ -767,7 +811,7 @@ extension PdfDictSource {
 extension ClassicPdfFile {
     /// Verify the actual type behind PDFium's text-only metadata API. Traverse up
     /// to 64 classic revisions newest-first, with a 1 MiB window per table and
-    /// 8 MiB of total xref reads. Only the current Info object's row is relevant.
+    /// 8 MiB of total classic xref reads. Stream proofs use the bounded physical parser.
     public static func currentInfoText(forKey key: String, in data: Data) -> String? {
         guard data.starts(with: "%PDF-".utf8),
               let marker = data.suffix(1024).range(of: Data("startxref".utf8), options: .backwards)
@@ -785,8 +829,11 @@ extension ClassicPdfFile {
             remaining -= count
             let start = data.startIndex + offset
             let window = Array(data[start..<(start + count)])
-            guard let section = try? xrefSection(in: window, at: 0, verifyingIdentity: true),
-                  !section.trailer.hasKey("XRefStm") else { return nil }
+            if !PdfSyntax.keyword("xref", in: window, at: 0) {
+                return streamInfoText(forKey: key, in: data)
+            }
+            guard let section = try? xrefSection(in: window, at: 0, verifyingIdentity: true) else { return nil }
+            if section.trailer.hasKey("XRefStm") { return streamInfoText(forKey: key, in: data) }
             if revision == 0 {
                 guard count == upperBound - offset,
                       PdfSyntax.skipTrivia(window, from: section.end, to: count) == count,
@@ -809,6 +856,19 @@ extension ClassicPdfFile {
             offset = previous
         }
         return nil
+    }
+
+    private static func streamInfoText(forKey key: String, in data: Data) -> String? {
+        // The physical proof visits the complete revision chain. Bound both the
+        // source and total inflated bytes independently of the rendering limit.
+        guard data.count <= 128 * 1024 * 1024 else { return nil }
+        let structure = PdfClassicStructure(data)
+        guard (try? structure.inspect(forEditing: false)) != nil, structure.usesXrefStreams,
+              let info = structure.latestTrailer.reference(forKey: "Info"),
+              case .dictionary(let dictionary) = structure.objects[info],
+              case .string(let raw) = dictionary[key], raw.count <= 64 * 1024
+        else { return nil }
+        return key == "VellumDocId" ? PdfDictSource.decodeIdentityString(Array(raw)) : PdfDictSource.decodeTextString(Array(raw))
     }
 
     private static func infoText(forKey key: String, in data: Data, number: Int, at object: Int,
@@ -863,6 +923,14 @@ public struct PdfIncrement {
         objects[number]
     }
 
+    /// Check the resulting stream revision as well as its input before a
+    /// metadata or outline caller can publish the appended bytes.
+    func checkedAppend(infoNumber: Int? = nil) throws -> Data {
+        let bytes = appended(infoNumber: infoNumber)
+        if file.usesXrefStreams { try PdfEditEligibility.validateOutput(bytes) }
+        return bytes
+    }
+
     /// The base data with the update appended. `infoNumber` overrides the
     /// trailer /Info reference when the Info dictionary moved. Built at the
     /// byte level: copied object sources may contain non-UTF8 string literals
@@ -877,29 +945,60 @@ public struct PdfIncrement {
             body.append(contentsOf: source)
             body.append(contentsOf: Array("\nendobj\n".utf8))
         }
-        let xrefOffset = out.count + body.count
-        body.append(contentsOf: Array("xref\n".utf8))
-        let numbers = offsets.keys.sorted()
-        var index = 0
-        while index < numbers.count {
-            var end = index
-            while end + 1 < numbers.count, numbers[end + 1] == numbers[end] + 1 { end += 1 }
-            body.append(contentsOf: Array("\(numbers[index]) \(end - index + 1)\n".utf8))
-            for k in index...end {
-                body.append(contentsOf: Array(String(format: "%010lld 00000 n \n", Int64(offsets[numbers[k]]!)).utf8))
-            }
-            index = end + 1
-        }
-        // Carry the trailer forward, including /ID and an inline /Info when
-        // a bookmark update has no reason to promote it.
+        var xrefOffset = out.count + body.count
+        let streamNumber = max(nextObjectNumber, (offsets.keys.max() ?? 0) + 1)
         var trailer = file.trailer
-        // A hybrid xref stream belongs to its own revision, reached via /Prev.
         trailer.removeEntry(forKey: "XRefStm")
-        trailer.setInteger(forKey: "Size", to: nextObjectNumber)
         trailer.setInteger(forKey: "Prev", to: file.startXref)
+        trailer.setInteger(forKey: "Size", to: file.usesXrefStreams ? streamNumber + 1 : streamNumber)
         if let infoNumber { trailer.setReference(forKey: "Info", to: infoNumber) }
-        body.append(contentsOf: "trailer\n".utf8)
-        body.append(contentsOf: trailer.sourceBytes)
+        if file.usesXrefStreams { offsets[streamNumber] = xrefOffset }
+
+        let numbers = offsets.keys.sorted()
+        var groups: [ArraySlice<Int>] = []
+        var start = 0
+        while start < numbers.count {
+            var end = start + 1
+            while end < numbers.count, numbers[end] == numbers[end - 1] + 1 { end += 1 }
+            groups.append(numbers[start..<end])
+            start = end
+        }
+        if file.usesXrefStreams {
+            var stream = trailer
+            for key in ["Filter", "DecodeParms", "DL"] { stream.removeEntry(forKey: key) }
+            if file.usesPrimaryTable { stream.removeEntry(forKey: "Prev") }
+            stream.setValue(forKey: "Type", raw: Array("/XRef".utf8))
+            stream.setValue(forKey: "W", raw: Array("[1 8 2]".utf8))
+            let index = groups.map { "\($0.first!) \($0.count)" }.joined(separator: " ")
+            stream.setValue(forKey: "Index", raw: Array("[\(index)]".utf8))
+            stream.setInteger(forKey: "Length", to: numbers.count * 11)
+            body.append(contentsOf: "\(streamNumber) 0 obj\n".utf8)
+            body.append(contentsOf: stream.sourceBytes)
+            body.append(contentsOf: "\nstream\n".utf8)
+            for number in numbers {
+                body.append(1)
+                withUnsafeBytes(of: UInt64(offsets[number]!).bigEndian) { body.append(contentsOf: $0) }
+                body.append(contentsOf: [0, 0])
+            }
+            body.append(contentsOf: "\nendstream\nendobj\n".utf8)
+            // In a hybrid, PDFKit follows the primary table chain. Each
+            // supplemental stream belongs only to its own table revision.
+            if file.usesPrimaryTable {
+                trailer.setInteger(forKey: "XRefStm", to: xrefOffset)
+                xrefOffset = out.count + body.count
+            }
+        }
+        if file.usesPrimaryTable {
+            body.append(contentsOf: "xref\n".utf8)
+            for group in groups {
+                body.append(contentsOf: "\(group.first!) \(group.count)\n".utf8)
+                for number in group {
+                    body.append(contentsOf: String(format: "%010lld 00000 n \n", Int64(offsets[number]!)).utf8)
+                }
+            }
+            body.append(contentsOf: "trailer\n".utf8)
+            body.append(contentsOf: trailer.sourceBytes)
+        }
         body.append(contentsOf: "\nstartxref\n\(xrefOffset)\n%%EOF\n".utf8)
         out.append(Data(body))
         return out

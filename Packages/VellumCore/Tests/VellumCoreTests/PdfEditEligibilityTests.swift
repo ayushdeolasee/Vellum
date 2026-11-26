@@ -29,7 +29,7 @@ final class PdfEditEligibilityTests: XCTestCase {
             ("classic-two-column", .editable), ("rotated-all-angles", .editable),
             ("ipad-vellum-ink", .editable), ("pdf-ink-erased-full", .editable),
             ("pdf-ink-erased-partial", .editable), ("pdf-ink-marker", .editable), ("pdf-ink-rotated", .editable),
-            ("foreign-annotations", .editable), ("xref-stream-objstm", .readOnly(.unsupportedXref)),
+            ("foreign-annotations", .editable), ("xref-stream-objstm", .editable),
             ("encrypted-user-pass", .readOnly(.encrypted)), ("digitally-signed", .readOnly(.signed))
         ] {
             let bytes = try Data(contentsOf: PdfFixtureBuilder.fixtureURL(name))
@@ -77,7 +77,7 @@ final class PdfEditEligibilityTests: XCTestCase {
 
         for (key, reason): (String, PdfReadOnlyReason) in [("/Encrypt 3 0 R", .encrypted), ("/XRefStm 9", .unsupportedXref)] {
             let base = try replacing("/Size 4", with: "/Size 4 \(key)", in: document())
-            let prev = try ClassicPdfFile(data: base).startXref
+            let prev = try ClassicPdfFile(data: document()).startXref
             // Write a fixture trailer that intentionally omits the historical
             // key, independent of which entries Vellum's writer carries over.
             let next = "xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 4 /Root 1 0 R /Prev \(prev) >>\nstartxref\n\(base.count)\n%%EOF\n"

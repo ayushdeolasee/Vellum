@@ -263,7 +263,7 @@ final class PdfAnnotationIncrementTests: XCTestCase {
 
     func testIneligibleOriginalsAndInvalidEdits() throws {
         let edit = PdfAnnotationEdit.create(.init(type: .note, pageNumber: 1, id: "one"))
-        for name in ["xref-stream-objstm", "digitally-signed", "encrypted-user-pass"] {
+        for name in ["digitally-signed", "encrypted-user-pass"] {
             let data = try Data(contentsOf: PdfFixtureBuilder.fixtureURL(name))
             XCTAssertThrowsError(try apply(edit, data))
         }

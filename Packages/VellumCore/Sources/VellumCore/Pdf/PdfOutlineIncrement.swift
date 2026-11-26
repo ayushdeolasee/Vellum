@@ -83,7 +83,7 @@ public enum PdfOutlineIncrement {
         adjustOutlineCount(&root, delta: 1)
         increment.setObject(outlinesNumber, source: root.sourceBytes)
 
-        return increment.appended()
+        return try increment.checkedAppend()
     }
 
     // MARK: - Update (incremental update)
@@ -126,7 +126,7 @@ public enum PdfOutlineIncrement {
 
         var increment = PdfIncrement(file: file)
         increment.setObject(bookmarkNumber, source: bookmark.sourceBytes)
-        return increment.appended()
+        return try increment.checkedAppend()
     }
 
     /// Patch pin state on an outline bookmark. Returns nil when no Vellum
@@ -148,7 +148,7 @@ public enum PdfOutlineIncrement {
 
         var increment = PdfIncrement(file: file)
         increment.setObject(bookmarkNumber, source: bookmark.sourceBytes)
-        return increment.appended()
+        return try increment.checkedAppend()
     }
 
     // MARK: - Deletion (incremental update)
@@ -226,7 +226,7 @@ public enum PdfOutlineIncrement {
             increment.setObject(number, source: source.sourceBytes)
         }
         increment.setNull(bookmarkNumber)
-        return increment.appended()
+        return try increment.checkedAppend()
     }
 
     /// Walk the outline tree at the raw-object level to find the object NUMBER

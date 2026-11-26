@@ -9,6 +9,61 @@ import PencilKit
 
 @MainActor
 final class PdfAnnotationExchangeTests: XCTestCase {
+    func testHostedReaderPreservesModernLinuxExchangeAcrossDeletions() async throws {
+        let (original, exchange) = try await Task.detached {
+            let source = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("xref-stream-objstm"))
+            let result = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("linux-modern-exchange"))
+            return (source, result)
+        }.value
+        XCTAssertTrue(exchange.starts(with: original))
+        XCTAssertEqual(VellumCore.DocumentIdentity.byteHash(exchange), "0affacfdd2b60f79ef96c569e161ecf55f6ee91dee96324d14bb5e11d8b312ba")
+
+        // Each prefix ends after a complete Linux revision and opens independently.
+        let revisions = [(4734, ["mark-highlight", "mark-note"]), (5067, ["mark-note"]), (5395, [])]
+        for (length, ids) in revisions {
+            let bytes = exchange.prefix(length)
+            let doc = try XCTUnwrap(PDFDocument(data: bytes))
+            let raw = try XCTUnwrap(doc.documentRef)
+            defer { withExtendedLifetime(raw) {} }
+            let info = try XCTUnwrap(raw.info)
+            let stamp = SharedPDFIdentity.stamp(in: bytes, readerID: CgPdf.string(info, "VellumDocId"))
+            XCTAssertEqual(stamp, "aaabcde0-1234-4000-a456-abcdef012345")
+            XCTAssertEqual(CgPdf.string(info, "Title"), "Final title")
+            XCTAssertEqual(CgPdf.integer(info, "VellumLastPage"), 1)
+            XCTAssertEqual(doc.pageCount, 1)
+            let page = try XCTUnwrap(doc.page(at: 0))
+            let root = try XCTUnwrap(doc.outlineRoot)
+            XCTAssertEqual(root.numberOfChildren, 1)
+            let bookmark = try XCTUnwrap(root.child(at: 0))
+            XCTAssertEqual(bookmark.label, "Final mark")
+            XCTAssertEqual(bookmark.destination?.page, page)
+            let text = await PdfTextReader(data: bytes).text(pageNumber: 1)
+            XCTAssertEqual(text, "Compressed page dictionary")
+
+            let dictionary = try XCTUnwrap(raw.page(at: 1)?.dictionary)
+            let geometry = try PageGeometry(pageDictionary: dictionary)
+            let records = PdfAnnotationReader.annotations(onPage: dictionary, pageNumber: 1, geometry: geometry)
+            XCTAssertEqual(records.map(\.id), ids)
+            XCTAssertEqual(page.annotations.map(\.contents), records.map(\.content))
+            for record in records {
+                XCTAssertEqual(record.positionData?.selectedText, "selection")
+                if record.id == "mark-highlight" {
+                    XCTAssertEqual(record.type, .highlight)
+                    XCTAssertEqual(record.content, "highlight")
+                    XCTAssertEqual(record.color, "#1256ab")
+                    XCTAssertTrue(record.pinned)
+                    XCTAssertEqual(record.positionData?.rects, [.init(x: 10, y: 12, width: 48, height: 10)])
+                    XCTAssertEqual(page.annotations.first?.quadrilateralPoints?.count, 4)
+                } else {
+                    XCTAssertEqual(record.type, .note)
+                    XCTAssertEqual(record.content, "updated")
+                    XCTAssertEqual(record.color, "#fde68a")
+                    XCTAssertEqual(record.positionData?.rects, [.init(x: 10, y: 12, width: 0, height: 0)])
+                }
+            }
+        }
+    }
+
     func testHostedReaderOpensLinuxEditsAndExportsAppleReply() async throws {
         for platform in ["ipad", "mac"] {
             let url = try PdfFixtureBuilder.fixtureURL("linux-on-" + platform)

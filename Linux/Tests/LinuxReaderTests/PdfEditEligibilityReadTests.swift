@@ -43,8 +43,8 @@ extension PdfiumTests {
 
         let cases: [(String, Data, PdfEditEligibility, String?)] = [
             ("classic", classic, .editable, nil),
-            ("xref stream", try fixture("xref-stream-objstm"), .readOnly(.unsupportedXref), nil),
-            ("hybrid", hybrid, .readOnly(.unsupportedXref), nil),
+            ("xref stream", try fixture("xref-stream-objstm"), .editable, nil),
+            ("hybrid", hybrid, .editable, nil),
             ("encrypted", try fixture("encrypted-user-pass"), .readOnly(.encrypted), "vellum"),
             ("signed", try fixture("digitally-signed"), .readOnly(.signed), nil),
             ("certified", certified, .readOnly(.signed), nil),
@@ -61,6 +61,31 @@ extension PdfiumTests {
             let bitmap = try await PdfiumDocument.render(in: bytes, at: 0, scale: 0.25, password: password)
             #expect(bitmap.width == 153 && bitmap.height == 198, "\(label)")
             #expect(bytes.elementsEqual(before), "\(label)")
+        }
+    }
+}
+
+extension PdfiumTests {
+    @Test func streamAnnotationAndVerifiedStorageKeyUseOneRevision() async throws {
+        let stamp = "01234567-89ab-cdef-0123-456789abcdef"
+        for name in ["xref-stream-objstm", "resume-stream-string", "resume-stream-name"] {
+            let original = try fixture(name)
+            let edit = PdfAnnotationEdit.create(.init(type: .note, pageNumber: 1, content: "literal endobj", id: "shared"))
+            let key = name == "resume-stream-string" ? stamp : DocumentIdentity.byteHash(original)
+            let date = "2026-11-26T00:00:00Z"
+            if name == "resume-stream-name" {
+                #expect(throws: (any Error).self) {
+                    try PdfAnnotationIncrement.applying(edit, to: original, now: date, preservingStorageKey: key)
+                }
+                continue
+            }
+            let output = try PdfAnnotationIncrement.applying(edit, to: original, now: date, preservingStorageKey: key)
+            try PdfEditEligibility.validateForReading(output)
+            #expect(output.starts(with: original))
+            let suffix = output.dropFirst(original.count)
+            #expect(suffix.ranges(of: Data("startxref".utf8)).count == 1)
+            #expect(try await PdfiumDocument.openingInfo(in: output).stableIdentifier == key)
+            #expect(try PdfAnnotationPureReader.annotations(on: 1, in: output, now: date).contains { $0.id == "shared" })
         }
     }
 }

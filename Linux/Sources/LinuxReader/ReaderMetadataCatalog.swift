@@ -103,23 +103,29 @@ public struct ReaderMetadataCatalog: Sendable {
     @concurrent
     public func sharedPDF(bytes: Data, file: URL, stamp: String?,
                           fallbackTitle: String) async throws -> ReaderDocumentMetadata {
-        let key = SharedPDFIdentity.storageKey(in: bytes, readerID: stamp)
-        let base = store.root.url.appendingPathComponent(".vellum/documents/").appendingPathComponent(key)
+        let verified = SharedPDFIdentity.stamp(in: bytes, readerID: stamp)
+        let directory = store.root.url.appendingPathComponent(".vellum/documents")
         struct Meta: Decodable {
             let kind: String
             let title: String?
             let last_known_path: String
         }
         let location = SharedPDFLocation(root: store.root.url)
-        if DocumentIdentity.isCanonicalKey(key),
-           let data = try await store.read(base.appendingPathComponent("meta.json")),
-           let meta = try? JSONDecoder().decode(Meta.self, from: data), meta.kind == "pdf",
-           let relative = location.relativePath(for: file), meta.last_known_path == relative {
-            let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
-            return ReaderDocumentMetadata(displayTitle: Self.title(meta.title) ?? result.displayTitle,
-                                          position: result.position, hasInkSidecar: false)
+        if let relative = location.relativePath(for: file) {
+            // Older imports of these exact bytes could only use their hash.
+            // Their matched sidecars and reading positions keep that identity.
+            let hash = DocumentIdentity.byteHash(bytes)
+            for key in [hash, verified].compactMap({ $0 }) {
+                let url = directory.appendingPathComponent(key).appendingPathComponent("meta.json")
+                guard let data = try await store.read(url),
+                      let meta = try? JSONDecoder().decode(Meta.self, from: data),
+                      meta.kind == "pdf", meta.last_known_path == relative else { continue }
+                let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
+                return ReaderDocumentMetadata(displayTitle: Self.title(meta.title) ?? result.displayTitle,
+                                              position: result.position, hasInkSidecar: false)
+            }
         }
-        return pdf(stableIdentifier: SharedPDFIdentity.stamp(in: bytes, readerID: stamp), fallbackTitle: fallbackTitle)
+        return pdf(stableIdentifier: verified, fallbackTitle: fallbackTitle)
     }
 
     private static func webKey(_ url: String) -> DocumentKey? {

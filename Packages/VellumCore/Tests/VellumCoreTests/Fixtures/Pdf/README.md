@@ -11,6 +11,12 @@ These six synthetic documents and their text and graphics are dedicated to the p
 | `encrypted-user-pass.pdf` | The classic two-column original saved by pikepdf 10.18.2 (libqpdf 12.4.2) with revision 6 AES-256, user password `vellum`, owner password `fixture-owner`. Empty and incorrect passwords fail. |
 | `digitally-signed.pdf` | The classic two-column original incrementally signed by pyHanko 0.38.2. The invisible `FixtureSignature` field uses /SigFlags 3 and a detached SHA-256 CMS signature covering the full file except /Contents. OpenSSL generated the disposable self-signed RSA-2048 certificate with CN “Vellum Fixture Signer”. The private key was discarded. |
 
+The two `resume-stream-{string,name}.pdf` files are copies of the four-page
+rotation fixture saved by pikepdf with object stream generation enabled. Both
+carry the same UUID in compressed Info object 10 (stream 1, slot 8). One
+encodes it as a String and the other as a Name. The page landmarks allow the
+ordinary GTK reader's displayed resume page to be checked independently.
+
 ## Reproduction and validation
 
 The four Swift factories produce the checked-in bytes on every run. The encrypted and signed samples are fixed test inputs. Regenerating them introduces fresh encryption randomness or a new signing identity.
@@ -60,3 +66,17 @@ BOM. macOS CGPDF decoded the raw string `<EFBBBF616263>` as “ï»¿abc”
 while the portable display decoder reads “abc”. A BOM-prefixed UTF-8 string
 therefore cannot identify an annotation or witness a shared document ID.
 An existing ambiguous stamp is preserved, and the shared file uses its byte hash.
+
+## Modern annotation exchange
+
+`linux-modern-exchange.pdf` is the final 5,395-byte snapshot emitted from
+`xref-stream-objstm.pdf` by the P6 exchange run on arm64 Linux, Swift 6.4.3,
+at `9a1d1008`. Linux appended a stamp and title, a bookmark, a highlight
+and a note, then updated the annotations, bookmark and title. The first
+4,734 bytes are the edited PDF (SHA-256
+`140a36f31c51014b48c19ba5fd0ec7e7bc6dfffc40b54e1e1575b8ca56816c32`).
+The first 5,067 bytes include the highlight deletion. The full file includes
+the note deletion (SHA-256
+`0affacfdd2b60f79ef96c569e161ecf55f6ee91dee96324d14bb5e11d8b312ba`).
+Both hosted bundles open all three revisions in
+`PdfAnnotationExchangeTests.testHostedReaderPreservesModernLinuxExchangeAcrossDeletions`.

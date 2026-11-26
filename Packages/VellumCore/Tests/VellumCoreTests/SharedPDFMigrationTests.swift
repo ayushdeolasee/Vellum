@@ -12,7 +12,7 @@ final class SharedPDFMigrationTests: XCTestCase {
         XCTAssertTrue(stamped.bytes.starts(with: unsigned))
         XCTAssertEqual(id(stamped.bytes), stamped.key)
         XCTAssertEqual(SharedPDFIdentity.prepare(stamped.bytes, readID: id).bytes, stamped.bytes)
-        for name in ["encrypted-user-pass", "digitally-signed", "xref-stream-objstm"] {
+        for name in ["encrypted-user-pass", "digitally-signed"] {
             let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL(name))
             let result = SharedPDFIdentity.prepare(original, readID: id)
             XCTAssertEqual(result.bytes, original)
