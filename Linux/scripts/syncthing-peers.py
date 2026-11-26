@@ -203,7 +203,7 @@ def run(stage, build_container, package, live):
                     # The test runner owns its scratch path and phase receipt, but
                     # cannot write, chmod or chown the exported library.
                     docker("exec", build_container, "chown", "-R", "65534:65534", target)
-                    docker("exec", build_container, "chmod", "-R", "a-w", target)
+                    docker("exec", build_container, "chmod", "-R", "a+rX,a-w", target)
                     guard = ["setpriv", "--bounding-set=-all", "--no-new-privs"]
                 docker("exec", *args, build_container, *guard, *opts,
                        "--package-path", "/s9/pkg", "--scratch-path", "/s9/build")
