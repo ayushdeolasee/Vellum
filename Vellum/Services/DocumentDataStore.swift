@@ -27,6 +27,7 @@ enum DocumentDataStore {
         let store: any LibraryFileStore
         let documentsRoot: URL
         let fallbackRoot: URL?
+        let backend: StorageBackendKind
     }
 
     private static func withAccess<T: Sendable>(
@@ -36,7 +37,7 @@ enum DocumentDataStore {
         if let rootDirectoryOverride {
             return try await operation(Access(
                 store: DirectLibraryFileStore(), documentsRoot: rootDirectoryOverride,
-                fallbackRoot: nil))
+                fallbackRoot: nil, backend: .direct))
         }
         return try await coordinator.withStorageContext { context in
             let localRoot = WebStorageLayout.local(storeDir: WebLibrary.storeDir).documentsDir
@@ -45,7 +46,8 @@ enum DocumentDataStore {
                 store: context.fileStore,
                 documentsRoot: activeRoot,
                 fallbackRoot: localRoot.standardizedFileURL == activeRoot.standardizedFileURL
-                    ? nil : localRoot))
+                    ? nil : localRoot,
+                backend: context.layout.backend))
         }
     }
 
@@ -111,9 +113,11 @@ enum DocumentDataStore {
         forKey key: String,
         relativeName: String,
         coordinator: StorageCoordinator,
-        refuseUnavailable: Bool
+        refuseUnavailable: Bool,
+        automaticAttachmentRemoval: Bool = false
     ) async throws {
         try await withAccess(coordinator: coordinator) { access in
+            if automaticAttachmentRemoval, access.backend == .syncedFolder { return }
             let active = documentDir(forKey: key, root: access.documentsRoot)
                 .appendingPathComponent(relativeName)
             if refuseUnavailable { _ = try await access.store.read(active) }
@@ -473,14 +477,18 @@ enum DocumentDataStore {
         forKey key: String, coordinator: StorageCoordinator
     ) async throws -> Bool {
         try await withAccess(coordinator: coordinator) { access in
-            let directory = documentDir(forKey: key, root: access.documentsRoot)
-            let active = try await access.store.list(directory, suffix: nil)
-            if active.contains(where: { $0.name != "meta.json" }) { return true }
-            guard let fallbackRoot = access.fallbackRoot else { return false }
-            return try await DirectLibraryFileStore().list(
-                documentDir(forKey: key, root: fallbackRoot), suffix: nil
-            ).contains(where: { $0.name != "meta.json" })
+            try await hasDataFiles(forKey: key, access: access)
         }
+    }
+
+    private static func hasDataFiles(forKey key: String, access: Access) async throws -> Bool {
+        let directory = documentDir(forKey: key, root: access.documentsRoot)
+        let active = try await access.store.list(directory, suffix: nil)
+        if active.contains(where: { $0.name != "meta.json" }) { return true }
+        guard let fallbackRoot = access.fallbackRoot else { return false }
+        return try await DirectLibraryFileStore().list(
+            documentDir(forKey: key, root: fallbackRoot), suffix: nil
+        ).contains(where: { $0.name != "meta.json" })
     }
 
     /// Remove the whole document folder when it holds no data files (§8).
@@ -492,9 +500,11 @@ enum DocumentDataStore {
     static func pruneEmptyDocumentDir(
         forKey key: String, coordinator: StorageCoordinator
     ) async {
-        guard (try? await hasDataFiles(forKey: key, coordinator: coordinator)) == false
-        else { return }
         try? await withAccess(coordinator: coordinator) { access in
+            // Ordinary discovery hides conflict and staging files. A recursive
+            // remove based on that listing could discard shared-folder bytes.
+            guard access.backend != .syncedFolder,
+                  try await !hasDataFiles(forKey: key, access: access) else { return }
             try await access.store.remove(
                 documentDir(forKey: key, root: access.documentsRoot))
             if let fallbackRoot = access.fallbackRoot {
@@ -573,7 +583,8 @@ enum DocumentDataStore {
     ) async {
         try? await removeData(
             forKey: key, relativeName: "attachments/\(name)",
-            coordinator: coordinator, refuseUnavailable: true)
+            coordinator: coordinator, refuseUnavailable: true,
+            automaticAttachmentRemoval: true)
     }
 
     // MARK: - iCloud placeholders (evicted synced files)

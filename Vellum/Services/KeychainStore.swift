@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 import Security
 import os
 
@@ -163,16 +164,7 @@ enum KeychainStore {
         backendOverride ?? .live
     }
 
-    enum CredentialRead: Equatable, Sendable {
-        case value(String)
-        case missing
-        case unavailable
-
-        fileprivate var storedValue: String? {
-            if case .value(let value) = self { return value }
-            return nil
-        }
-    }
+    typealias CredentialRead = VellumCore.CredentialRead
 
     /// A locked/denied/corrupt vault is retryable, never proof of a missing token.
     static func read(_ account: String, service: String = service) -> CredentialRead {
@@ -297,13 +289,7 @@ enum KeychainStore {
         return value
     }
 
-    enum CredentialWrite: Equatable, Sendable {
-        case saved
-        /// The previous destination was preserved or restored and verified.
-        case failed
-        /// A write may have committed, but cleanup/restoration could not verify.
-        case needsReview
-    }
+    typealias CredentialWrite = VellumCore.CredentialWrite
 
     /// Integration callers must distinguish a restored failure from a write
     /// whose installed bytes cannot safely be rolled back.
@@ -840,5 +826,28 @@ enum KeychainStore {
         static let openrouter = "openrouter"
         static let opencode = "opencode"
         static let opencodeGo = "opencode-go"
+    }
+}
+
+private extension CredentialRead {
+    var storedValue: String? {
+        if case .value(let value) = self { return value }
+        return nil
+    }
+}
+
+struct AppleCredentialStore: CredentialStore {
+    func read(_ account: String, service: String) async -> CredentialRead {
+        await Task.detached(priority: .userInitiated) { KeychainStore.read(account, service: service) }.value
+    }
+
+    func write(_ value: String, account: String, service: String) async -> CredentialWrite {
+        await Task.detached(priority: .userInitiated) {
+            KeychainStore.writeCredential(account, value, service: service)
+        }.value
+    }
+
+    func delete(_ account: String, service: String) async -> Bool {
+        await Task.detached(priority: .userInitiated) { KeychainStore.delete(account, service: service) }.value
     }
 }

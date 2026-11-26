@@ -578,22 +578,22 @@ public struct ClassicPdfFile {
         }
         self.size = size
         objectOffsets = entries.compactMapValues { entry in
-            if case .inUse(let offset) = entry { return offset }
+            if case .inUse(let offset, _) = entry { return offset }
             return nil
         }
         trailer = latest.trailer
     }
 
     private enum XrefEntry {
-        case inUse(Int)
+        case inUse(offset: Int, generation: Int)
         case free
     }
 
     /// Parse one classic xref section. Incremental Vellum writes chain these
     /// through `/Prev`; callers merge newest-to-oldest so replaced objects win.
     private static func xrefSection(
-        in bytes: [UInt8], at offset: Int
-    ) throws -> (entries: [Int: XrefEntry], trailer: PdfDictSource) {
+        in bytes: [UInt8], at offset: Int, verifyingIdentity: Bool = false
+    ) throws -> (entries: [Int: XrefEntry], trailer: PdfDictSource, end: Int) {
         var position = offset
         guard bytes.indices.contains(position), PdfSyntax.keyword("xref", in: bytes, at: position) else {
             throw PdfCoreError.invalidDocument("Failed to rewrite PDF: unsupported cross-reference format")
@@ -608,24 +608,43 @@ public struct ClassicPdfFile {
             guard let count = PdfBytes.unsigned(in: bytes, at: &position), first <= Int.max - count else {
                 throw invalidEntry
             }
+            let headerEnd = position
             position = PdfSyntax.skipTrivia(bytes, from: position, to: bytes.count)
+            if verifyingIdentity, count > 0 {
+                let eol = bytes[headerEnd..<position].drop { $0 == 32 || $0 == 9 }
+                guard eol.elementsEqual("\r\n".utf8) || eol.elementsEqual("\n".utf8) ||
+                      eol.elementsEqual("\r".utf8) else { throw invalidEntry }
+            }
             for number in first..<(first + count) {
                 let start = position
                 guard let offset = PdfBytes.unsigned(in: bytes, at: &position), position - start == 10,
                       position < bytes.count, bytes[position] == 32 else { throw invalidEntry }
                 position += 1
                 let generation = position
-                guard PdfBytes.unsigned(in: bytes, at: &position) != nil, position - generation == 5,
+                guard let generationNumber = PdfBytes.unsigned(in: bytes, at: &position), position - generation == 5,
                       position + 1 < bytes.count, bytes[position] == 32 else { throw invalidEntry }
                 position += 1
+                if verifyingIdentity {
+                    // PDFium addresses classic rows at fixed 20-byte strides. Refuse
+                    // ambiguous duplicates or spacing before trusting the same row.
+                    let ending = position + 1
+                    guard entries[number] == nil, ending + 2 <= bytes.count else { throw invalidEntry }
+                    let suffix = bytes[ending..<(ending + 2)]
+                    guard suffix.elementsEqual(" \n".utf8) || suffix.elementsEqual("\r\n".utf8) ||
+                          suffix.elementsEqual(" \r".utf8) else { throw invalidEntry }
+                }
                 switch bytes[position] {
-                case UInt8(ascii: "n"): entries[number] = .inUse(offset)
+                case UInt8(ascii: "n"): entries[number] = .inUse(offset: offset, generation: generationNumber)
                 case UInt8(ascii: "f"): entries[number] = .free
                 default: throw invalidEntry
                 }
                 position += 1
                 guard position < bytes.count, PdfBytes.isWhitespace(bytes[position]) else { throw invalidEntry }
-                position = PdfSyntax.skipTrivia(bytes, from: position, to: bytes.count)
+                if verifyingIdentity && number + 1 < first + count {
+                    position += 2
+                } else {
+                    position = PdfSyntax.skipTrivia(bytes, from: position, to: bytes.count)
+                }
             }
         }
         guard PdfSyntax.keyword("trailer", in: bytes, at: position) else {
@@ -635,7 +654,7 @@ public struct ClassicPdfFile {
               bytes[span].starts(with: [60, 60]) else {
             throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid trailer")
         }
-        return (entries, PdfDictSource(Array(bytes[span])))
+        return (entries, PdfDictSource(Array(bytes[span])), span.upperBound)
     }
 
     private func objectValueSpan(_ number: Int) -> Range<Int>? {
@@ -698,58 +717,54 @@ extension PdfDictSource {
 }
 
 extension ClassicPdfFile {
-    /// A bounded type witness for a metadata value returned by a PDF engine with a
-    /// valid xref. Check the original's current classic xref subsection directly.
-    /// Older revisions, hybrid/stream xrefs and indirect string values require a
-    /// general typed PDF API; callers simply omit optional metadata in those cases.
+    /// Verify the actual type behind PDFium's text-only metadata API. Traverse up
+    /// to 64 classic revisions newest-first, with a 1 MiB window per table and
+    /// 8 MiB of total xref reads. Only the current Info object's row is relevant.
     public static func currentInfoText(forKey key: String, in data: Data) -> String? {
         guard data.starts(with: "%PDF-".utf8),
               let marker = data.suffix(1024).range(of: Data("startxref".utf8), options: .backwards)
         else { return nil }
         let footer = data[marker.upperBound...].split(whereSeparator: PdfBytes.isWhitespace)
         guard footer.count == 2, footer[0].allSatisfy(PdfBytes.isDigit), footer[1].elementsEqual("%%EOF".utf8),
-              let offset = Int(String(decoding: footer[0], as: UTF8.self)),
-              offset >= 0, offset < marker.lowerBound - data.startIndex,
-              data.count - offset <= 1024 * 1024 else { return nil }
-        let table = Array(data[(data.startIndex + offset)..<marker.lowerBound])
-        guard table.starts(with: "xref".utf8) else { return nil }
-        var i = 4
-        func consumeLineEnding() -> Bool {
-            if i < table.count, table[i] == 13 {
-                i += 1
-                if i < table.count, table[i] == 10 { i += 1 }
-                return true
+              var offset = Int(String(decoding: footer[0], as: UTF8.self)) else { return nil }
+        var upperBound = marker.lowerBound - data.startIndex
+        var remaining = 8 * 1024 * 1024
+        var infoNumber: Int?
+        for revision in 0..<64 {
+            guard offset >= 0, offset < upperBound else { return nil }
+            let count = min(upperBound - offset, 1024 * 1024, remaining)
+            guard count > 0 else { return nil }
+            remaining -= count
+            let start = data.startIndex + offset
+            let window = Array(data[start..<(start + count)])
+            guard let section = try? xrefSection(in: window, at: 0, verifyingIdentity: true),
+                  !section.trailer.hasKey("XRefStm") else { return nil }
+            if revision == 0 {
+                guard count == upperBound - offset,
+                      PdfSyntax.skipTrivia(window, from: section.end, to: count) == count,
+                      let ref = section.trailer.uniqueValue(forKey: "Info") else { return nil }
+                let parts = ref.split(whereSeparator: PdfBytes.isWhitespace)
+                guard parts.count == 3, parts[0].allSatisfy(PdfBytes.isDigit),
+                      parts[1].elementsEqual("0".utf8), parts[2].elementsEqual("R".utf8) else { return nil }
+                infoNumber = Int(String(decoding: parts[0], as: UTF8.self))
             }
-            guard i < table.count, table[i] == 10 else { return false }
-            i += 1
-            return true
+            guard let number = infoNumber else { return nil }
+            if let entry = section.entries[number] {
+                // A free/reused object shadows all previous rows for this number.
+                guard case .inUse(let object, 0) = entry, object < offset else { return nil }
+                return infoText(forKey: key, in: data, number: number, at: object, before: offset)
+            }
+            guard let prev = section.trailer.uniqueValue(forKey: "Prev"),
+                  prev.allSatisfy(PdfBytes.isDigit),
+                  let previous = Int(String(decoding: prev, as: UTF8.self)), previous < offset else { return nil }
+            upperBound = offset
+            offset = previous
         }
-        guard consumeLineEnding(), let first = PdfBytes.unsigned(in: table, at: &i),
-              i < table.count, table[i] == 32 else { return nil }
-        i += 1
-        guard let count = PdfBytes.unsigned(in: table, at: &i), consumeLineEnding() else { return nil }
-        let entries = i
-        guard count <= (table.count - i) / 20 else { return nil }
-        i += count * 20
-        guard table[i...].starts(with: "trailer".utf8) else { return nil }
-        guard let span = PdfSyntax.valueSpan(in: table, from: i + 7, to: table.count),
-              table[span].starts(with: "<<".utf8),
-              PdfSyntax.skipTrivia(table, from: span.upperBound, to: table.count) == table.count else { return nil }
-        let trailer = PdfDictSource(Array(table[span]))
-        guard !trailer.hasKey("XRefStm"), let ref = trailer.uniqueValue(forKey: "Info") else { return nil }
-        let parts = ref.split(whereSeparator: PdfBytes.isWhitespace)
-        guard parts.count == 3, parts[0].allSatisfy(PdfBytes.isDigit),
-              parts[1].elementsEqual("0".utf8), parts[2].elementsEqual("R".utf8),
-              let number = Int(String(decoding: parts[0], as: UTF8.self)),
-              number >= first, number - first < count else { return nil }
+        return nil
+    }
 
-        // Only a generation-zero, in-use row in this active subsection can establish
-        // the address. Never search file contents for a matching key or object.
-        let row = entries + (number - first) * 20
-        let offsetBytes = table[row..<(row + 10)]
-        guard offsetBytes.allSatisfy(PdfBytes.isDigit),
-              table[(row + 10)..<(row + 18)].elementsEqual(" 00000 n".utf8),
-              let object = Int(String(decoding: offsetBytes, as: UTF8.self)), object < offset else { return nil }
+    private static func infoText(forKey key: String, in data: Data, number: Int, at object: Int,
+                                 before offset: Int) -> String? {
         let prefix = Array("\(number) 0 obj".utf8)
         let objectStart = data.startIndex + object
         let bytes = Array(data[objectStart..<(objectStart + min(offset - object, 64 * 1024))])

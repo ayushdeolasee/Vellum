@@ -464,14 +464,9 @@ final class ScratchpadStore {
         // `attachmentSweepTask` a handle on ALL of this store's sweeps, not just
         // the latest — a document can be loaded more than once.
         let previous = attachmentSweepTask
-        attachmentSweepTask = Task.detached(priority: .utility) {
+        attachmentSweepTask = Task(priority: .utility) {
             await previous?.value
-            var referenced = Set<String>()
-            for text in texts {
-                referenced.formUnion(ScratchpadAttachmentStore.referencedIds(in: text))
-            }
-            ScratchpadAttachmentStore.collectGarbage(
-                referencedIds: referenced, referencedAsOf: referencedAsOf)
+            await ScratchpadAttachmentStore.collectGarbage(forTexts: texts, referencedAsOf: referencedAsOf)
         }
     }
 
