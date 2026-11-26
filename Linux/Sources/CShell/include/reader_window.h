@@ -26,6 +26,8 @@ ReaderSettings *reader_settings(ReaderWindow *reader);
 typedef struct ScratchpadPanel ScratchpadPanel;
 ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *reader);
 void reader_set_close_pending(ReaderWindow *reader, bool pending);
+typedef void (*ReaderLeaveReply)(void *context, bool discard);
+void reader_confirm_leave(ReaderWindow *reader, bool scratchpad, ReaderLeaveReply reply, void *context);
 void reader_commit_close(ReaderWindow *reader);
 void reader_finish_close(ReaderWindow *reader);
 void reader_enable_search(ReaderWindow *reader);

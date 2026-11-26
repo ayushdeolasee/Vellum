@@ -121,7 +121,11 @@ final class ReaderController {
             updateSearch(String(cString: reader_search_query(window)), window: window)
         case READER_CLOSE_REQUEST:
             if transition != nil { closeRequested = true; return }
-            leaveDocument(window, flushDrafts: true) { reader_commit_close(window) }
+            leaveDocument(window, flushDrafts: true) {
+                self.webPage?.session = nil
+                self.positionSession = nil
+                reader_commit_close(window)
+            }
         case READER_CLOSE:
             closing = true
             let changing = transition
@@ -151,6 +155,19 @@ final class ReaderController {
         try await session.flush()
     }
 
+    private func confirmLeaving(_ window: OpaquePointer, scratchpad: Bool) async -> Bool {
+        // The dialog always replies once, including when GTK shuts down.
+        final class Reply {
+            let continuation: CheckedContinuation<Bool, Never>
+            init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+        }
+        return await withCheckedContinuation { continuation in
+            reader_confirm_leave(window, scratchpad, { owner, discard in
+                Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: discard)
+            }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
+        }
+    }
+
     private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
         guard !closing, transition == nil else { return }
         if positionSession == nil && scratchpad?.pendingSave == nil && (!flushDrafts || scratchpad == nil) { proceed(); return }
@@ -160,9 +177,13 @@ final class ReaderController {
             await rendering?.value
             do {
                 await scratchpad?.pendingSave?.value
-                try await flushPosition()
+                do { try await flushPosition() }
+                catch {
+                    guard await confirmLeaving(window, scratchpad: false) else { throw error }
+                }
                 if flushDrafts, await scratchpad?.flush() == false {
-                    throw LibraryFileError.io("A scratchpad draft could not be saved.")
+                    guard await confirmLeaving(window, scratchpad: true) else { throw LibraryFileError.retryable }
+                    scratchpad?.discardUnsavedDrafts()
                 }
                 guard !closing else { return }
                 transition = nil

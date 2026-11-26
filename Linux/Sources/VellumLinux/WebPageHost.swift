@@ -29,35 +29,45 @@ final class WebPageHost {
             .flatMap { String(data: $0, encoding: .utf8) } ?? "null"
         return """
         addEventListener('load', () => {
+            \(articlePaginationScript)
+            const pages = articlePages();
             const saved = \(saved);
             const extent = () => Math.max(0, document.scrollingElement.scrollHeight - innerHeight);
             function restore() {
                 if (!saved) return;
                 const prefix = saved.anchor_prefix ?? '', suffix = saved.anchor_suffix ?? '';
                 const quote = prefix + suffix;
-                const target = extent() * (saved.scroll_fraction ?? 0);
+                const target = saved.scroll_fraction == null ? pages.top(saved.page) : extent() * saved.scroll_fraction;
                 if (quote) {
                     const nodes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
                     let nearest = null;
-                    for (let i = 0, node; i < 50000 && (node = nodes.nextNode()); i++) {
-                        const start = node.data.indexOf(quote);
-                        if (start < 0) continue;
-                        const range = document.createRange();
-                        range.setStart(node, start + prefix.length);
-                        range.collapse(true);
-                        const rect = range.getBoundingClientRect();
-                        if (!rect.height) continue;
-                        const y = scrollY + rect.top - (saved.viewport_offset ?? 0);
-                        if (nearest === null || Math.abs(y - target) < Math.abs(nearest - target)) nearest = y;
+                    let matches = 0;
+                    for (let i = 0, node; i < 50000 && matches < 4096 && (node = nodes.nextNode()); i++) {
+                        const text = node.data;
+                        for (let start = text.indexOf(quote); start >= 0 && matches < 4096;
+                             start = text.indexOf(quote, start + quote.length)) {
+                            matches++;
+                            const range = document.createRange();
+                            range.setStart(node, start + prefix.length);
+                            range.collapse(true);
+                            const rect = range.getBoundingClientRect();
+                            if (!rect.height) continue;
+                            const y = scrollY + rect.top - (saved.viewport_offset ?? 0);
+                            if (nearest === null || Math.abs(y - target) < Math.abs(nearest - target)) nearest = y;
+                        }
                     }
                     if (nearest !== null) { scrollTo(0, nearest); return; }
                 }
                 scrollTo(0, target);
             }
+            restore();
+            const initialY = scrollY;
+            let moved = false;
             window.vellumLocation = () => {
-                if (!innerHeight) return null;
+                moved ||= scrollY !== initialY;
+                if (!innerHeight || (saved && !moved)) return null;
                 const range = document.caretRangeFromPoint(innerWidth / 2, Math.min(32, innerHeight / 2));
-                const location = {page: 1, page_count: 1,
+                const location = {page: pages.current(), page_count: pages.count,
                     scroll_fraction: Math.min(1, Math.max(0, scrollY / (extent() || 1)))};
                 if (range?.startContainer.nodeType === Node.TEXT_NODE) {
                     const node = range.startContainer, index = range.startOffset;
@@ -67,7 +77,6 @@ final class WebPageHost {
                 }
                 return location;
             };
-            restore();
             addEventListener('scroll', () => {
                 window.webkit.messageHandlers.vellum.postMessage({
                     uri: location.href.split('#')[0], event: 'location', position: window.vellumLocation()

@@ -191,9 +191,9 @@ final class ScratchpadPane {
             updateState()
         }
         do {
-            draft.baseline = try await storage.save(key, text: draft.text,
-                                                   baseline: draft.baseline, staged: draft.staged)
             let referenced = await ScratchpadStorage.referencedImageIDs(in: draft.text)
+            draft.baseline = try await storage.save(key, text: draft.text,
+                                                   baseline: draft.baseline, staged: draft.staged.filter { referenced.contains($0.id) })
             if key == self.key {
                 draft.savedText = draft.text
                 draft.staged = []
@@ -231,6 +231,10 @@ final class ScratchpadPane {
             }
         }
         return true
+    }
+
+    func discardUnsavedDrafts() {
+        drafts = drafts.filter { !$0.value.dirty }
     }
 
     func shutdown() async {
