@@ -154,12 +154,15 @@ final class WebDocumentSession: DocumentSession {
     let url: String
     private let key: String
     private let snapshotPath: URL
+    private let fetchPage: @Sendable (String) async throws -> WebFetchedPage
     /// DocumentInfo captured at open time (mirrors the Rust command's return).
     private let openInfo: DocumentInfo
     private let io: WebDocumentIO
     private let storage: WebLibraryStorage
 
-    init(url: String, record: WebPageRecord, storage: WebLibraryStorage = WebLibraryStorage()) {
+    init(url: String, record: WebPageRecord, storage: WebLibraryStorage = WebLibraryStorage(),
+         fetchPage: @escaping @Sendable (String) async throws -> WebFetchedPage = WebFetch.fetchPage) {
+        self.fetchPage = fetchPage
         self.url = url
         self.storage = storage
         key = WebLibrary.pageKey(url)
@@ -290,31 +293,8 @@ final class WebDocumentSession: DocumentSession {
     ) async throws -> VellumwebExportSummary {
         let localKey = key
 
-        // Best available snapshot: live capture > installed archive dir >
-        // plain saved snapshot (assets skipped when offline).
-        let captured: CapturedSnapshot
-        if case .html(let html, let finalUrl)? = try? await WebFetch.fetchPage(url) {
-            // Resolve relative asset URLs against where the page actually
-            // came from (after redirects), not the requested URL.
-            let base = (try? WebUrl.normalize(finalUrl)) ?? url
-            captured = await WebArchive.captureSnapshot(pageUrl: base, rawHtml: html)
-        } else if let installed = WebArchive.loadArchiveDir(key: key) {
-            captured = CapturedSnapshot(
-                html: installed.html,
-                assets: installed.assets.map { name, bytes in
-                    CapturedAsset(
-                        name: name,
-                        url: "",
-                        contentType: WebArchive.contentTypeForName(name),
-                        bytes: bytes)
-                },
-                skipped: 0)
-        } else if let html = try? String(contentsOf: snapshotPath, encoding: .utf8) {
-            captured = await WebArchive.captureSnapshot(pageUrl: url, rawHtml: html)
-        } else {
-            throw SessionServiceError.invalidDocument(
-                "The page could not be fetched and no local snapshot exists yet")
-        }
+        let savedPolicy = await storage.loadRecord(forKey: localKey)?.loadingPolicy
+        let (captured, loadingPolicy) = try await captureForArchive(savedPolicy: savedPolicy)
 
         let pagesJson = try WebArchive.encodePagesJson(pages)
 
@@ -335,7 +315,7 @@ final class WebDocumentSession: DocumentSession {
             titleIsUserDefined: record?.titleIsUserDefined ?? false,
             pageCount: pageCount,
             lastPage: record?.lastPage,
-            loadingPolicy: "live-first",
+            loadingPolicy: loadingPolicy,
             snapshotHtml: captured.html,
             pagesJson: pagesJson,
             assets: captured.assets,
@@ -392,6 +372,30 @@ final class WebDocumentSession: DocumentSession {
             bytes: written.bytes,
             assetCount: assetCount,
             assetsSkipped: assetsSkipped)
+    }
+
+    /// Use the same pinned snapshot the reader displays even if the origin is reachable.
+    /// A fresh response is always a live capture. Read local payloads off the main actor.
+    @concurrent
+    private func captureForArchive(savedPolicy: String?) async throws -> (CapturedSnapshot, String) {
+        let installedManifest = try WebArchive.installedManifest(forKey: key)
+        let pinned = savedPolicy == "snapshot-only" || installedManifest?.loadingPolicy == "snapshot-only"
+        let fallbackPolicy = pinned ? "snapshot-only" : installedManifest?.loadingPolicy ?? savedPolicy ?? "live-first"
+        if pinned, let installed = WebArchive.loadArchiveDir(key: key) {
+            return (installed, fallbackPolicy)
+        }
+        if case .html(let html, let finalUrl)? = try? await fetchPage(url) {
+            let base = (try? WebUrl.normalize(finalUrl)) ?? url
+            return (await WebArchive.captureSnapshot(pageUrl: base, rawHtml: html), "live-first")
+        }
+        if let installed = WebArchive.loadArchiveDir(key: key) {
+            return (installed, fallbackPolicy)
+        }
+        if let html = try? String(contentsOf: snapshotPath, encoding: .utf8) {
+            return (await WebArchive.captureSnapshot(pageUrl: url, rawHtml: html), fallbackPolicy)
+        }
+        throw SessionServiceError.invalidDocument(
+            "The page could not be fetched and no local snapshot exists yet")
     }
 }
 
