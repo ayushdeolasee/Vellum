@@ -149,8 +149,11 @@ final class PortableInkReaderTests: XCTestCase {
     private func withStore(_ test: () async throws -> Void) async throws {
         let previous = WebLibrary.storeDirOverride
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let previousLayout = WebLibrary.layoutOverride
         WebLibrary.storeDirOverride = root
+        WebLibrary.layoutOverride = .local(storeDir: root)
         defer {
+            WebLibrary.layoutOverride = previousLayout
             WebLibrary.storeDirOverride = previous
             try? FileManager.default.removeItem(at: root)
         }
@@ -200,6 +203,7 @@ final class PortableInkReaderTests: XCTestCase {
                 XCTAssertEqual(original.drawing, record.clusters[0].drawing)
                 XCTAssertEqual(original.unknownFields, record.clusters[0].unknownFields)
                 XCTAssertEqual(restored.clusters.filter { $0.strokes == nil }.count, 1)
+                XCTAssertEqual(Set(restored.clusters.map(\.id)).count, restored.clusters.count)
                 var imported: WebInkRecord? = record
                 try WebArchive.mergeInk(&imported, incoming: restored)
                 let merged = try XCTUnwrap(imported)
@@ -213,6 +217,34 @@ final class PortableInkReaderTests: XCTestCase {
                     pagesJson: pages, annotations: [], inkJson: JSONEncoder().encode(merged))
                 XCTAssertEqual(try WebArchive.readArchive(data: archive).inkRecord, merged)
             }
+        }
+    }
+
+    func testMovingMaskedWebInkPreservesOpaqueMetadata() async throws {
+        try await withStore {
+            var source = try webRecord()
+            var wire = try JSONDecoder().decode(PortableStroke.self, from: fixture("partial-stroke", "json", in: "Ink"))
+            wire.id = "opaque/masked"
+            wire.points[0].unknownFields["device"] = .int(42)
+            wire.mask?.unknownFields["operation"] = .string("erase")
+            source.clusters[0].strokes = [wire]
+            let key = WebLibrary.pageKey(source.url)
+            try WebInkStore.writeRecord(source, to: WebInkStore.inkPath(forKey: key))
+            let moved = try source.validatedMergedDrawing().transformed(
+                using: CGAffineTransform(translationX: 45, y: 75))
+            let change = WebInkRecord.snapshot(of: moved, url: source.url, layout: source.layout)
+            _ = try WebInkStore.applySnapshot(change, replacing: source, forKey: key)
+            let reopened = try XCTUnwrap(WebInkStore.loadRecordForExport(forKey: key))
+            let stroke = try XCTUnwrap(reopened.validatedMergedDrawing().strokes.first)
+            let expected = try XCTUnwrap(moved.strokes.first)
+            XCTAssertEqual(stroke.transform, expected.transform)
+            XCTAssertEqual(stroke.mask?.cgPath, expected.mask?.cgPath)
+            XCTAssertEqual(stroke.maskedPathRanges, expected.maskedPathRanges)
+            let persisted = try XCTUnwrap(reopened.clusters.first?.strokes?.first)
+            XCTAssertEqual(persisted.id, wire.id)
+            XCTAssertEqual(persisted.points[0].unknownFields, wire.points[0].unknownFields)
+            XCTAssertEqual(persisted.mask?.unknownFields, wire.mask?.unknownFields)
+            XCTAssertNil(reopened.clusters.first?.drawing)
         }
     }
 

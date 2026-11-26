@@ -17,10 +17,9 @@ enum WebSavedInkRenderer {
     }
 
     /// Blocking file access and PencilKit rasterization; call off the main actor.
-    static func load(url: String, pageURL: String) -> String? {
+    static func load(url: String, pageURL: String) throws -> String? {
         guard !Task.isCancelled,
-              let record = WebInkStore.loadRecord(forKey: WebLibrary.pageKey(url)),
-              (1...WebInkRecord.currentVersion).contains(record.version),
+              let record = try WebInkStore.loadRecordForExport(forKey: WebLibrary.pageKey(url)),
               (try? WebUrl.normalize(record.url)) == url else { return nil }
         var clusters: [Cluster] = []
         for cluster in record.clusters {
@@ -28,8 +27,8 @@ enum WebSavedInkRenderer {
             let bounds = cluster.bounds
             guard bounds.x.isFinite, bounds.y.isFinite,
                   bounds.w.isFinite, bounds.h.isFinite,
-                  bounds.w > 0, bounds.h > 0,
-                  let drawing = try? cluster.localDrawing() else { continue }
+                  bounds.w > 0, bounds.h > 0 else { continue }
+            let drawing = try cluster.localDrawing()
             // Bound each raster's memory, including unusually large freehand
             // clusters. CSS geometry stays in the original zoom-1 coordinates.
             let scale = min(2, 8192 / max(bounds.w, bounds.h),
