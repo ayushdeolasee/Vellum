@@ -40,6 +40,16 @@ enum WebInkClustering {
         verticalProximity: CGFloat = defaultVerticalProximity
     ) -> [Cluster] {
         let strokes = drawing.strokes
+        return groups(of: strokes, horizontalProximity: horizontalProximity, verticalProximity: verticalProximity)
+            .map { group in
+                let drawing = PKDrawing(strokes: group.map { strokes[$0] })
+                return Cluster(drawing: drawing, bounds: drawing.bounds)
+            }
+    }
+
+    /// Keep the original indices so callers can carry opaque IDs through spatial grouping.
+    static func groups(of strokes: [PKStroke], horizontalProximity: CGFloat = defaultHorizontalProximity,
+                       verticalProximity: CGFloat = defaultVerticalProximity) -> [[Int]] {
         guard !strokes.isEmpty else { return [] }
 
         // Strokes whose bounds, each grown by half the per-axis threshold,
@@ -80,13 +90,12 @@ enum WebInkClustering {
             groups[find(i), default: []].append(i)
         }
 
-        let built = groups.values.map { indexes -> Cluster in
-            let clusterDrawing = PKDrawing(strokes: indexes.map { strokes[$0] })
-            return Cluster(drawing: clusterDrawing, bounds: clusterDrawing.bounds)
-        }
-        return built.sorted {
-            ($0.bounds.minY, $0.bounds.minX) < ($1.bounds.minY, $1.bounds.minX)
-        }
+        return groups.values.map { indices in
+            let bounds = PKDrawing(strokes: indices.map { strokes[$0] }).bounds
+            return (indices, bounds)
+        }.sorted {
+            ($0.1.minY, $0.1.minX, $0.0[0]) < ($1.1.minY, $1.1.minX, $1.0[0])
+        }.map { $0.0 }
     }
 
     /// Rebuild the single live drawing from clusters, translating each by its

@@ -104,6 +104,29 @@ final class PortableStrokeTests: XCTestCase {
         XCTAssertEqual(stroke.id, "574625a0a8d7677e6c5068c0527baf9e74144b575b6cd1c203d1af531eb4dd05")
     }
 
+    func testDeletingVisibleStrokeRetainsOmittedFullyMaskedNativeMember() throws {
+        let native = try pdfStrokes("pdf-ink-erased-full")
+        let hidden = try XCTUnwrap(native.first { $0.maskedPathRanges.isEmpty })
+        let visible = try XCTUnwrap(native.first { !$0.maskedPathRanges.isEmpty })
+        var wire = try PortableStroke(visible)
+        wire.id = "opaque/visible"
+        let cluster = WebInkRecord.Cluster(id: "fixture", drawing: PKDrawing(strokes: [hidden, visible]).dataRepresentation(),
+                                           strokes: [wire], bounds: .init(.zero), anchor: nil)
+        let record = WebInkRecord(version: 3, url: "https://fixture.test/full", updatedAt: "2026-01-01T00:00:00Z",
+                                  layout: .init(contentWidth: 800, docHeight: 1000), clusters: [cluster])
+        var clear = record
+        clear.clusters = []
+        clear.history.deleted[wire.id] = record.updatedAt
+        for pair in [(record, clear), (clear, record)] {
+            let merged = try WebInkStore.additivelyMerged(current: pair.0, incoming: pair.1)
+            let remaining = try merged.validatedMergedDrawing().strokes
+            XCTAssertEqual(remaining.count, 1)
+            XCTAssertEqual(remaining.first?.mask?.cgPath, hidden.mask?.cgPath)
+            XCTAssertEqual(remaining.first?.maskedPathRanges, [])
+            XCTAssertTrue(merged.clusters.compactMap(\.strokes).isEmpty)
+        }
+    }
+
     func testCanonicalMicrosecondsRawBitsAndSecondaryScale() throws {
         func point(_ x: CGFloat, _ y: CGFloat, _ t: Double) -> PKStrokePoint {
             PKStrokePoint(location: CGPoint(x: x, y: y), timeOffset: t, size: CGSize(width: 4, height: 6),
@@ -273,6 +296,212 @@ final class PortableInkReaderTests: XCTestCase {
             XCTAssertEqual(persisted.points[0].unknownFields, wire.points[0].unknownFields)
             XCTAssertEqual(persisted.mask, wire.mask, "Moving a stroke preserves its original wire mask and unknown fields")
             XCTAssertNil(reopened.clusters.first?.drawing)
+        }
+    }
+
+    func testOfflineEraseReplayAndObservedUndo() async throws {
+        try await withStore {
+            for dual in [false, true] {
+                let original = try webRecord(dual: dual)
+                let wire = try XCTUnwrap(original.clusters[0].strokes?.first)
+                let key = WebLibrary.pageKey(original.url)
+                let path = WebInkStore.inkPath(forKey: key)
+                try WebInkStore.writeRecord(original, to: path)
+                var clear = original
+                clear.clusters = []
+                let receipt = try WebInkStore.applySnapshot(clear, replacing: original, forKey: key, returningObservation: true)
+                let erased = try XCTUnwrap(WebInkStore.loadRecord(at: path))
+                XCTAssertTrue(erased.clusters.isEmpty)
+                XCTAssertNotNil(erased.history.deleted[wire.id])
+
+                // Both the original portable archive and a drawing-only offline canvas
+                // arrive after the erase. An unrelated later page timestamp cannot revive it.
+                let canvas = WebInkRecord.snapshot(of: try original.validatedMergedDrawing(),
+                                                   url: original.url, layout: original.layout)
+                for var offline in [original, canvas] {
+                    offline.updatedAt = "2099-01-01T00:00:00Z"
+                    for pair in [(erased, offline), (offline, erased)] {
+                        var target: WebInkRecord? = pair.0
+                        try WebArchive.mergeInk(&target, incoming: pair.1)
+                        try WebArchive.mergeInk(&target, incoming: offline)
+                        XCTAssertEqual(target?.clusters.count, 0)
+                        XCTAssertEqual(target?.history.deleted, erased.history.deleted)
+                    }
+                }
+                var unbound = erased
+                unbound.history.nativeIDs = [:]
+                for pair in [(canvas, unbound), (unbound, canvas)] {
+                    XCTAssertThrowsError(try WebInkStore.additivelyMerged(current: pair.0, incoming: pair.1))
+                }
+                var staleEdit = canvas
+                staleEdit.clusters[0].bounds.x += 30
+                XCTAssertTrue(try WebInkStore.applySnapshot(staleEdit, replacing: original, forKey: key).clusters.isEmpty)
+
+                // A fresh tab can load the deletion but has no local undo transaction.
+                XCTAssertTrue(try WebInkStore.applySnapshot(canvas, replacing: erased, forKey: key).clusters.isEmpty)
+                let restored = try WebInkStore.applySnapshot(canvas, replacing: receipt, forKey: key)
+                XCTAssertEqual(restored.clusters.first?.strokes, [wire])
+                XCTAssertEqual(restored.clusters.first?.drawing, original.clusters[0].drawing)
+                XCTAssertEqual(restored.clusters.first?.anchor, original.clusters[0].anchor)
+                for pair in [(erased, restored), (restored, erased)] {
+                    let merged = try WebInkStore.additivelyMerged(current: pair.0, incoming: pair.1)
+                    XCTAssertEqual(merged.clusters.first?.strokes?.first?.id, wire.id)
+                }
+                // A purely native erase may predate the first encounter with the foreign wire ID.
+                try WebInkStore.writeRecord(canvas, to: path)
+                let nativeErase = try WebInkStore.applySnapshot(clear, replacing: canvas, forKey: key)
+                for pair in [(original, nativeErase), (nativeErase, original)] {
+                    let result = try WebInkStore.additivelyMerged(current: pair.0, incoming: pair.1)
+                    XCTAssertTrue(result.clusters.isEmpty)
+                    XCTAssertNotNil(result.history.deleted[wire.id])
+                }
+                // The same record may carry stale geometry beside its own tombstone.
+                var mixed = original
+                mixed.history = erased.history
+                let reopened = try JSONDecoder().decode(WebInkRecord.self, from: JSONEncoder().encode(mixed))
+                XCTAssertTrue(reopened.clusters.isEmpty)
+            }
+        }
+    }
+
+    func testRelocationKeepsWinnerGeometryAfterOtherLocationUndoesErase() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.ink.json")
+        let destination = root.appendingPathComponent("destination.ink.json")
+        func relocate(current: WebInkRecord, incoming: WebInkRecord) throws -> WebInkRecord {
+            try WebInkStore.writeRecord(current, to: destination)
+            try WebInkStore.writeRecord(incoming, to: source)
+            XCTAssertTrue(WebInkStore.adoptInkFile(from: source, to: destination))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+            return try XCTUnwrap(WebInkStore.loadRecord(at: destination))
+        }
+
+        var restored = try webRecord(dual: true)
+        let wire = try XCTUnwrap(restored.clusters[0].strokes?.first)
+        var winner = restored
+        winner.updatedAt = "2026-01-06T00:00:00Z"
+        winner.clusters[0].bounds.x += 40
+        restored.updatedAt = "2026-01-05T00:00:00Z"
+        restored.history.deleted[wire.id] = "2026-01-01T00:00:00Z"
+        restored.history.restored[wire.id] = "2026-01-04T00:00:00Z"
+        restored.history.nativeIDs[wire.id] = wire.rawPathID
+        restored.history.updated[wire.id] = restored.updatedAt
+
+        // Both copies contain the stroke. The winner never observed the erase.
+        for (current, incoming) in [(winner, restored), (restored, winner)] {
+            let relocated = try relocate(current: current, incoming: incoming)
+            XCTAssertEqual(relocated.clusters, winner.clusters)
+            XCTAssertEqual(relocated.history, restored.history)
+        }
+        var emptyWinner = winner
+        emptyWinner.clusters = []
+        let empty = try relocate(current: emptyWinner, incoming: restored)
+        XCTAssertTrue(empty.clusters.isEmpty)
+        XCTAssertEqual(empty.history, restored.history)
+
+        // The undo's clock is ahead of a different erase, but it only saw the first generation.
+        winner.history = restored.history
+        var laterErase = restored
+        laterErase.clusters = []
+        laterErase.history.deleted[wire.id] = "2026-01-03T00:00:00Z"
+        laterErase.history.restored.removeValue(forKey: wire.id)
+        let erased = try relocate(current: winner, incoming: laterErase)
+        XCTAssertTrue(erased.clusters.isEmpty)
+        XCTAssertEqual(erased.history, laterErase.history)
+    }
+
+    func testImportChoosesWholeMaskAndCarriesNestedFieldsThroughSplit() throws {
+        var older = try webRecord()
+        let masked = try JSONDecoder().decode(PortableStroke.self, from: fixture("partial-stroke", "json", in: "Ink"))
+        var plain = masked
+        plain.mask = nil
+        plain.visibleRanges = [[0, Double(plain.points.count - 1)]]
+        plain.unknownFields["device"] = .object(["old": .int(1)])
+        plain.points[0].unknownFields["sample"] = .null
+        var neighbor = plain
+        neighbor.id = "another-id-with-identical-points"
+        neighbor.transform[4] += 700
+        older.clusters[0].strokes = [plain, neighbor]
+        older.clusters[0].bounds.unknownFields["units"] = .string("css")
+        older.clusters[0].anchor?.rect.unknownFields["line"] = .int(2)
+        older.updatedAt = "2026-01-01T10:00:00+01:00"
+        var newer = older
+        newer.updatedAt = "2026-01-01T09:00:01Z"
+        var changed = masked
+        changed.unknownFields["device"] = .object(["new": .int(2)])
+        changed.mask?.unknownFields["eraser"] = .int(9)
+        newer.clusters[0].strokes = [changed]
+        newer.clusters[0].drawing = try PKDrawing(portableStrokes: [changed]).dataRepresentation()
+        for pair in [(newer, older), (older, newer)] {
+            let merged = try WebInkStore.additivelyMerged(current: pair.0, incoming: pair.1)
+            XCTAssertEqual(merged.clusters.count, 2)
+            let cluster = try XCTUnwrap(merged.clusters.first { $0.strokes?.first?.id == masked.id })
+            let wire = try XCTUnwrap(cluster.strokes?.first)
+            XCTAssertNotNil(cluster.drawing)
+            XCTAssertEqual(wire.visibleRanges, masked.visibleRanges)
+            XCTAssertEqual(wire.mask, changed.mask)
+            XCTAssertEqual(wire.unknownFields["device"], .object(["new": .int(2), "old": .int(1)]))
+            XCTAssertEqual(wire.points[0].unknownFields["sample"], .null)
+            XCTAssertEqual(cluster.bounds.unknownFields["units"], .string("css"))
+            XCTAssertEqual(cluster.anchor?.rect.unknownFields["line"], .int(2))
+            let native = try XCTUnwrap(cluster.localDrawing().strokes.first)
+            XCTAssertEqual(native.mask?.cgPath, try PKStroke(masked).mask?.cgPath)
+        }
+        newer.updatedAt = "2026-01-01T09:00:00Z"
+        for pair in [(older, newer), (newer, older)] {
+            let merged = try WebInkStore.additivelyMerged(current: pair.0, incoming: pair.1)
+            let wire = try XCTUnwrap(merged.clusters.flatMap { $0.strokes ?? [] }.first { $0.id == masked.id })
+            XCTAssertEqual(wire.visibleRanges, pair.0.clusters[0].strokes?[0].visibleRanges)
+        }
+        var invalid = newer
+        invalid.clusters[0].strokes?[0].mask = nil
+        XCTAssertThrowsError(try WebInkStore.additivelyMerged(current: older, incoming: invalid))
+    }
+
+    func testTombstonesUseMatchedWireIDsAndRefuseStaleDualEdits() async throws {
+        try await withStore {
+            var record = try webRecord(dual: true)
+            let first = try XCTUnwrap(record.clusters[0].localDrawing().strokes.first)
+            let second = PKStroke(ink: first.ink,
+                path: PKStrokePath(controlPoints: Array(first.path), creationDate: first.path.creationDate.addingTimeInterval(2)),
+                transform: first.transform.translatedBy(x: 15, y: 0))
+            var other = try PortableStroke(second)
+            other.id = "left-handed/second"
+            other.points[0].unknownFields["vendor"] = .int(2)
+            let firstWire = try XCTUnwrap(record.clusters[0].strokes?.first)
+            record.clusters[0].drawing = PKDrawing(strokes: [first, second]).dataRepresentation()
+            record.clusters[0].strokes = [other, firstWire]
+            let key = WebLibrary.pageKey(record.url)
+            let path = WebInkStore.inkPath(forKey: key)
+            try WebInkStore.writeRecord(record, to: path)
+            let document = try record.validatedMergedDrawing()
+            let keepSecond = WebInkRecord.snapshot(of: PKDrawing(strokes: [document.strokes[1]]),
+                                                   url: record.url, layout: record.layout)
+            let erased = try WebInkStore.applySnapshot(keepSecond, replacing: record, forKey: key)
+            XCTAssertEqual(Set(erased.history.deleted.keys), [firstWire.id])
+            var mixed = record
+            mixed.history = erased.history
+            for result in [try JSONDecoder().decode(WebInkRecord.self, from: JSONEncoder().encode(mixed)),
+                           try WebInkStore.additivelyMerged(current: record, incoming: erased),
+                           try WebInkStore.additivelyMerged(current: erased, incoming: record)] {
+                let survivor = try XCTUnwrap(result.clusters.first?.strokes?.first)
+                XCTAssertEqual(survivor.id, other.id)
+                XCTAssertEqual(survivor.points[0].unknownFields["vendor"], .int(2))
+                XCTAssertEqual(try result.validatedMergedDrawing().strokes.count, 1)
+            }
+            // Older Apple builds could replace drawing while blindly carrying the old wire array.
+            // The native path still displays. Neither an erase nor an import may bind its IDs by slot.
+            var stale = record
+            stale.clusters[0].drawing = PKDrawing(strokes: [first]).dataRepresentation()
+            XCTAssertEqual(try stale.validatedMergedDrawing().strokes.count, 1)
+            stale.history.deleted["unrelated"] = record.updatedAt
+            XCTAssertEqual(try JSONDecoder().decode(WebInkRecord.self, from: JSONEncoder().encode(stale)), stale)
+            try WebInkStore.writeRecord(stale, to: path)
+            let bytes = try Data(contentsOf: path)
+            XCTAssertThrowsError(try WebInkStore.applySnapshot(keepSecond, replacing: stale, forKey: key))
+            XCTAssertThrowsError(try WebInkStore.mergeImportedRecord(erased, normalizedURL: record.url, forKey: key))
+            XCTAssertEqual(try Data(contentsOf: path), bytes)
         }
     }
 

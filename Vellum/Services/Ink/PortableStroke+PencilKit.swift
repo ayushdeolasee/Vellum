@@ -112,6 +112,8 @@ private func rgba(_ color: CGColor) throws -> [Double] {
 }
 
 extension PKStroke {
+    var maskEvenOdd: Bool? { mask?.inkEvenOdd }
+
     /// Fail closed when the native path or mask cannot reproduce the recorded
     /// signature. In particular, visible intervals cannot stand in for a missing mask.
     init(_ stroke: PortableStroke) throws {

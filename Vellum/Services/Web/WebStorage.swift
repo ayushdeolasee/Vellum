@@ -1174,7 +1174,7 @@ enum WebStorageMigrator {
         if isInk {
             guard let incoming = try? JSONDecoder().decode(WebInkRecord.self, from: source),
                   let current = try? JSONDecoder().decode(WebInkRecord.self, from: destination) else { return nil }
-            let merged = WebInkStore.relocationSnapshot(current: current, incoming: incoming)
+            guard let merged = try? WebInkStore.relocationSnapshot(current: current, incoming: incoming) else { return nil }
             if merged == current { return (destination, false) }
             if merged == incoming { return (source, true) }
             guard let data = try? WebLibrary.jsonEncoderPretty.encode(merged) else { return nil }

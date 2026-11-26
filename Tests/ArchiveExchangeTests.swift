@@ -106,5 +106,14 @@ extension ArchiveExchangeTests {
         XCTAssertEqual(restored.clusters[0].bounds.unknownFields, ink.clusters[0].bounds.unknownFields)
         XCTAssertEqual(restored.clusters[0].anchor?.unknownFields, ink.clusters[0].anchor?.unknownFields)
         XCTAssertEqual(restored.clusters[0].anchor?.rect.unknownFields, ink.clusters[0].anchor?.rect.unknownFields)
+
+        var clear = restored
+        clear.clusters = []
+        let erased = try WebInkStore.applySnapshot(clear, replacing: restored, forKey: key)
+        _ = try await session.exportVellumweb(destPath: output.path, pages: [])
+        let deletionArchive = try XCTUnwrap(WebArchive.readArchive(at: output).inkRecord)
+        XCTAssertTrue(deletionArchive.clusters.isEmpty)
+        XCTAssertFalse(erased.history.deleted.isEmpty)
+        XCTAssertEqual(deletionArchive.history.deleted, erased.history.deleted)
     }
 }

@@ -560,16 +560,13 @@ enum WebArchive {
         return changed
     }
 
-    /// Merge an imported ink record into the sidecar's ink record. Clusters
-    /// merge by id (mirroring `mergeAnnotations`): an incoming cluster whose id
-    /// is new is appended; a same-id collision is replaced only when the
-    /// incoming record is newer by `updated_at`. Ink has no per-cluster
-    /// timestamp, so the record-level `updated_at` is the tiebreaker, and when
-    /// the incoming record wins it also carries in the newer layout fingerprint
-    /// and `updated_at`. Returns how many clusters were added or replaced.
+    /// Import by stable stroke ID, retaining erasures even on an empty canvas.
+    /// Return the number of net additions (legacy unreadable clusters count replacements).
     @discardableResult
     static func mergeInk(_ existing: inout WebInkRecord?, incoming: WebInkRecord) throws -> Int {
         guard var current = existing else {
+            var incoming = incoming
+            try WebInkStore.discardDeleted(from: &incoming)
             _ = try incoming.validatedMergedDrawing()
             existing = incoming
             return incoming.clusters.count
@@ -585,8 +582,12 @@ enum WebArchive {
             return max(0, after - before)
         } catch {
             // The historic id-only fallback is for drawing-only records.
-            guard (current.clusters + incoming.clusters).allSatisfy({ $0.drawing != nil && !$0.hasPortablePayload })
+            guard current.history == InkMergeHistory(), incoming.history == InkMergeHistory(),
+                  (current.clusters + incoming.clusters).allSatisfy({ $0.drawing != nil && !$0.hasPortablePayload })
             else { throw error }
+            if (try? current.validatedMergedDrawing()) != nil, (try? incoming.validatedMergedDrawing()) != nil {
+                throw error
+            }
         }
         let incomingNewer = newerThan(incoming.updatedAt, current.updatedAt)
         var changed = 0

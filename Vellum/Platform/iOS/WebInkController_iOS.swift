@@ -985,7 +985,7 @@ final class WebInkPersister: WebInkPersisting {
         let io = WebInkIO(url: url)
         self.io = io
         self.writer = writer ?? { record, baseline in
-            try await io.write(record, replacing: baseline)
+            try await io.write(record, replacing: baseline, returningObservation: true)
         }
     }
 
@@ -1105,18 +1105,25 @@ final class WebInkPersister: WebInkPersisting {
     /// remains in `pending`, so a later foreground edit, explicit export, or
     /// background flush retries it instead of silently declaring it durable.
     private func write(_ record: WebInkRecord, generation gen: Int) async -> Bool {
-        var replacing = baseline
+        let prior = baseline
         let observedSeedGeneration = seedGeneration
         do {
-            if let seededObservation {
-                try WebArchive.mergeInk(&replacing, incoming: seededObservation)
+            let replacing: WebInkRecord?
+            if let prior, let seededObservation {
+                replacing = try await Task.detached {
+                    var merged = try WebInkStore.additivelyMerged(current: prior, incoming: seededObservation)
+                    merged.rememberedClusters = prior.rememberedClusters
+                    return merged
+                }.value
+            } else {
+                replacing = seededObservation ?? prior
             }
-            _ = try await writer(record, replacing)
+            let observed = try await writer(record, replacing)
             // The shared file may also contain another runtime's strokes.
             // Only this canvas's snapshot was observed locally: adopting the
             // merged file would treat those unseen strokes as erased on the
             // next edit, because they are absent from this canvas.
-            baseline = record
+            baseline = observed
             // A seed delivered during this write was not part of its delta.
             // Preserve it for the next write, including a newer pending Clear.
             if seedGeneration == observedSeedGeneration { seededObservation = nil }
