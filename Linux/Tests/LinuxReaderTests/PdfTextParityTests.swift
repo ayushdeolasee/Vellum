@@ -7,6 +7,37 @@ import VellumCore
 // Keep PDFium tests on the same serialized suite. The existing worker tests
 // rely on counting their own queued jobs.
 extension PdfiumTests {
+    @Test func roundedCaretMidpointPrefersFollowingOffsetWithoutMovingPinnedEdge() throws {
+        for rotation in [0, 90, 180, 270] {
+            let geometry = PageGeometry(left: 0, bottom: 0, width: 612, height: 792,
+                                        rotation: rotation, userUnit: 1)
+            let rects = (0..<3).map { index in
+                let left = 40 + 10 * Double(index)
+                let a = geometry.pdfToUi(left, 700)
+                let b = geometry.pdfToUi(left + 10, 714)
+                return AnnotationRect(x: min(a.x, b.x), y: min(a.y, b.y),
+                                      width: abs(a.x - b.x), height: abs(a.y - b.y))
+            }
+            let page = ExtractedPageText(
+                text: "ABC", charUiRects: rects.map(Optional.some),
+                lines: [.init(utf16Range: 0..<3, bounds: rects[0].union(rects[2]))], geometry: geometry)
+            let first = try #require(PdfTextLocatorPortable.locate(query: "A", in: page))
+            let last = try #require(PdfTextLocatorPortable.locate(query: "C", in: page))
+
+            // Points within one Double ULP can collapse under the display
+            // transform. A real displacement on either side still wins.
+            for (x, caret) in [(55 - 0.000001, 1), (55.0.nextDown, 2), (55.0, 2), (55 + 0.000001, 2)] {
+                let point = geometry.pdfToUi(x, 707)
+                #expect(PdfTextLocatorPortable.resizedPosition(
+                    page: page, current: first, edge: .end, toDisplayX: point.x, y: point.y
+                )?.utf16Range == 0..<caret, "Rotation \(rotation), x=\(x)")
+                #expect(PdfTextLocatorPortable.resizedPosition(
+                    page: page, current: last, edge: .start, toDisplayX: point.x, y: point.y
+                )?.utf16Range == caret..<3, "Rotation \(rotation), x=\(x)")
+            }
+        }
+    }
+
     @Test func comparesPdfKitGoldens() async throws {
         let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -110,9 +141,9 @@ extension PdfiumTests {
                             print("DRAG \(label) \(drag.name.debugDescription) both refused")
                         }
                     } else {
-                        // Diagnose midpoint differences geometrically and verify
-                        // that the engines chose the two adjacent caret stops.
-                        // Every ordinary result still has to pass exactly.
+                        // These probes target the midpoint of the selection
+                        // box, which can differ from PDFKit's ink midpoint.
+                        // Verify the engines chose adjacent caret stops.
                         let end = drag.edge == .end
                         let expected = try #require(expectedText)
                         let actual = try #require(actualText)
@@ -131,7 +162,7 @@ extension PdfiumTests {
                         #expect(midpointDelta < 0.001, "\(label) \(drag.name)")
                         #expect(abs(bounds.edge - advance) < 0.2, "\(label) \(drag.name) \(bounds.details)")
                         midpointDifferences += 1
-                        print("MIDPOINT \(label) \(drag.name.debugDescription) delta=\(midpointDelta) pt \(bounds.details) \(expected.debugDescription) → \(actual.debugDescription)")
+                        print("ADVANCE MIDPOINT \(label) \(drag.name.debugDescription) delta=\(midpointDelta) pt \(bounds.details) \(expected.debugDescription) → \(actual.debugDescription)")
                     }
                 }
 
@@ -148,7 +179,7 @@ extension PdfiumTests {
             }
         }
         #expect(observed == knownDifferences, "Observed PDFKit/PDFium differences: \(observed.sorted())")
-        print("DRAG SUMMARY \(dragCount - midpointDifferences)/\(dragCount) exact outcomes, \(midpointDifferences) adjacent-caret midpoint differences")
+        print("DRAG SUMMARY \(dragCount - midpointDifferences)/\(dragCount) exact outcomes, \(midpointDifferences) selection-box midpoint differences")
     }
 }
 

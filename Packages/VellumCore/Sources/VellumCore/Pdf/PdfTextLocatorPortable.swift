@@ -94,12 +94,13 @@ public enum PdfTextLocatorPortable {
     }
 
     private static func caretOffset(x: Double, y: Double, in page: ExtractedPageText) -> Int? {
-        let geometry = page.geometry
-        // Compare along and across the underlying line even when the displayed
-        // line is vertical or right-to-left because of the page's /Rotate.
+        let rotation = page.geometry.rotation
+        let sideways = rotation == 90 || rotation == 270
+        let direction: Double = rotation == 180 || rotation == 270 ? -1 : 1
+        // All inputs already share display units. Project along native
+        // reading direction without round-tripping through the page transform.
         func logical(_ x: Double, _ y: Double) -> (along: Double, across: Double) {
-            let point = geometry.uiToPdf(x, y, pageWidth: geometry.displayWidth, pageHeight: geometry.displayHeight)
-            return (point.x, point.y)
+            sideways ? (direction * y, x) : (direction * x, y)
         }
         let target = logical(x, y)
         func distance(to rect: AnnotationRect) -> (along: Double, across: Double) {
@@ -124,9 +125,10 @@ public enum PdfTextLocatorPortable {
         let lineText = String(decoding: utf16[start..<end], as: UTF16.self)
         var offset = line.utf16Range.lowerBound
         var nearest: (offset: Int, distance: Double)?
-        func consider(_ offset: Int, at x: Double) {
-            let distance = abs(target.along - x)
-            if let nearest, distance >= nearest.distance { return }
+        func consider(_ offset: Int, distance: Double, preferOnTie: Bool = false) {
+            if let nearest, distance > nearest.distance || (distance == nearest.distance && !preferOnTie) {
+                return
+            }
             nearest = (offset, distance)
         }
         for character in lineText {
@@ -138,8 +140,21 @@ public enum PdfTextLocatorPortable {
             if let bounds {
                 let a = logical(bounds.x, bounds.y).along
                 let b = logical(bounds.x + bounds.width, bounds.y + bounds.height).along
-                consider(offset, at: min(a, b))
-                consider(end, at: max(a, b))
+                let leading = min(a, b)
+                let trailing = max(a, b)
+                let toLeading = abs(target.along - leading)
+                let toTrailing = abs(target.along - trailing)
+                let midpoint = leading + (trailing - leading) / 2
+                // At an indistinguishable midpoint use the following caret,
+                // as PDFKit does at its own glyph boundary. Limit this to
+                // Double round-off in the reconstructed coordinates.
+                let precision = max(target.along.ulp, leading.ulp, trailing.ulp)
+                if trailing > leading, abs(target.along - midpoint) <= precision {
+                    consider(end, distance: min(toLeading, toTrailing), preferOnTie: true)
+                } else {
+                    consider(offset, distance: toLeading)
+                    consider(end, distance: toTrailing)
+                }
             }
             offset = end
         }
