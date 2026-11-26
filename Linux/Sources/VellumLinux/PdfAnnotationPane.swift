@@ -52,26 +52,24 @@ final class PdfAnnotationPane {
     private var position: PositionData?
     private var picked: Annotation?
     private var mutate: ((PdfAnnotationEdit) -> Void)?
-    private var reload: (() -> Void)?
     private var saving = false
-    private var stale = false
-    private var pending: Task<Void, Never>?
+    private var admissionError: String?
+    private(set) var pending: Task<Bool, Never>?
 
     // Called synchronously before any navigation, including normal window close.
     // The replacement keeps its captured file and baseline even after detach.
-    func detach() -> Task<Void, Never>? {
+    func detach() -> Task<Bool, Never>? {
         if let panel { pdf_annotations_bind(panel, nil, nil) }
         panel = nil
         page = nil
         position = nil
         picked = nil
         mutate = nil
-        reload = nil
         return pending
     }
 
     func bind(window: OpaquePointer, bytes: Data, index: Int, info: PdfiumPageInfo,
-              replace: PdfConditionalReplace?, reload: @escaping () -> Void,
+              replace: PdfConditionalReplace?, recoveredComment: String?, reload: @escaping (String) -> Void,
               publish: @escaping (Data, Bool) -> Void) async {
         let panel = reader_pdf_annotations(window)!
         pdf_annotations_reset(panel)
@@ -79,15 +77,14 @@ final class PdfAnnotationPane {
         guard !Task.isCancelled else { return }
         self.panel = panel
         self.page = page
-        self.reload = reload
         width = info.widthPt
         height = info.heightPt
         number = index + 1
-        stale = false
+        admissionError = nil
         saving = false
         if let replace, page.restriction == nil {
             mutate = { [weak self] edit in
-                guard let self, !self.saving, !self.stale else { return }
+                guard let self, !self.saving, self.admissionError == nil else { return }
                 self.saving = true
                 self.refresh("Saving annotation…")
                 self.pending = Task {
@@ -97,17 +94,23 @@ final class PdfAnnotationPane {
                         self.pending = nil
                         self.saving = false
                         publish(result, visible)
+                        return true
                     } catch {
                         self.pending = nil
                         self.saving = false
                         guard self.panel != nil else {
                             FileHandle.standardError.write(Data("PDF annotation save failed: \(error)\n".utf8))
-                            return
+                            return false
                         }
-                        self.stale = error is ChangedPDF || (error as? LibraryFileError) == .retryable
-                        self.refresh(self.stale
-                            ? "The PDF changed or could not be replaced. Reload it before editing."
-                            : "Could not save the annotation. \(error.localizedDescription)")
+                        if error is ChangedPDF || (error as? LibraryFileError) == .retryable {
+                            reload(String(cString: pdf_annotations_content(panel)))
+                        } else if let reason = error as? PdfReadOnlyReason {
+                            self.admissionError = reason.localizedDescription
+                            self.refresh("Edit could not be saved. The original is still open.")
+                        } else {
+                            self.refresh("Could not save the annotation. \(error.localizedDescription)")
+                        }
+                        return false
                     }
                 }
             }
@@ -123,7 +126,12 @@ final class PdfAnnotationPane {
                 pane.handle(action, x: x, y: y, endX: endX, endY: endY)
             }
         }, Unmanaged.passUnretained(self).toOpaque())
-        refresh(nil)
+        if let recoveredComment {
+            pdf_annotations_set_content(panel, recoveredComment)
+            refresh("Reopened the latest PDF after a conflicting save. Select a location to reapply your comment.")
+        } else {
+            refresh(nil)
+        }
         if mutate != nil { reader_pdf_editable(window) }
     }
 
@@ -175,7 +183,7 @@ final class PdfAnnotationPane {
             pdf_annotations_set_content(panel, picked?.content ?? "")
             refresh(nil)
         case PDF_HIGHLIGHT, PDF_NOTE:
-            guard picked == nil, !stale else { return }
+            guard picked == nil, admissionError == nil else { return }
             let isHighlight = action == PDF_HIGHLIGHT
             guard !isHighlight || position?.selectedText?.isEmpty == false else { return }
             let content = String(cString: pdf_annotations_content(panel))
@@ -186,8 +194,6 @@ final class PdfAnnotationPane {
             if let picked { mutate?(.update(.init(id: picked.id, content: String(cString: pdf_annotations_content(panel))))) }
         case PDF_DELETE:
             if let picked { mutate?(.delete(id: picked.id)) }
-        case PDF_RELOAD:
-            reload?()
         default: break
         }
     }
@@ -198,9 +204,9 @@ final class PdfAnnotationPane {
 
     private func refresh(_ message: String?) {
         guard let page, let panel else { return }
-        let writable = mutate != nil && !saving && !stale
+        let writable = mutate != nil && !saving && admissionError == nil
         pdf_annotations_controls(panel, writable && picked == nil && position?.selectedText?.isEmpty == false,
-                                 writable && picked == nil, writable && picked != nil, stale)
+                                 writable && picked == nil, writable && picked != nil)
         pdf_annotations_clear_rects(panel)
         if let pos = position {
             for r in pos.rects {
@@ -214,7 +220,7 @@ final class PdfAnnotationPane {
         else if let picked { hint = "Selected \(picked.type.rawValue)." }
         else if page.text?.lines.isEmpty != false { hint = "No selectable text. Click to place a note, or add one at page center." }
         else { hint = "Drag or find text to highlight. Click to place a note, or add one at page center." }
-        let reason = page.restriction ?? (mutate == nil ? "Library editing is off." : nil)
+        let reason = admissionError ?? page.restriction ?? (mutate == nil ? "Library editing is off." : nil)
         pdf_annotations_message(panel, reason.map { "Read only · \($0) \(hint)" } ?? hint)
     }
 }

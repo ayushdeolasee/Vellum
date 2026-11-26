@@ -4,7 +4,7 @@
 
 struct PdfAnnotations {
     GtkWidget *picture, *canvas, *query, *content, *picker, *status;
-    GtkWidget *highlight, *note, *update, *remove, *reload;
+    GtkWidget *highlight, *note, *update, *remove;
     GtkStringList *items;
     GArray *rects;
     PdfAnnotationCallback callback;
@@ -22,6 +22,7 @@ static void clicked(GtkButton *button, PdfAnnotations *p) {
     if (action == PDF_DELETE && !p->confirming) {
         p->confirming = TRUE;
         gtk_button_set_label(button, "Confirm delete");
+        pdf_annotations_message(p, "Remove from the current page? Earlier revisions in this PDF retain the annotation.");
         return;
     }
     emit(p, action);
@@ -126,6 +127,7 @@ GtkWidget *pdf_annotations_new(GtkWidget *picture, PdfAnnotations **out) {
     gtk_widget_add_controller(p->canvas, GTK_EVENT_CONTROLLER(drag));
 
     GtkWidget *expander = gtk_expander_new("Annotations");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(expander), GTK_ACCESSIBLE_PROPERTY_LABEL, "Annotations", -1);
     gtk_box_append(GTK_BOX(box), expander);
     GtkWidget *tools = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_expander_set_child(GTK_EXPANDER(expander), tools);
@@ -147,7 +149,8 @@ GtkWidget *pdf_annotations_new(GtkWidget *picture, PdfAnnotations **out) {
     p->content = field(edit, "Annotation comment");
     p->update = button(edit, "Save comment", PDF_UPDATE, p);
     p->remove = button(edit, "Delete", PDF_DELETE, p);
-    p->reload = button(edit, "Reload PDF", PDF_RELOAD, p);
+    gtk_widget_set_tooltip_text(p->remove, "Earlier PDF revisions retain edited or deleted comments.");
+    gtk_widget_set_tooltip_text(p->update, "Earlier PDF revisions retain the previous comment.");
     p->status = gtk_label_new(NULL);
     gtk_label_set_selectable(GTK_LABEL(p->status), TRUE);
     gtk_label_set_ellipsize(GTK_LABEL(p->status), PANGO_ELLIPSIZE_END);
@@ -168,7 +171,7 @@ void pdf_annotations_reset(PdfAnnotations *p) {
     gtk_editable_set_text(GTK_EDITABLE(p->query), "");
     pdf_annotations_set_content(p, "");
     pdf_annotations_clear_rects(p);
-    pdf_annotations_controls(p, FALSE, FALSE, FALSE, FALSE);
+    pdf_annotations_controls(p, FALSE, FALSE, FALSE);
     pdf_annotations_message(p, "Loading annotations…");
 }
 void pdf_annotations_add(PdfAnnotations *p, const char *name) { gtk_string_list_append(p->items, name); }
@@ -177,14 +180,13 @@ void pdf_annotations_pick(PdfAnnotations *p, int index) { gtk_drop_down_set_sele
 const char *pdf_annotations_query(PdfAnnotations *p) { return gtk_editable_get_text(GTK_EDITABLE(p->query)); }
 const char *pdf_annotations_content(PdfAnnotations *p) { return gtk_editable_get_text(GTK_EDITABLE(p->content)); }
 void pdf_annotations_set_content(PdfAnnotations *p, const char *s) { gtk_editable_set_text(GTK_EDITABLE(p->content), s); }
-void pdf_annotations_controls(PdfAnnotations *p, bool highlight, bool note, bool edit, bool reload) {
+void pdf_annotations_controls(PdfAnnotations *p, bool highlight, bool note, bool edit) {
     p->confirming = FALSE;
     gtk_button_set_label(GTK_BUTTON(p->remove), "Delete");
     gtk_widget_set_sensitive(p->highlight, highlight);
     gtk_widget_set_sensitive(p->note, note);
     gtk_widget_set_sensitive(p->update, edit);
     gtk_widget_set_sensitive(p->remove, edit);
-    gtk_widget_set_visible(p->reload, reload);
     gtk_editable_set_editable(GTK_EDITABLE(p->content), note || edit);
 }
 void pdf_annotations_message(PdfAnnotations *p, const char *s) {

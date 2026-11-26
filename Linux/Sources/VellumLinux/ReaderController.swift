@@ -57,7 +57,7 @@ final class ReaderController {
         prior?.cancel()
         work = Task {
             await prior?.value
-            await annotationSave?.value
+            _ = await annotationSave?.value
             guard isCurrent(token) else { return }
             await operation(token)
         }
@@ -259,7 +259,7 @@ final class ReaderController {
         }
     }
 
-    private func showPage(_ requestedIndex: Int, window: OpaquePointer, restorePosition: Bool = true) {
+    private func showPage(_ requestedIndex: Int, window: OpaquePointer, recoveredComment: String? = nil) {
         guard let file = selection, let store else { return }
         let loadingTitle = pdfTitle ?? file.lastPathComponent
         pageIndex = requestedIndex
@@ -285,12 +285,13 @@ final class ReaderController {
                                                                stamp: opening.stableIdentifier, fallbackTitle: title) {
                         storageKey = saved.storageKey
                         title = saved.displayTitle
-                        if restorePosition, let page = saved.lastPage, (1...opening.pageCount).contains(page) {
+                        if recoveredComment == nil, let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
                     }
                     guard self.isCurrent(token) else { return }
                     self.scratchpad?.select(storageKey)
+                    index = min(index, opening.pageCount - 1)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index
@@ -312,9 +313,9 @@ final class ReaderController {
                                     Int32(bitmap.width), Int32(bitmap.height), bitmap.bytesPerRow)
                 }
                 await self.annotations.bind(window: window, bytes: data, index: index, info: info,
-                                            replace: nil, reload: {
+                                            replace: nil, recoveredComment: recoveredComment, reload: { draft in
                     self.bytes = nil
-                    self.showPage(index, window: window, restorePosition: false)
+                    self.showPage(index, window: window, recoveredComment: draft)
                 }, publish: { edited, visible in
                     guard self.selection == file else { return }
                     self.bytes = edited
