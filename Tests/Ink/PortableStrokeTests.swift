@@ -133,6 +133,81 @@ final class PortableStrokeTests: XCTestCase {
         XCTAssertThrowsError(try PKStroke(changed), "Display intervals cannot supply a missing mask")
     }
 
+    func testShiftedMaskCandidatesDiagnostic() throws {
+        let data = try fixture("portable-shifted", "zlib", in: "Ink")
+        let wire = try XCTUnwrap(PortableStroke.decodePDFPayload(data.base64EncodedString()).first)
+        var local = wire
+        local.transform = [1, 0, 0, 1, 0, 0]
+        let placement = CGAffineTransform(translationX: 20, y: 0)
+        let reference = try PKStroke(local)
+        var log: [String] = []
+        func hex(_ x: Double) -> String { "\(x)[\(String(format: "%016llx", x.bitPattern))]" }
+        func nums(_ values: [Double]) -> String { values.map(hex).joined(separator: ",") }
+        func ranges(_ values: [[Double]]) -> String { values.map(nums).joined(separator: "/") }
+        func record(_ stage: String, _ stroke: PKStroke) throws {
+            let p = try PortableStroke(stroke)
+            var mismatch: [String] = []
+            func fields(_ name: String, _ a: [Double], _ b: [Double], exact: Bool = false) {
+                if a.count != b.count { mismatch.append("\(name).count \(a.count) != \(b.count)") }
+                for (i, (x, y)) in zip(a, b).enumerated() where x.bitPattern != y.bitPattern {
+                    let exceeds = exact || abs(x-y) > 1e-6
+                    mismatch.append("\(name)[\(i)] \(hex(x)) expected \(hex(y)), fails=\(exceeds)")
+                }
+            }
+            fields("transform", p.transform, wire.transform)
+            fields("color", p.color, wire.color)
+            if p.points.count != wire.points.count { mismatch.append("pointCount=\(p.points.count)") }
+            for (i, (q, r)) in zip(p.points, wire.points).enumerated() {
+                fields("point\(i).x,y,t", [q.x,q.y,q.t], [r.x,r.y,r.t], exact: true)
+                fields("point\(i).w,h,opacity,force,azimuth,altitude,secondaryScale",
+                       [q.w,q.h,q.opacity,q.force,q.azimuth,q.altitude,q.secondaryScale],
+                       [r.w,r.h,r.opacity,r.force,r.azimuth,r.altitude,r.secondaryScale])
+            }
+            let maskMatches = try wire.matchesMask(of: stroke)
+            let describes = try wire.describes(stroke)
+            log.append("\(stage) transform=\(nums(p.transform)) ranges=\(ranges(p.visibleRanges)) seed=\(p.randomSeed) ink=\(p.ink) created=\(p.createdAt) dateBits=\(hex(stroke.path.creationDate.timeIntervalSinceReferenceDate)) rawID=\(p.id) maskMatches=\(maskMatches) describes=\(describes) mismatches=\(mismatch)")
+        }
+        func reopen(_ s: PKStroke) throws -> PKStroke {
+            try XCTUnwrap(PKDrawing(data: PKDrawing(strokes: [s]).dataRepresentation()).strokes.first)
+        }
+        func make(_ m: CGAffineTransform = .identity) -> PKStroke {
+            PKStroke(ink: reference.ink, path: reference.path, transform: m, mask: reference.mask,
+                     randomSeed: reference.randomSeed)
+        }
+        log.append("expected transform=\(nums(wire.transform)) ranges=\(ranges(wire.visibleRanges)) seed=\(wire.randomSeed) ink=\(wire.ink) created=\(wire.createdAt) rawID=\(wire.rawPathID)")
+        defer {
+            let result = log.joined(separator: "\n")
+            print("I3_SHIFTED_MASK\n" + result)
+            let attachment = XCTAttachment(string: result)
+            attachment.name = "I3 shifted mask candidate signatures"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        func compare(_ name: String, _ build: () throws -> PKStroke) throws {
+            let s = try build()
+            try record(name + ".before", s)
+            try record(name + ".after", reopen(s))
+            // Serialize a separate fresh candidate before reading any final ranges.
+            try record(name + ".uninspectedArchive", reopen(build()))
+        }
+        try compare("direct") { make(placement) }
+        try compare("post.cold") { var s = make(); s.transform = placement; return s }
+        try compare("post.warm") {
+            var s = make()
+            log.append("pre-placement ranges=" + ranges(s.maskedPathRanges.map { [Double($0.lowerBound), Double($0.upperBound)] }))
+            s.transform = placement
+            return s
+        }
+        try compare("post.reloaded") { var s = try reopen(make()); s.transform = placement; return s }
+        try compare("drawing.transformed") {
+            try XCTUnwrap(PKDrawing(strokes: [make()]).transformed(using: placement).strokes.first)
+        }
+        try compare("drawing.reloaded.transformed") {
+            let drawing = try PKDrawing(data: PKDrawing(strokes: [make()]).dataRepresentation())
+            return try XCTUnwrap(drawing.transformed(using: placement).strokes.first)
+        }
+    }
+
     func testMovedMaskSurvivesPencilKitSerialization() throws {
         let original = try XCTUnwrap(pdfStrokes("pdf-ink-erased-partial").first)
         let payload = try fixture("portable-shifted", "zlib", in: "Ink").base64EncodedString()
