@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-repo=$(cd "$(dirname "$0")/../.." && pwd -P)
+repo=$(CDPATH= cd -P -- "$(dirname "$0")/../.." && pwd -P)
 key=$(printf '%s' "$repo" | shasum -a 256 | cut -c1-16)
+# Concurrent runs in this checkout can select different named volumes.
+volume=${VELLUM_BUILD_VOLUME:-vellum-build-$key}
 args=(--rm -i --platform linux/arm64
       --mount "type=bind,src=$repo,dst=/repo,readonly"
-      --mount "type=volume,src=vellum-build-$key,dst=/build")
+      --mount "type=volume,src=$volume,dst=/build")
 if [[ -t 0 && -t 1 ]]; then args+=(-t); fi
 if [[ -n ${VELLUM_FIXTURE_COPY:-} ]]; then
-  args+=(--mount "type=bind,src=$VELLUM_FIXTURE_COPY,dst=/library,readonly")
+  if [[ ! -d $VELLUM_FIXTURE_COPY ]] || ! fixture=$(realpath -- "$VELLUM_FIXTURE_COPY"); then
+    echo "VELLUM_FIXTURE_COPY must name an accessible directory: $VELLUM_FIXTURE_COPY" >&2
+    exit 1
+  fi
+  args+=(--mount "type=bind,src=$fixture,dst=/library,readonly")
 fi
 if [[ ${VELLUM_OFFLINE:-0} == 1 ]]; then args+=(--network none); fi
 if [[ $# == 0 ]]; then set -- bash; fi

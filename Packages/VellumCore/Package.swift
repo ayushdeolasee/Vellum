@@ -9,6 +9,7 @@ let package = Package(
         .target(name: "VellumCore", swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(
             name: "VellumCoreTests", dependencies: ["VellumCore"],
+            resources: [.copy("Fixtures")],
             swiftSettings: [.swiftLanguageMode(.v5)])
     ]
 )
