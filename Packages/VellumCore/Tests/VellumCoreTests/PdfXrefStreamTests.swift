@@ -133,4 +133,23 @@ final class PdfXrefStreamTests: XCTestCase {
         bytes[header.lowerBound] = 56
         XCTAssertThrowsError(try PdfClassicStructure(bytes).inspect())
     }
+    func testStreamBudgetReservesOnlyTheNextRevision() throws {
+        var bytes = PdfFixtureBuilder.xrefStreamPdf()
+        for _ in 1..<63 {
+            let file = try ClassicPdfFile(data: bytes)
+            var increment = PdfIncrement(file: file)
+            increment.setObject(4, source: try XCTUnwrap(file.rawObjectValue(4)))
+            bytes = increment.appended()
+        }
+        XCTAssertEqual(PdfEditEligibility.classify(bytes), .editable)
+        let last = try PdfAnnotationIncrement.applying(
+            .create(.init(type: .note, pageNumber: 1, id: "last")), to: bytes, now: "2026-11-26T00:00:00Z")
+        XCTAssertTrue(last.starts(with: bytes))
+        try PdfEditEligibility.inspect(last, reservingRevision: false)
+        XCTAssertEqual(PdfEditEligibility.classify(last), .readOnly(.inspectionLimit))
+        XCTAssertThrowsError(try PdfAnnotationIncrement.applying(.delete(id: "last"), to: last, now: "2026-11-26T00:00:00Z")) {
+            XCTAssertEqual($0 as? PdfReadOnlyReason, .inspectionLimit)
+        }
+    }
+
 }

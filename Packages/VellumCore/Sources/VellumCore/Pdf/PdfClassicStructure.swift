@@ -57,8 +57,12 @@ final class PdfClassicStructure {
     private(set) var latestTrailer = PdfDictSource([])
     private(set) var usesXrefStreams = false
 
-    init(_ data: Data, decodedLimit: Int = 64 * 1024 * 1024) {
-        bytes = Array(data)
+    convenience init(_ data: Data, decodedLimit: Int = 64 * 1024 * 1024) {
+        self.init(bytes: Array(data), decodedLimit: decodedLimit)
+    }
+
+    init(bytes: [UInt8], decodedLimit: Int = 64 * 1024 * 1024) {
+        self.bytes = bytes
         decoder.remaining = decodedLimit
     }
 
@@ -66,6 +70,8 @@ final class PdfClassicStructure {
         guard count <= remaining else { throw Reason.inspectionLimit }
         remaining -= count
     }
+
+    private typealias ObjectStream = (payload: Range<Int>, dictionary: [String: Value])
 
     private struct XrefStream {
         let number: Int
@@ -86,6 +92,7 @@ final class PdfClassicStructure {
             revisions += 1
             guard revisions <= revisionLimit else { throw Reason.inspectionLimit }
             var newObjects = Set<Int>()
+            var newObjectStreams: [Int: ObjectStream] = [:]
             var xrefStream: XrefStream?
             skipOuterTrivia()
             while !starts("xref") && !starts("startxref") {
@@ -121,7 +128,7 @@ final class PdfClassicStructure {
                         xrefStream = XrefStream(number: number, offset: offset, dict: dict,
                             source: PdfDictSource(Array(bytes[bodyStart..<bodyEnd])), payload: payload)
                     case "ObjStm":
-                        objectStreams[number] = try unpack(bytes[payload], dict: dict)
+                        newObjectStreams[number] = (payload, dict)
                         streams[number] = body
                     default:
                         streams[number] = body
@@ -134,7 +141,7 @@ final class PdfClassicStructure {
                 offsets[number] = offset
                 skipOuterTrivia()
             }
-            try revision(newObjects: newObjects, stream: xrefStream, forEditing: forEditing)
+            try revision(newObjects: newObjects, newObjectStreams: newObjectStreams, stream: xrefStream, forEditing: forEditing)
             skipSpace()
         } while i < bytes.count
         guard !forEditing || portableSyntax else { throw Reason.malformed }
@@ -211,7 +218,8 @@ final class PdfClassicStructure {
         return rows
     }
 
-    private func revision(newObjects: Set<Int>, stream: XrefStream?, forEditing: Bool) throws {
+    private func revision(newObjects: Set<Int>, newObjectStreams: [Int: ObjectStream],
+                          stream: XrefStream?, forEditing: Bool) throws {
         var xref = i
         var rows: [Int: PdfXrefRow] = [:]
         let table = starts("xref")
@@ -237,9 +245,9 @@ final class PdfClassicStructure {
             xref = stream.offset
             trailer = stream.dict
             latestTrailer = stream.source
-            guard trailer["XRefStm"] == nil else { throw Reason.malformed }
         }
         if let stream {
+            guard stream.dict["XRefStm"] == nil else { throw Reason.malformed }
             usesXrefStreams = true
             let decoded = try decoder.decode(bytes[stream.payload], dictionary: stream.dict)
             let supplement = try PdfStreamDecoder.rows(decoded, dictionary: stream.dict, limit: objectLimit)
@@ -271,6 +279,11 @@ final class PdfClassicStructure {
         previousSize = size
         hadInfo = trailer["Info"] != nil
         hadID = trailer["ID"] != nil
+        // The trailer establishes whether these bytes are encrypted. Inspect it
+        // before feeding any object stream from this revision to a filter.
+        for (number, objectStream) in newObjectStreams {
+            objectStreams[number] = try unpack(bytes[objectStream.payload], dict: objectStream.dictionary)
+        }
         for number in newObjects {
             guard case .direct = rows[number] else { throw Reason.malformed }
         }

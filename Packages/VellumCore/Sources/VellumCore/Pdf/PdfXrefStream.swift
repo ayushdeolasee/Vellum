@@ -107,8 +107,8 @@ struct PdfStreamDecoder {
             let rows = output.count / row
             guard rows * samples <= remaining else { throw Failure.inspectionLimit }
             remaining -= rows * samples
+            var previous = [Int](repeating: 0, count: colors)
             for base in stride(from: 0, to: output.count, by: row) {
-                var previous = [Int](repeating: 0, count: colors)
                 for sample in 0..<samples {
                     let bit = sample * bits
                     let at = base + bit / 8
@@ -116,7 +116,7 @@ struct PdfStreamDecoder {
                     let mask = (1 << bits) - 1
                     let raw = bits == 16 ? Int(output[at]) * 256 + Int(output[at + 1]) : Int(output[at]) >> shift
                     let channel = sample % colors
-                    let value = ((raw & mask) + previous[channel]) & mask
+                    let value = ((raw & mask) + (sample < colors ? 0 : previous[channel])) & mask
                     previous[channel] = value
                     if bits == 16 {
                         output[at] = UInt8(value >> 8)

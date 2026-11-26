@@ -615,7 +615,7 @@ public struct ClassicPdfFile {
                 // Before a stream-backed file reaches any writer, prove every
                 // revision and use that exact object map for all subsequent reads.
                 guard data.count <= 128 * 1024 * 1024 else { throw PdfReadOnlyReason.inspectionLimit }
-                let structure = PdfClassicStructure(data)
+                let structure = PdfClassicStructure(bytes: bytes)
                 try structure.inspect()
                 guard structure.usesXrefStreams, let size = structure.latestTrailer.integer(forKey: "Size")
                 else { throw PdfReadOnlyReason.malformed }
