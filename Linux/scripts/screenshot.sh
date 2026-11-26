@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Inside dev-shell.sh, build the Debug executable into /build/linux first.
-# Write measurements to stderr and the auto/busy Weston screenshot to stdout.
+# Write diagnostics to stderr and the probe screenshot or reader page pair to stdout.
 set -euo pipefail
-[[ ${1:-probe} == probe && $# -le 1 ]] || { echo "usage: $0 probe" >&2; exit 64; }
+mode=${1:-probe}
+[[ ( $mode == probe || $mode == reader ) && $# -le 1 ]] || { echo "usage: $0 [probe|reader]" >&2; exit 64; }
 if [[ ${VELLUM_PRIVATE_BUS:-0} != 1 ]]; then
-  exec dbus-run-session -- env VELLUM_PRIVATE_BUS=1 bash "$0" probe
+  # Keep D-Bus activated services' stdout out of the PNG stream.
+  exec dbus-run-session -- env VELLUM_PRIVATE_BUS=1 bash -c 'exec bash "$@" >&3' -- "$0" "$mode" 3>&1 >&2
 fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -17,6 +19,7 @@ app=/build/linux/debug/vellum-linux
 [[ -x $app ]] || { echo "build vellum-linux with --scratch-path /build/linux -c debug first" >&2; exit 1; }
 
 run_case() (
+  set -e
   pump=$1 load=$2
   echo "requested=$pump load=$load" >&2
   export XDG_RUNTIME_DIR="$tmp/$pump-$load"
@@ -24,14 +27,20 @@ run_case() (
   log="$XDG_RUNTIME_DIR/weston.log"
   wpid= apid=
   cleanup() {
-    if (( $? != 0 )); then cat "$log" >&2; fi
+    rc=$?
+    if (( rc != 0 && rc != 77 )); then cat "$log" >&2; fi
     if [[ -n $apid ]]; then kill "$apid" 2>/dev/null || true; fi
     if [[ -n $wpid ]]; then kill "$wpid" 2>/dev/null || true; fi
     wait 2>/dev/null || true
   }
   trap cleanup EXIT
-  weston --no-config --backend=headless --renderer=pixman --shell=kiosk-shell.so \
-    --socket="$WAYLAND_DISPLAY" --width=800 --height=480 --idle-time=0 \
+  shell=kiosk-shell.so width=800 height=480
+  if [[ $pump == reader ]]; then
+    shell=desktop-shell.so width=1100 height=760
+    export GTK_A11Y=atspi
+  fi
+  weston --no-config --backend=headless --renderer=pixman --shell="$shell" \
+    --socket="$WAYLAND_DISPLAY" --width="$width" --height="$height" --idle-time=0 \
     --debug >"$log" 2>&1 &
   wpid=$!
   for ((i=0; i<200; i++)); do
@@ -41,7 +50,14 @@ run_case() (
   done
   [[ -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]]
 
-  if [[ $pump == auto && $load == busy ]]; then
+  if [[ $pump == reader ]]; then
+    # Drive the normal executable (default root /library), including title-bar close.
+    timeout -k 1 40 "$app" >&2 &
+    apid=$!
+    timeout -k 1 35 python3 "$(dirname "$0")/reader-acceptance.py" "$tmp/reader.png" >&2
+    wait "$apid"
+    apid=
+  elif [[ $pump == auto && $load == busy ]]; then
     VELLUM_PROBE_CAPTURE_DIR="$tmp" timeout -k 1 12 "$app" --probe "$pump" "$load" >&2 &
     apid=$!
     until [[ -f $tmp/ready ]]; do
@@ -56,11 +72,70 @@ run_case() (
     timeout -k 1 12 "$app" --probe "$pump" "$load" >&2
   fi
 )
+if [[ $mode == reader ]]; then
+  run_case reader library
+  cat "$tmp/reader.png"
+  exit
+fi
+failed=0 unavailable=0
 for pump in auto timer missing eventfd; do
   for load in idle busy; do
-    run_case "$pump" "$load"
+    report="$tmp/$pump-$load.log"
+    set +e
+    run_case "$pump" "$load" 2>"$report"
+    rc=$?
+    set -e
+    cat "$report" >&2
+    if [[ $rc == 77 && $pump == eventfd ]]; then
+      unavailable=$((unavailable + 1))
+    elif (( rc != 0 )); then
+      echo "$pump/$load failed (status $rc)" >&2
+      failed=1
+    fi
   done
 done
+(( failed == 0 ))
+# An unavailable SPI must still demonstrate both working fallback paths.
+python3 - "$tmp" "$unavailable" <<'PYTHON'
+from pathlib import Path
+import sys
+
+root, missing = Path(sys.argv[1]), int(sys.argv[2])
+def read(mode, load):
+    words = (root / f"{mode}-{load}.log").read_text().split()
+    return dict(word.split("=", 1) for word in words if "=" in word)
+
+def require(ok, reason):
+    if not ok:
+        sys.exit(reason)
+
+require(missing in (0, 2), "inconsistent strict eventfd availability")
+for load in ("idle", "busy"):
+    timer = read("timer", load)
+    for mode in ("timer", "missing", "auto", "eventfd"):
+        if missing and mode == "eventfd":
+            continue
+        row = read(mode, load)
+        fd = mode in ("auto", "eventfd") and not missing
+        expect = "eventfd" if fd else "timer"
+        case = f"{mode}/{load}"
+        require(row["selected"] == row["effective"] == expect, f"{case}: unexpected pump")
+        if not fd:
+            continue
+        # One-second quiet baselines. Allow 2 ms of CPU noise and occasional empty turns.
+        require(int(row["idle_wakes"]) <= int(timer["idle_wakes"]) / 4, f"{case}: idle wakes")
+        require(float(row["idle_cpu_ms"]) <= max(2, .75 * float(timer["idle_cpu_ms"])), f"{case}: idle CPU")
+        require(int(row["no_progress"]) <= 64, f"{case}: excessive wakes without probe progress")
+        if load == "busy":
+            for count, gap, slack in (("input", "input_gap_us", 15000), ("paints", "paint_gap_us", 32000)):
+                require(int(row[count]) >= .70 * int(timer[count]), f"{case}: too few {count}")
+                ref = int(timer[gap])
+                require(int(row[gap]) <= max(2 * ref, ref + slack), f"{case}: excessive {gap}")
+PYTHON
+if (( unavailable )); then
+  echo "strict eventfd unavailable in both loads (77); fallback cases passed" >&2
+  exit 77
+fi
 shopt -s nullglob
 png=("$XDG_PICTURES_DIR"/*.png)
 [[ ${#png[@]} == 1 && -s ${png[0]} ]]
