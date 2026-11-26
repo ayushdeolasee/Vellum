@@ -16,3 +16,6 @@ WebReader *web_reader_new(GtkStack *, const char *uri, bool ink, const char *scr
 void web_reader_free(WebReader *reader);
 // Copies borrowed Swift bytes into a stream owned by the request.
 void web_reader_respond(WebKitURISchemeRequest *, const char *mime, const void *bytes, size_t count);
+// Returns one location from the isolated reader world. The callback runs once,
+// with NULL when the document did not finish loading.
+void web_reader_location(WebReader *reader, WebEvent reply, void *owner);

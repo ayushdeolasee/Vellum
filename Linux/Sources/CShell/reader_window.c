@@ -1,5 +1,4 @@
-#include "CShell.h"
-#include <gtk/gtk.h>
+#include "reader_settings.h"
 
 struct ReaderWindow {
     GtkWindow *window;
@@ -7,14 +6,19 @@ struct ReaderWindow {
     GtkEventController *keys;
     GtkWidget *search, *no_matches;
     GtkWidget *title, *page, *previous, *next, *message, *picture, *stack, *status;
+    GtkStack *screens;
+    GtkWidget *paging, *body, *settings_button, *notice;
+    ReaderSettings *settings;
+    ScratchpadPanel *scratchpad;
     ReaderCallback callback;
     void *context;
-    gboolean closing, drained;
+    GCancellable *leave_dialog;
+    gboolean closing, drained, editing;
 };
 
 static void notify(ReaderWindow *r, ReaderEvent event, int entry) {
     g_assert(shell_on_gtk_thread());
-    r->callback(r, event, entry, r->context);
+    r->callback(r, event, entry, NULL, r->context);
 }
 
 static void selected(GtkListBox *list, GtkListBoxRow *row, ReaderWindow *r) {
@@ -23,7 +27,7 @@ static void selected(GtkListBox *list, GtkListBoxRow *row, ReaderWindow *r) {
 }
 
 static void search_changed(GtkEditable *entry, ReaderWindow *r) {
-    if (!r->closing) notify(r, READER_SEARCH, -1);
+    if (!r->closing && gtk_widget_get_sensitive(r->search)) notify(r, READER_SEARCH, -1);
 }
 
 static void search_activated(GtkSearchEntry *entry, ReaderWindow *r) {
@@ -39,7 +43,8 @@ static void search_stopped(GtkSearchEntry *entry, ReaderWindow *r) {
 static gboolean focus_search(GtkEventControllerKey *controller, guint key, guint keycode,
                              GdkModifierType state, ReaderWindow *r) {
     GdkModifierType modifiers = state & gtk_accelerator_get_default_mod_mask();
-    if (!r->closing && key == GDK_KEY_f && modifiers == GDK_CONTROL_MASK)
+    if (!r->closing && gtk_stack_get_visible_child(r->screens) == r->body &&
+        key == GDK_KEY_f && modifiers == GDK_CONTROL_MASK)
         return gtk_widget_grab_focus(r->search);
     return FALSE;
 }
@@ -54,6 +59,8 @@ static void clicked(GtkButton *button, ReaderWindow *r) {
 static void begin_close(ReaderWindow *r) {
     if (!r->window || r->closing) return;
     r->closing = TRUE;
+    if (r->leave_dialog) g_cancellable_cancel(r->leave_dialog);
+    reader_settings_dismiss(r->settings);
     notify(r, READER_CLOSE, -1);
 }
 
@@ -62,14 +69,80 @@ static void window_removed(GtkApplication *app, GtkWindow *window, ReaderWindow 
 }
 
 static gboolean close_requested(GtkWindow *window, ReaderWindow *r) {
-    gtk_widget_set_sensitive(GTK_WIDGET(window), FALSE);
-    begin_close(r);
+    if (!r->closing) notify(r, READER_CLOSE_REQUEST, -1);
     return TRUE;
+}
+
+ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    return r->scratchpad;
+}
+
+void reader_set_close_pending(ReaderWindow *r, bool pending) {
+    g_assert(shell_on_gtk_thread());
+    if (!r->closing) gtk_widget_set_sensitive(GTK_WIDGET(r->window), !pending);
+}
+
+typedef struct {
+    ReaderWindow *reader;
+    ReaderLeaveReply reply;
+    void *context;
+    ReaderRecoveryReply recovered;
+} LeaveRequest;
+
+static void leave_answered(GObject *source, GAsyncResult *result, gpointer data) {
+    g_autofree LeaveRequest *request = data;
+    int answer = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source), result, NULL);
+    g_clear_object(&request->reader->leave_dialog);
+    if (request->recovered) request->recovered(request->context, answer);
+    else request->reply(request->context, answer == 1);
+}
+
+void reader_confirm_leave(ReaderWindow *r, bool scratchpad, ReaderLeaveReply reply, void *context) {
+    if (r->closing || r->leave_dialog) { reply(context, false); return; }
+    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("%s", scratchpad
+        ? "Some scratchpad changes could not be saved." : "Your reading position could not be saved.");
+    gtk_alert_dialog_set_detail(dialog, scratchpad
+        ? "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk."
+        : "You can stay and retry, or continue with the last saved position.");
+    const char *buttons[] = {"Stay Here", scratchpad ? "Discard Unsaved Drafts" : "Continue Without Saving Position", NULL};
+    gtk_alert_dialog_set_buttons(dialog, buttons);
+    gtk_alert_dialog_set_cancel_button(dialog, 0);
+    gtk_alert_dialog_set_default_button(dialog, 0);
+    LeaveRequest *request = g_new(LeaveRequest, 1);
+    *request = (LeaveRequest){r, reply, context};
+    r->leave_dialog = g_cancellable_new();
+    gtk_alert_dialog_choose(dialog, r->window, r->leave_dialog, leave_answered, request);
+}
+
+void reader_confirm_recovered(ReaderWindow *r, ReaderRecoveryReply reply, void *context) {
+    if (r->closing || r->leave_dialog) { reply(context, 0); return; }
+    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("Scratchpad changes saved on this device");
+    gtk_alert_dialog_set_detail(dialog, "Reopen the document in this folder to recover the draft. The shared note is still on disk.");
+    const char *buttons[] = {"Stay Here", "Leave With Local Copy", "Discard Unsaved Drafts", NULL};
+    gtk_alert_dialog_set_buttons(dialog, buttons);
+    gtk_alert_dialog_set_cancel_button(dialog, 0);
+    gtk_alert_dialog_set_default_button(dialog, 0);
+    LeaveRequest *request = g_new(LeaveRequest, 1);
+    *request = (LeaveRequest){r, NULL, context, reply};
+    r->leave_dialog = g_cancellable_new();
+    gtk_alert_dialog_choose(dialog, r->window, r->leave_dialog, leave_answered, request);
+}
+
+void reader_commit_close(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    reader_set_close_pending(r, true);
+    begin_close(r);
 }
 
 GtkStack *reader_content_stack(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread());
     return GTK_STACK(r->stack);
+}
+
+ReaderSettings *reader_settings(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    return r->settings;
 }
 
 void reader_finish_close(ReaderWindow *r) {
@@ -81,6 +154,13 @@ void reader_finish_close(ReaderWindow *r) {
 void reader_enable_search(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread());
     gtk_widget_set_sensitive(r->search, TRUE);
+}
+
+void reader_reset_search(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    gtk_widget_set_sensitive(r->search, FALSE);
+    gtk_editable_set_text(GTK_EDITABLE(r->search), "");
+    reader_clear_rows(r);
 }
 
 const char *reader_search_query(ReaderWindow *r) {
@@ -130,9 +210,21 @@ void reader_select_row(ReaderWindow *r, int index) {
     gtk_list_box_select_row(r->list, gtk_list_box_get_row_at_index(r->list, index));
 }
 
+void reader_reselect_entry(ReaderWindow *r, int entry) {
+    for (int i = 0;; i++) {
+        GtkListBoxRow *row = gtk_list_box_get_row_at_index(r->list, i);
+        if (!row) return;
+        if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "entry-id")) == entry + 1) {
+            gtk_list_box_select_row(r->list, row);
+            return;
+        }
+    }
+}
+
 static void set_title(ReaderWindow *r, const char *title) {
-    gtk_window_set_title(r->window, title);
     gtk_label_set_text(GTK_LABEL(r->title), title);
+    if (gtk_stack_get_visible_child(r->screens) == r->body)
+        gtk_window_set_title(r->window, title);
 }
 
 void reader_set_position(ReaderWindow *r, int number, int count) {
@@ -156,14 +248,33 @@ void reader_page_message(ReaderWindow *r, const char *title, const char *message
     gtk_label_set_text(GTK_LABEL(r->message), message);
     gtk_stack_set_visible_child(reader_content_stack(r), r->message);
     reader_set_position(r, number, count);
-    gtk_label_set_text(GTK_LABEL(r->status), "Read-only library");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "Shared editing enabled" : "Read-only library");
+}
+
+void reader_set_editing(ReaderWindow *r, bool enabled, bool available) {
+    r->editing = enabled;
+    reader_settings_set_editing(r->settings, enabled, available);
+}
+
+void reader_notice(ReaderWindow *r, const char *message) {
+    gtk_label_set_text(GTK_LABEL(r->notice), message);
+    gtk_widget_set_visible(r->notice, TRUE);
+}
+
+void reader_article_location(ReaderWindow *r, int page, int percent) {
+    g_autofree char *text = g_strdup_printf("Page %d · %d%%", page, percent);
+    gtk_label_set_text(GTK_LABEL(r->page), text);
+}
+
+void reader_show_status(ReaderWindow *r, const char *message) {
+    gtk_label_set_text(GTK_LABEL(r->status), message);
 }
 
 void reader_web_ready(ReaderWindow *r, const char *title, const char *position) {
     g_assert(shell_on_gtk_thread());
     set_title(r, title);
     gtk_label_set_text(GTK_LABEL(r->page), position);
-    gtk_label_set_text(GTK_LABEL(r->status), "Offline archive · Read only");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "Offline archive · Shared editing" : "Offline archive · Read only");
 }
 
 void reader_set_message(ReaderWindow *r, const char *title, const char *message) {
@@ -182,7 +293,7 @@ void reader_set_page(ReaderWindow *r, const char *title, int number, int count,
     gtk_stack_set_visible_child(reader_content_stack(r), r->picture);
     set_title(r, title);
     reader_set_position(r, number, count);
-    gtk_label_set_text(GTK_LABEL(r->status), "PDF open · Read only");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "PDF open · Shared editing" : "PDF open · Read only");
 }
 
 static GtkWidget *page_button(const char *icon, const char *name, ReaderWindow *r) {
@@ -191,6 +302,37 @@ static GtkWidget *page_button(const char *icon, const char *name, ReaderWindow *
     gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL, name, -1);
     g_signal_connect(button, "clicked", G_CALLBACK(clicked), r);
     return button;
+}
+
+static void show_settings(GSimpleAction *action, GVariant *parameter, ReaderWindow *r) {
+    if (r->closing) return;
+    gtk_stack_set_visible_child(r->screens, reader_settings_page(r->settings));
+    gtk_widget_set_visible(r->title, FALSE);
+    gtk_widget_set_visible(r->paging, FALSE);
+    gtk_widget_set_visible(r->settings_button, FALSE);
+    gtk_window_set_title(r->window, "Vellum Settings");
+}
+
+static void settings_event(ReaderWindow *r, ReaderEvent event, int index, const char *text, void *unused) {
+    g_assert(shell_on_gtk_thread());
+    if (r->closing) return;
+    if (event == READER_SETTINGS_DONE) {
+        reader_settings_dismiss(r->settings);
+        gtk_stack_set_visible_child(r->screens, r->body);
+        gtk_widget_set_visible(r->title, TRUE);
+        gtk_widget_set_visible(r->paging, TRUE);
+        gtk_widget_set_visible(r->settings_button, TRUE);
+        gtk_window_set_title(r->window, gtk_label_get_text(GTK_LABEL(r->title)));
+    } else {
+        r->callback(r, event, index, text, r->context);
+    }
+}
+
+// Settings and document panels can register with the same window action map.
+static void add_window_action(ReaderWindow *r, const char *name, GCallback activate) {
+    g_autoptr(GSimpleAction) action = g_simple_action_new(name, NULL);
+    g_signal_connect(action, "activate", activate, r);
+    g_action_map_add_action(G_ACTION_MAP(r->window), G_ACTION(action));
 }
 
 static void activated(GtkApplication *app, ReaderWindow *r) {
@@ -211,18 +353,38 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_label_set_ellipsize(GTK_LABEL(r->title), PANGO_ELLIPSIZE_END);
     gtk_widget_add_css_class(r->title, "title");
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), r->title);
-    GtkWidget *controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    add_window_action(r, "settings", G_CALLBACK(show_settings));
+    r->settings_button = gtk_button_new_with_label("Settings");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(r->settings_button), "win.settings");
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), r->settings_button);
+    r->paging = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     r->previous = page_button("go-previous-symbolic", "Previous page", r);
     r->next = page_button("go-next-symbolic", "Next page", r);
     r->page = gtk_label_new(NULL);
-    gtk_box_append(GTK_BOX(controls), r->previous);
-    gtk_box_append(GTK_BOX(controls), r->page);
-    gtk_box_append(GTK_BOX(controls), r->next);
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), controls);
+    gtk_box_append(GTK_BOX(r->paging), r->previous);
+    gtk_box_append(GTK_BOX(r->paging), r->page);
+    gtk_box_append(GTK_BOX(r->paging), r->next);
+    r->scratchpad = scratchpad_panel_new();
+    gtk_box_append(GTK_BOX(r->paging), scratchpad_panel_toggle(r->scratchpad));
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), r->paging);
     gtk_window_set_titlebar(r->window, header);
 
     GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_window_set_child(r->window, body);
+    r->body = body;
+    r->screens = GTK_STACK(gtk_stack_new());
+    gtk_stack_set_hhomogeneous(r->screens, FALSE);
+    gtk_stack_set_vhomogeneous(r->screens, FALSE);
+    GtkWidget *screen_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    r->notice = gtk_label_new(NULL);
+    gtk_label_set_wrap(GTK_LABEL(r->notice), TRUE);
+    gtk_widget_set_visible(r->notice, FALSE);
+    gtk_box_append(GTK_BOX(screen_box), r->notice);
+    gtk_widget_set_vexpand(GTK_WIDGET(r->screens), TRUE);
+    gtk_box_append(GTK_BOX(screen_box), GTK_WIDGET(r->screens));
+    gtk_window_set_child(r->window, screen_box);
+    gtk_stack_add_child(r->screens, body);
+    r->settings = reader_settings_new(r->window, r, settings_event);
+    gtk_stack_add_child(r->screens, reader_settings_page(r->settings));
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_widget_set_vexpand(paned, TRUE);
     gtk_box_append(GTK_BOX(body), paned);
@@ -261,8 +423,12 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_paned_set_position(GTK_PANED(paned), 220);
     g_signal_connect(r->list, "row-selected", G_CALLBACK(selected), r);
 
+    GtkWidget *reader_area = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     r->stack = gtk_stack_new();
-    gtk_paned_set_end_child(GTK_PANED(paned), r->stack);
+    gtk_widget_set_hexpand(r->stack, TRUE);
+    gtk_box_append(GTK_BOX(reader_area), r->stack);
+    gtk_box_append(GTK_BOX(reader_area), scratchpad_panel_widget(r->scratchpad));
+    gtk_paned_set_end_child(GTK_PANED(paned), reader_area);
     r->message = gtk_label_new(NULL);
     gtk_label_set_wrap(GTK_LABEL(r->message), TRUE);
     gtk_stack_add_child(reader_content_stack(r), r->message);
@@ -302,6 +468,7 @@ int reader_run(ReaderCallback callback, void *context) {
         g_signal_handlers_disconnect_by_data(reader.previous, &reader);
         g_signal_handlers_disconnect_by_data(reader.next, &reader);
         g_clear_object(&reader.window);
+        reader_settings_free(reader.settings);
     }
     return status;
 }

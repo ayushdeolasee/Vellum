@@ -60,3 +60,29 @@ int library_entry_info(DIR *directory, const char *name, struct stat *info) {
     close(fd);
     return S_ISREG(info->st_mode) || S_ISDIR(info->st_mode);
 }
+
+#include <stdlib.h>
+#include <string.h>
+
+int library_parent(int root, const char *relative_directory, int create) {
+    int directory = open_child(root, relative_directory, O_RDONLY | O_DIRECTORY);
+    if (directory >= 0 || errno != ENOENT || !create) return directory;
+
+    char *path = strdup(relative_directory);
+    if (!path) return -1;
+    directory = open_child(root, ".", O_RDONLY | O_DIRECTORY);
+    char *state = NULL;
+    for (char *part = strtok_r(path, "/", &state); part && directory >= 0;
+         part = strtok_r(NULL, "/", &state)) {
+        int child = open_child(directory, part, O_RDONLY | O_DIRECTORY);
+        if (child < 0 && errno == ENOENT &&
+            (mkdirat(directory, part, 0700) == 0 || errno == EEXIST))
+            child = open_child(directory, part, O_RDONLY | O_DIRECTORY);
+        int error = errno;
+        close(directory);
+        directory = child;
+        errno = error;
+    }
+    free(path);
+    return directory;
+}

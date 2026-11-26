@@ -62,7 +62,7 @@ public indirect enum JSONValue: Hashable, Sendable, Codable {
         }
     }
 
-    private struct AnyKey: CodingKey {
+    struct AnyKey: CodingKey {
         var stringValue: String
         var intValue: Int? { nil }
         init(_ stringValue: String) { self.stringValue = stringValue }

@@ -5,8 +5,18 @@ import VellumCore
 
 @MainActor
 final class ReaderController {
-    private let root: URL
+    private let rootOverride: URL?
+    private let preferences = ReaderPreferences()
+    let settings = ReaderSettingsController()
+    private var libraryRoot: URL?
     private var store: ReadOnlyLibraryFileStore?
+    private(set) var writeContext: SharedLibraryWriteContext?
+    private var positionSession: ReaderPositionSession?
+    private var documentKey: DocumentKey?
+    private var displayedPosition: ReadingPosition?
+    private var transition: Task<Void, Never>?
+    private var closing = false
+    private var closeRequested = false
     private var entries: [LibrarySearchEntry] = []
     private var selectedEntry: Int?
     private var searchWork: Task<Void, Never>?
@@ -18,12 +28,13 @@ final class ReaderController {
     private var generation = 0
     private var work: Task<Void, Never>?
 
+    private var scratchpad: ScratchpadPane?
     private var metadataCatalog: ReaderMetadataCatalog?
     private var webPage: WebPageHost?
     private let webProbe: WebProbe?
 
-    init(root: URL, webProbe: WebProbe? = nil) {
-        self.root = root
+    init(rootOverride: URL?, webProbe: WebProbe? = nil) {
+        self.rootOverride = rootOverride
         self.webProbe = webProbe
     }
 
@@ -31,11 +42,11 @@ final class ReaderController {
         guard shell_install_pump(SHELL_AUTO, serviceSwiftMainQueue) >= 0 else { return 1 }
         defer { shell_remove_pump() }
         let status = withExtendedLifetime(self) {
-            reader_run({ window, event, entry, context in
+            reader_run({ window, event, entry, text, context in
                 precondition(shell_on_gtk_thread())
                 MainActor.assumeIsolated {
                     let owner = Unmanaged<ReaderController>.fromOpaque(context!).takeUnretainedValue()
-                    owner.handle(event, entry: Int(entry), window: window!)
+                    owner.handle(event, entry: Int(entry), text: text, window: window!)
                 }
             }, Unmanaged.passUnretained(self).toOpaque())
         }
@@ -60,62 +71,316 @@ final class ReaderController {
         generation == token && !Task.isCancelled
     }
 
-    private func handle(_ event: ReaderEvent, entry: Int, window: OpaquePointer) {
+    private func handle(_ event: ReaderEvent, entry: Int, text: UnsafePointer<CChar>?, window: OpaquePointer) {
         switch event {
         case READER_OPEN:
             replaceWork { token in
-                do {
-                    let root = try await RootDirectory.open(self.root)
-                    let store = ReadOnlyLibraryFileStore(root: root)
-                    let (entries, catalog) = try await LibraryCatalog.searchEntries(in: store)
-                    guard self.isCurrent(token) else { return }
-                    self.store = store
-                    self.metadataCatalog = catalog
-                    self.entries = entries
-                    self.showRows(entries.indices, window: window)
-                    if entries.isEmpty {
-                        reader_set_message(window, "Vellum", "No documents in this library.")
-                    } else {
-                        reader_enable_search(window)
-                        reader_select_row(window, 0)
-                    }
-                } catch {
-                    guard self.isCurrent(token) else { return }
-                    reader_set_message(window, "Vellum", "Could not open the library: \(error)")
-                }
+                let provider = await self.preferences.loadProvider()
+                let root: URL
+                if let explicit = self.rootOverride { root = explicit }
+                else { root = await self.preferences.loadLibrary() }
+                guard self.isCurrent(token) else { return }
+                self.settings.configure(provider: provider, panel: reader_settings(window))
+                self.openLibrary(root, window: window)
             }
+        case READER_CHOOSE_LIBRARY:
+            guard let text, let path = String(validatingCString: text), path.hasPrefix("/") else { return }
+            leaveDocument(window, flushDrafts: true) {
+                self.openLibrary(URL(fileURLWithPath: path, isDirectory: true), remember: true, window: window)
+            }
+        case READER_REOPEN_LIBRARY:
+            if let libraryRoot {
+                leaveDocument(window, flushDrafts: true) { self.openLibrary(libraryRoot, window: window) }
+            }
+        case READER_TOGGLE_EDITING:
+            guard let store else { return }
+            leaveDocument(window, flushDrafts: true) {
+                self.changeEditing(in: store, window: window)
+            }
+        case READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY:
+            settings.handle(event, index: entry, text: text, panel: reader_settings(window))
         case READER_SELECT:
             guard entries.indices.contains(entry), entry != selectedEntry else { return }
-            selectedEntry = entry
-            selection = entries[entry].file.url
-            bytes = nil
-            pdfTitle = nil
-            pageCount = 0
-            pageIndex = 0
-            webPage = nil
-            if let file = selection, file.pathExtension.lowercased() == "vellumweb" {
-                showArchive(file, window: window)
-            } else {
-                showPage(0, window: window)
+            leaveDocument(window, flushDrafts: false) {
+                self.resetDocument()
+                self.selectedEntry = entry
+                let file = self.entries[entry].file.url
+                self.selection = file
+                if file.pathExtension.lowercased() == "vellumweb" {
+                    self.showArchive(file, window: window)
+                } else {
+                    self.showPage(0, window: window)
+                }
             }
         case READER_PREVIOUS:
             if pageIndex > 0 { showPage(pageIndex - 1, window: window) }
         case READER_NEXT:
             if pageIndex + 1 < pageCount { showPage(pageIndex + 1, window: window) }
         case READER_SEARCH:
+            guard !entries.isEmpty else { return }
             updateSearch(String(cString: reader_search_query(window)), window: window)
+        case READER_CLOSE_REQUEST:
+            if transition != nil { closeRequested = true; return }
+            leaveDocument(window, flushDrafts: true) {
+                self.webPage?.session = nil
+                self.positionSession = nil
+                reader_commit_close(window)
+            }
         case READER_CLOSE:
-            webPage = nil
+            closing = true
+            let changing = transition
             let search = searchWork
             search?.cancel()
+            let pendingSettings = settings.beginClose()
             replaceWork { _ in
+                await changing?.value
+                await self.flushPosition()
+                if await self.scratchpad?.flush() == false, await self.scratchpad?.recoverPending() == false {
+                    FileHandle.standardError.write(Data("Could not recover scratchpad drafts in local device state.\n".utf8))
+                }
+                self.webPage = nil
+                await self.writeContext?.retire()
                 await search?.value
+                await pendingSettings?.value
+                await self.scratchpad?.shutdown()
                 await PdfiumActor.shared.shutdown()
                 reader_finish_close(window)
             }
         default:
             preconditionFailure("Unknown reader event")
         }
+    }
+
+    private func flushPosition() async {
+        guard let session = positionSession else { return }
+        if let point = await webPage?.location() { session.moved(point) }
+        await session.flush()
+    }
+
+    private func confirmLeaving(_ window: OpaquePointer, scratchpad: Bool) async -> Bool {
+        // The dialog always replies once, including when GTK shuts down.
+        final class Reply {
+            let continuation: CheckedContinuation<Bool, Never>
+            init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+        }
+        return await withCheckedContinuation { continuation in
+            reader_confirm_leave(window, scratchpad, { owner, discard in
+                Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: discard)
+            }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
+        }
+    }
+
+    private func recoveredDraftChoice(_ window: OpaquePointer) async -> Int32 {
+        final class Reply {
+            let continuation: CheckedContinuation<Int32, Never>
+            init(_ continuation: CheckedContinuation<Int32, Never>) { self.continuation = continuation }
+        }
+        return await withCheckedContinuation { continuation in
+            reader_confirm_recovered(window, { owner, choice in
+                Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: choice)
+            }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
+        }
+    }
+
+    private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
+        guard !closing, transition == nil else { return }
+        if positionSession == nil && scratchpad?.pendingSave == nil && (!flushDrafts || scratchpad == nil) { proceed(); return }
+        reader_set_close_pending(window, true)
+        let rendering = work
+        transition = Task {
+            await rendering?.value
+            do {
+                await scratchpad?.pendingSave?.value
+                await flushPosition()
+                if flushDrafts, let scratchpad, await scratchpad.flush() == false {
+                    let recovered = await scratchpad.recoverPending()
+                    let discard: Bool
+                    if recovered {
+                        let choice = await recoveredDraftChoice(window)
+                        guard choice == 1 || choice == 2 else { throw LibraryFileError.retryable }
+                        discard = choice == 2
+                    } else {
+                        guard await confirmLeaving(window, scratchpad: true) else { throw LibraryFileError.retryable }
+                        discard = true
+                    }
+                    try await scratchpad.releaseDrafts(discard: discard)
+                }
+                guard !closing else { return }
+                transition = nil
+                reader_set_close_pending(window, false)
+                if closeRequested {
+                    closeRequested = false
+                    handle(READER_CLOSE_REQUEST, entry: -1, text: nil, window: window)
+                } else {
+                    proceed()
+                }
+            } catch {
+                guard !closing else { return }
+                transition = nil
+                closeRequested = false
+                reader_set_close_pending(window, false)
+                let message = "Could not save changes. This document is still open."
+                reader_show_status(window, message)
+                reader_settings_set_library(reader_settings(window), libraryRoot?.path ?? "", message, false)
+                if let selectedEntry { reader_reselect_entry(window, Int32(selectedEntry)) }
+            }
+        }
+    }
+
+    private func changeEditing(in store: ReadOnlyLibraryFileStore, window: OpaquePointer) {
+        let panel = reader_settings(window)!
+        reader_set_close_pending(window, true)
+        let enabling = writeContext == nil
+        transition = Task {
+            defer {
+                transition = nil
+                if !closing {
+                    reader_set_close_pending(window, false)
+                    if closeRequested {
+                        closeRequested = false
+                        handle(READER_CLOSE_REQUEST, entry: -1, text: nil, window: window)
+                    }
+                }
+            }
+            do {
+                var message = enabling ? "Shared editing enabled for this folder." : "This folder is read only."
+                do { try await preferences.saveEditing(enabling, for: store.root) }
+                catch {
+                    if enabling { throw error }
+                    message = "Read only for this session. Could not save the setting for next launch."
+                }
+                let next: SharedLibraryWriteContext?
+                do { next = enabling ? try await SharedLibraryWriteContext.activate(root: store.root) : nil }
+                catch {
+                    try await preferences.saveEditing(false, for: store.root)
+                    throw error
+                }
+                await scratchpad?.shutdown()
+                await writeContext?.retire()
+                guard !closing else { await next?.retire(); return }
+                writeContext = next
+                let storage = await scratchpadStorage(files: store, context: next)
+                guard !closing else { return }
+                scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
+                scratchpad?.select(documentStorageKey)
+                positionSession = positionWriter(key: documentKey, restored: nil, window: window)
+                webPage?.session = positionSession
+                if let point = await webPage?.location() ?? displayedPosition { positionSession?.moved(point) }
+                reader_set_editing(window, enabling, true)
+                reader_settings_set_library(panel, store.root.url.path, message, false)
+                reader_show_status(window, message)
+            } catch {
+                reader_settings_set_library(panel, store.root.url.path, "Could not change editing mode: \(error)", false)
+            }
+        }
+    }
+
+    private var documentStorageKey: String?
+
+    private func positionWriter(key: DocumentKey?, restored: ReadingPosition?, window: OpaquePointer) -> ReaderPositionSession? {
+        let name = selection?.lastPathComponent ?? "this document"
+        return ReaderPositionSession(context: writeContext, key: key, restored: restored) {
+            reader_notice(window, "Could not save the reading position for \(name). Its previous position was kept.")
+        }
+    }
+
+    private func bindPosition(key: DocumentKey?, storageKey: String?, restored: ReadingPosition?, window: OpaquePointer) {
+        documentKey = key
+        documentStorageKey = storageKey
+        positionSession = positionWriter(key: key, restored: restored, window: window)
+        scratchpad?.select(storageKey)
+    }
+
+    private func openLibrary(_ path: URL, remember: Bool = false, window: OpaquePointer) {
+        let search = searchWork
+        search?.cancel()
+        searchWork = nil
+        resetDocument()
+        let oldContext = writeContext
+        writeContext = nil
+        reader_set_editing(window, false, false)
+        store = nil
+        metadataCatalog = nil
+        entries = []
+        libraryRoot = path
+        reader_reset_search(window)
+        reader_set_message(window, "Vellum", "Opening library…")
+        let panel = reader_settings(window)!
+        reader_settings_set_library(panel, path.path, "Opening library…", true)
+
+        replaceWork { token in
+            await search?.value
+            await self.scratchpad?.shutdown()
+            self.scratchpad = nil
+            await oldContext?.retire()
+            guard self.isCurrent(token) else { return }
+            do {
+                let root = try await RootDirectory.open(path)
+                let store = ReadOnlyLibraryFileStore(root: root)
+                let (entries, catalog) = try await LibraryCatalog.searchEntries(in: store)
+                guard self.isCurrent(token) else { return }
+                var message = ""
+                if remember {
+                    do { try await self.preferences.saveLibrary(path) }
+                    catch { message = "Could not remember this folder." }
+                }
+                guard self.isCurrent(token) else { return }
+                var context: SharedLibraryWriteContext?
+                if await self.preferences.editingEnabled(for: root) {
+                    do { context = try await SharedLibraryWriteContext.activate(root: root) }
+                    catch { message = "Could not enable shared editing. This folder is read only." }
+                }
+                let storage = await self.scratchpadStorage(files: store, context: context)
+                guard self.isCurrent(token) else { await context?.retire(); return }
+                self.writeContext = context
+                reader_set_editing(window, context != nil, true)
+                self.scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
+                self.store = store
+                self.metadataCatalog = catalog
+                self.entries = entries
+                reader_settings_set_library(panel, path.path, message, false)
+                self.showRows(entries.indices, window: window)
+                if entries.isEmpty {
+                    reader_set_message(window, "Vellum", "No documents in this library.")
+                } else {
+                    reader_enable_search(window)
+                    reader_select_row(window, 0)
+                }
+            } catch {
+                guard self.isCurrent(token) else { return }
+                let message = "Could not open this library folder."
+                reader_settings_set_library(panel, path.path, message, false)
+                reader_set_message(window, "Vellum", message)
+            }
+        }
+    }
+
+    private func resetDocument() {
+        documentKey = nil
+        documentStorageKey = nil
+        displayedPosition = nil
+        positionSession = nil
+        if writeContext != nil { metadataCatalog = nil }
+        scratchpad?.beginSelection()
+        selectedEntry = nil
+        selection = nil
+        bytes = nil
+        pdfTitle = nil
+        pageCount = 0
+        pageIndex = 0
+        webPage = nil
+    }
+
+    private func scratchpadStorage(files: ReadOnlyLibraryFileStore, context: SharedLibraryWriteContext?) async -> ScratchpadStorage {
+        if let writeContext = context {
+            return ScratchpadStorage(files: files, importDirectory: files.root.url) { url, data, expected in
+                try await writeContext.replace(url, with: data, ifCurrent: expected)
+            }
+        }
+        #if DEBUG && SCRATCHPAD_QUALIFICATION
+        if let storage = await ScratchpadQualification.storage(files: files) { return storage }
+        #endif
+        return ScratchpadStorage(files: files)
     }
 
     private func updateSearch(_ query: String, window: OpaquePointer) {
@@ -164,8 +429,13 @@ final class ReaderController {
                 let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
+                self.bindPosition(key: metadata.storageKey.flatMap { DocumentKey(rawValue: "web:" + $0) },
+                                  storageKey: metadata.storageKey, restored: metadata.position, window: window)
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
-                                           probe: self.webProbe) {
+                                           probe: self.webProbe, restoring: metadata.position, session: self.positionSession,
+                                           onLocation: { point in
+                    reader_article_location(window, Int32(point.page), Int32(((point.scrollFraction ?? 0) * 100).rounded()))
+                }) {
                     let position = metadata.position.map { position in
                         "Saved page \(position.page)" + (position.pageCount.map { " of \($0)" } ?? "")
                     }
@@ -173,6 +443,7 @@ final class ReaderController {
                 }
             } catch {
                 guard self.isCurrent(token) else { return }
+                self.scratchpad?.select(nil)
                 reader_set_message(window, title, "Could not open archive: \(error.localizedDescription)")
             }
         }
@@ -198,15 +469,21 @@ final class ReaderController {
                     guard self.isCurrent(token) else { return }
                     let opening = try await PdfiumDocument.openingInfo(in: loaded)
                     guard self.isCurrent(token) else { return }
+                    var restored: ReadingPosition?
+                    var storageKey: String?
                     if let catalog = try? await self.catalog(in: store, token: token),
                        let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
                                                                stamp: opening.stableIdentifier, fallbackTitle: title) {
+                        restored = saved.position
+                        storageKey = saved.storageKey
                         title = saved.displayTitle
                         if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
                     }
                     guard self.isCurrent(token) else { return }
+                    self.bindPosition(key: storageKey.map { .pdf(stableIdentifier: $0) },
+                                      storageKey: storageKey, restored: restored, window: window)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index
@@ -222,6 +499,9 @@ final class ReaderController {
                 guard self.isCurrent(token) else { return }
                 MainActor.preconditionIsolated()
                 precondition(shell_on_gtk_thread())
+                let point = ReadingPosition(page: index + 1, pageCount: info.pageCount)
+                self.displayedPosition = point
+                self.positionSession?.moved(point)
                 bitmap.pixels.withUnsafeBytes { buffer in
                     reader_set_page(window, title, Int32(index + 1), Int32(info.pageCount),
                                     buffer.bindMemory(to: UInt8.self).baseAddress,
@@ -229,6 +509,7 @@ final class ReaderController {
                 }
             } catch {
                 guard self.isCurrent(token) else { return }
+                if self.bytes == nil { self.scratchpad?.select(nil) }
                 let message: String
                 switch error {
                 case PdfiumError.passwordRequired: message = "This PDF requires a password."

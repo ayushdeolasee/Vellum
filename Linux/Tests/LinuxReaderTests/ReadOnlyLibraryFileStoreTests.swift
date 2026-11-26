@@ -98,6 +98,78 @@ struct ReadOnlyLibraryFileStoreTests {
         }
     }
 
+    @Test func conditionalWritesStayWithThePinnedRootAndKeepConcurrentBytes() async throws {
+        try await withLibrary { url, store in
+            let moved = url.deletingLastPathComponent().appendingPathComponent("moved", isDirectory: true)
+            try fm.moveItem(at: url, to: moved)
+            try fm.createDirectory(at: url, withIntermediateDirectories: false)
+            let file = url.appendingPathComponent("notes/sub/file", isDirectory: false)
+            let old = Data([1])
+            #expect(try await store.root.replace(file, with: old, ifCurrent: nil, limit: 1))
+            let second = try await RootDirectory.open(moved)
+            let movedFile = moved.appendingPathComponent("notes/sub/file", isDirectory: false)
+            async let first = store.root.replace(file, with: Data([2]), ifCurrent: old, limit: 1)
+            async let other = second.replace(movedFile, with: Data([3]), ifCurrent: old, limit: 1)
+            let winners = try await [first, other]
+            #expect(winners.filter { $0 }.count == 1)
+            #expect(try Data(contentsOf: movedFile) == Data([winners[0] ? 2 : 3]))
+            #expect(try fm.contentsOfDirectory(atPath: url.path).isEmpty)
+            let dir = url.appendingPathComponent("notes/sub", isDirectory: false)
+            await #expect(throws: (any Error).self) {
+                try await store.root.replace(dir, with: old, ifCurrent: nil, limit: 1)
+            }
+            try fm.createSymbolicLink(at: moved.appendingPathComponent("link"), withDestinationURL: url)
+            await #expect(throws: (any Error).self) {
+                try await store.root.replace(url.appendingPathComponent("link/outside"), with: old, ifCurrent: nil, limit: 1)
+            }
+            await #expect(throws: ReaderFileError.fileTooLarge) {
+                try await store.root.replace(file, with: Data([1, 2]), ifCurrent: old, limit: 1)
+            }
+            #expect(try fm.contentsOfDirectory(atPath: url.path).isEmpty)
+        }
+    }
+
+    @Test func retiringJoinsContendedWritesAndOlderSamplesCannotReplaceNewerPositions() async throws {
+        try await withLibrary { url, files in
+            let device = DeviceIdentity(id: DeviceID(UUID().uuidString.lowercased()), name: "Fixture", platform: "linux")
+            let writer = try await SharedLibraryWriteContext.prepare(root: files.root, device: device)
+            let key = DocumentKey.web(normalizedURL: "https://example.invalid/fixture")
+            let instant = Date.now
+            let positions = url.appendingPathComponent(".vellum/positions", isDirectory: true)
+            let record = try PositionLayout.fileURL(in: positions, for: device.id)
+            try await writer.savePosition(.init(page: 4), for: key, at: instant)
+            let before = try await files.read(record)
+            try await writer.savePosition(.init(page: 1), for: key, at: instant.addingTimeInterval(-2))
+            #expect(try await files.read(record) == before)
+
+            let lock = open(positions.path, O_DIRECTORY | O_RDONLY | O_CLOEXEC)
+            try #require(lock >= 0)
+            defer { _ = close(lock) }
+            try #require(flock(lock, LOCK_EX) == 0)
+            let write = Task { try await writer.replace(record, with: Data(), ifCurrent: before) }
+            // The fresh parent fd proves the replacement is admitted and waiting
+            // on our lock before retire closes admission.
+            let deadline = ContinuousClock.now + .seconds(2)
+            func openDescriptions() throws -> Int {
+                try fm.contentsOfDirectory(atPath: "/proc/self/fd").filter {
+                    (try? fm.destinationOfSymbolicLink(atPath: "/proc/self/fd/" + $0)) == positions.path
+                }.count
+            }
+            while try openDescriptions() < 2 && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            try #require(try openDescriptions() >= 2)
+            await writer.retire()
+            await #expect(throws: LibraryFileError.retryable) { try await write.value }
+            #expect(ContinuousClock.now < deadline)
+            _ = flock(lock, LOCK_UN)
+            await #expect(throws: ReaderFileError.readOnly) {
+                try await writer.replace(record, with: Data(), ifCurrent: before)
+            }
+            #expect(try await files.read(record) == before)
+        }
+    }
+
     @Test func enforcesSizeBeforeAndDuringRead() async throws {
         try await withLibrary { url, store in
             // Sparse oversized fixtures exercise each policy without storing the payloads.
