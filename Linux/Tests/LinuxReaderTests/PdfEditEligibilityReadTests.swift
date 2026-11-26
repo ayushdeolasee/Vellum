@@ -43,8 +43,8 @@ extension PdfiumTests {
 
         let cases: [(String, Data, PdfEditEligibility, String?)] = [
             ("classic", classic, .editable, nil),
-            ("xref stream", try fixture("xref-stream-objstm"), .readOnly(.unsupportedXref), nil),
-            ("hybrid", hybrid, .readOnly(.unsupportedXref), nil),
+            ("xref stream", try fixture("xref-stream-objstm"), .editable, nil),
+            ("hybrid", hybrid, .editable, nil),
             ("encrypted", try fixture("encrypted-user-pass"), .readOnly(.encrypted), "vellum"),
             ("signed", try fixture("digitally-signed"), .readOnly(.signed), nil),
             ("certified", certified, .readOnly(.signed), nil),

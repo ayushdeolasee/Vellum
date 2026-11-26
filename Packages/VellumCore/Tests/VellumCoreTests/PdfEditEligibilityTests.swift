@@ -29,7 +29,7 @@ final class PdfEditEligibilityTests: XCTestCase {
             ("classic-two-column", .editable), ("rotated-all-angles", .editable),
             ("ipad-vellum-ink", .editable), ("pdf-ink-erased-full", .editable),
             ("pdf-ink-erased-partial", .editable), ("pdf-ink-marker", .editable), ("pdf-ink-rotated", .editable),
-            ("foreign-annotations", .editable), ("xref-stream-objstm", .readOnly(.unsupportedXref)),
+            ("foreign-annotations", .editable), ("xref-stream-objstm", .editable),
             ("encrypted-user-pass", .readOnly(.encrypted)), ("digitally-signed", .readOnly(.signed))
         ] {
             let bytes = try Data(contentsOf: PdfFixtureBuilder.fixtureURL(name))
@@ -77,7 +77,7 @@ final class PdfEditEligibilityTests: XCTestCase {
 
         for (key, reason): (String, PdfReadOnlyReason) in [("/Encrypt 3 0 R", .encrypted), ("/XRefStm 9", .unsupportedXref)] {
             let base = try replacing("/Size 4", with: "/Size 4 \(key)", in: document())
-            let prev = try ClassicPdfFile(data: base).startXref
+            let prev = try ClassicPdfFile(data: document()).startXref
             // Write a fixture trailer that intentionally omits the historical
             // key, independent of which entries Vellum's writer carries over.
             let next = "xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 4 /Root 1 0 R /Prev \(prev) >>\nstartxref\n\(base.count)\n%%EOF\n"
@@ -117,7 +117,7 @@ final class PdfEditEligibilityTests: XCTestCase {
         for (from, to) in [("/Size 5", "/Size 1"), ("/Size 5", "/Size 9223372036854775807"),
                            ("xref\n0 5", "xref\n9223372036854775807 5"), ("0000000009 00000 n", "0000000010 00000 n"),
                            ("0000000009 00000 n", "0000000009 00003 n")] {
-            classify(try replacing(from, with: to, in: base), .readOnly(to.contains("00003 n") ? .nonzeroGeneration : .malformed))
+            classify(try replacing(from, with: to, in: base), .readOnly(to.contains("00003 n") ? .nonzeroGeneration : (to.hasPrefix("xref") ? .inspectionLimit : .malformed)))
         }
     }
 
@@ -151,7 +151,7 @@ final class PdfEditEligibilityTests: XCTestCase {
         for n in [0, 1, 8, 12, base.count / 2, base.count - 4] {
             classify(base.prefix(n), .readOnly(.malformed))
         }
-        classify(document(extra: [String(repeating: "[", count: 65) + String(repeating: "]", count: 65)]), .readOnly(.malformed))
+        classify(document(extra: [String(repeating: "[", count: 65) + String(repeating: "]", count: 65)]), .readOnly(.inspectionLimit))
         classify(document("/Rotate 0 /Rotate 90"), .readOnly(.malformed))
         classify(document(extra: ["<< /Type /Example /Nested [<01> << /Name (endobj) >>] >>"]), .readOnly(.malformed))
         var bytes = base
@@ -160,9 +160,10 @@ final class PdfEditEligibilityTests: XCTestCase {
             increment.setObject(3, source: Array(page().utf8))
             bytes = increment.appended()
         }
-        classify(bytes, .editable)
+        try PdfEditEligibility.inspect(bytes, reservingRevision: false)
+        classify(bytes, .readOnly(.inspectionLimit))
         var increment = PdfIncrement(file: try ClassicPdfFile(data: bytes))
         increment.setObject(3, source: Array(page().utf8))
-        classify(increment.appended(), .readOnly(.malformed))
+        classify(increment.appended(), .readOnly(.inspectionLimit))
     }
 }

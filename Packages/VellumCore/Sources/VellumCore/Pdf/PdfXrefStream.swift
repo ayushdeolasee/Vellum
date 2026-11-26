@@ -15,8 +15,8 @@ struct PdfStreamDecoder {
     typealias Failure = PdfReadOnlyReason
 
     mutating func decode(_ input: ArraySlice<UInt8>, dictionary: [String: Value]) throws -> [UInt8] {
-        guard input.count <= remaining,
-              dictionary["F"] == nil, dictionary["FFilter"] == nil, dictionary["FDecodeParms"] == nil
+        guard input.count <= remaining else { throw Failure.inspectionLimit }
+        guard dictionary["F"] == nil, dictionary["FFilter"] == nil, dictionary["FDecodeParms"] == nil
         else { throw Failure.unsupportedXref }
         guard let filter = dictionary["Filter"] else {
             guard dictionary["DecodeParms"] == nil else { throw Failure.unsupportedXref }
@@ -31,7 +31,33 @@ struct PdfStreamDecoder {
             }
             return value
         }
-        guard try single(filter)?.name == "FlateDecode" else { throw Failure.unsupportedXref }
+        let name = try single(filter)?.name
+        if name == "ASCIIHexDecode" {
+            guard dictionary["DecodeParms"] == nil else { throw Failure.unsupportedXref }
+            var result: [UInt8] = []
+            var high: UInt8?
+            var ended = false
+            for byte in input where !PdfBytes.isWhitespace(byte) {
+                guard !ended else { throw Failure.malformed }
+                if byte == 62 { ended = true; continue }
+                let digit: UInt8
+                switch byte {
+                case 48...57: digit = byte - 48
+                case 65...70: digit = byte - 55
+                case 97...102: digit = byte - 87
+                default: throw Failure.malformed
+                }
+                if let first = high {
+                    result.append(first << 4 | digit)
+                    high = nil
+                } else { high = digit }
+            }
+            guard ended else { throw Failure.malformed }
+            if let high { result.append(high << 4) }
+            remaining -= result.count
+            return result
+        }
+        guard name == "FlateDecode" else { throw Failure.unsupportedXref }
         var stream = z_stream()
         guard inflateInit_(&stream, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK
         else { throw Failure.malformed }
@@ -48,7 +74,7 @@ struct PdfStreamDecoder {
                     return inflate(&stream, Z_NO_FLUSH)
                 }
                 let count = chunk.count - Int(stream.avail_out)
-                guard count <= remaining else { throw Failure.malformed }
+                guard count <= remaining else { throw Failure.inspectionLimit }
                 remaining -= count
                 output.append(contentsOf: chunk.prefix(count))
                 if status == Z_STREAM_END {
@@ -79,7 +105,7 @@ struct PdfStreamDecoder {
             // TIFF differences are per component (including packed samples).
             // Charge sample work as well as bytes for sub-byte components.
             let rows = output.count / row
-            guard rows * samples <= remaining else { throw Failure.malformed }
+            guard rows * samples <= remaining else { throw Failure.inspectionLimit }
             remaining -= rows * samples
             for base in stride(from: 0, to: output.count, by: row) {
                 var previous = [Int](repeating: 0, count: colors)
@@ -132,7 +158,8 @@ struct PdfStreamDecoder {
     }
 
     static func rows(_ bytes: [UInt8], dictionary: [String: Value], limit: Int) throws -> [Int: PdfXrefRow] {
-        guard let size = dictionary["Size"]?.integer, (1...limit).contains(size),
+        if let size = dictionary["Size"]?.integer, size > limit { throw Failure.inspectionLimit }
+        guard let size = dictionary["Size"]?.integer, size > 0,
               case .array(let fields) = dictionary["W"], fields.count == 3 else { throw Failure.malformed }
         let widths = fields.compactMap(\.integer)
         guard widths.count == 3, widths.allSatisfy({ (0...8).contains($0) }) else { throw Failure.malformed }

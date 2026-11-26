@@ -46,7 +46,7 @@ public enum PdfInfoIncrement {
         }
 
         increment.setObject(infoNumber, source: info.sourceBytes)
-        return increment.appended(infoNumber: infoNumber)
+        return try increment.checkedAppend(infoNumber: infoNumber)
     }
 
     /// u32::from_str error surface, mirrored: empty / non-digit / overflow.

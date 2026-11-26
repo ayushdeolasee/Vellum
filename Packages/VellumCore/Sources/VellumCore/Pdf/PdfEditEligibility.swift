@@ -1,8 +1,21 @@
 import Foundation
 
-public enum PdfReadOnlyReason: Error, Equatable, Sendable {
+public enum PdfReadOnlyReason: LocalizedError, Equatable, Sendable {
     case unsupportedXref, encrypted, signed, nonzeroGeneration
-    case malformed, ambiguousAnnotation, unsupportedGeometry
+    case malformed, ambiguousAnnotation, unsupportedGeometry, inspectionLimit
+
+    public var errorDescription: String? {
+        switch self {
+        case .inspectionLimit: "Vellum reached its PDF inspection limit. You can keep reading this document, but further edits cannot be saved safely."
+        case .unsupportedXref: "This PDF uses an unsupported cross-reference format."
+        case .encrypted: "Editing encrypted PDFs is unavailable."
+        case .signed: "This PDF contains signature information. Vellum keeps it read-only."
+        case .nonzeroGeneration: "This PDF uses object generations that Vellum cannot edit."
+        case .malformed: "Vellum could not verify this PDF’s structure."
+        case .ambiguousAnnotation: "Vellum could not uniquely identify the annotation or its owner."
+        case .unsupportedGeometry: "Vellum cannot safely map annotations onto this PDF’s pages."
+        }
+    }
 }
 
 public enum PdfEditEligibility: Equatable, Sendable {
@@ -12,17 +25,21 @@ public enum PdfEditEligibility: Equatable, Sendable {
     /// Classify the byte snapshot obtained by the reader, before normalization.
     /// Unknown syntax or an exhausted work budget leaves the reader read-only.
     public static func classify(_ original: Data) -> Self {
-        guard original.count <= 128 * 1024 * 1024 else { return .readOnly(.malformed) }
         do {
-            let structure = PdfClassicStructure(original)
-            try structure.inspect()
-            if structure.usesXrefStreams { return .readOnly(.unsupportedXref) }
+            try inspect(original, reservingRevision: true)
             return .editable
         } catch let reason as PdfReadOnlyReason {
             return .readOnly(reason)
         } catch {
             return .readOnly(.malformed)
         }
+    }
+
+    // The last provable revision can be saved and read. Classifying it for
+    // another edit must report the limit before starting a new increment.
+    static func inspect(_ data: Data, reservingRevision: Bool) throws {
+        guard data.count <= 128 * 1024 * 1024 else { throw PdfReadOnlyReason.inspectionLimit }
+        try PdfClassicStructure(data).inspect(reservingRevision: reservingRevision)
     }
 }
 
@@ -84,7 +101,8 @@ extension PdfClassicStructure {
             var visited = Set<Int>()
             func field(_ value: Value, depth: Int) throws {
                 try charge()
-                guard depth < 64, let n = value.reference, visited.insert(n).inserted,
+                guard depth < 64 else { throw Reason.inspectionLimit }
+                guard let n = value.reference, visited.insert(n).inserted,
                       let node = objects[n]?.dictionary else { throw Reason.malformed }
                 if let children = node["Kids"] {
                     guard case .array(let items) = resolved(children) else { throw Reason.malformed }
@@ -103,7 +121,8 @@ extension PdfClassicStructure {
         var pageNumber = 0
         func walk(_ n: Int, parent: Int?, inherited: [String: Value], depth: Int) throws -> Int {
             try charge()
-            guard depth < 64, visited.insert(n).inserted, let node = objects[n]?.dictionary,
+            guard depth < 64 else { throw Reason.inspectionLimit }
+            guard visited.insert(n).inserted, let node = objects[n]?.dictionary,
                   node["Parent"]?.reference == parent, parent != nil || node["Parent"] == nil
             else { throw Reason.malformed }
             var geometry = inherited

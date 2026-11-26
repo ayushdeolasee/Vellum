@@ -44,6 +44,7 @@ final class PdfClassicStructure {
     private(set) var objects: [Int: Value] = [:]
     private var streams: [Int: Value] = [:] // Keep stream dictionaries for security checks.
     private var previousXref: Int?
+    private var previousWasTable: Bool?
     private var previousSize = 0
     private var hadInfo = false
     private var hadID = false
@@ -61,7 +62,7 @@ final class PdfClassicStructure {
     }
 
     func charge(_ count: Int = 1) throws {
-        guard count <= remaining else { throw Reason.malformed }
+        guard count <= remaining else { throw Reason.inspectionLimit }
         remaining -= count
     }
 
@@ -73,7 +74,7 @@ final class PdfClassicStructure {
         let payload: Range<Int>
     }
 
-    func inspect(forEditing: Bool = true) throws {
+    func inspect(forEditing: Bool = true, reservingRevision: Bool = false) throws {
         guard consume("%PDF-"), i + 3 < bytes.count,
               bytes[i + 1] == 46, [10, 13].contains(bytes[i + 3]),
               (bytes[i] == 49 && (48...55).contains(bytes[i + 2])) || (bytes[i] == 50 && bytes[i + 2] == 48)
@@ -82,7 +83,7 @@ final class PdfClassicStructure {
         var revisions = 0
         repeat {
             revisions += 1
-            guard revisions <= 64 else { throw Reason.malformed }
+            guard revisions <= 64 else { throw Reason.inspectionLimit }
             var newObjects = Set<Int>()
             var xrefStream: XrefStream?
             skipOuterTrivia()
@@ -90,11 +91,12 @@ final class PdfClassicStructure {
                 try charge()
                 let offset = i
                 let number = try unsigned()
-                guard (1..<objectLimit).contains(number), newObjects.insert(number).inserted
+                guard number < objectLimit else { throw Reason.inspectionLimit }
+                guard number > 0, newObjects.insert(number).inserted
                 else { throw Reason.malformed }
                 guard try unsigned() == 0 else { throw Reason.nonzeroGeneration }
                 try keyword("obj")
-                guard i - offset < 64 else { throw Reason.malformed }
+                guard i - offset < 64 else { throw Reason.inspectionLimit }
                 skipSpace()
                 let bodyStart = i
                 let body = try value()
@@ -135,14 +137,16 @@ final class PdfClassicStructure {
             skipSpace()
         } while i < bytes.count
         guard !forEditing || portableSyntax else { throw Reason.malformed }
+        if reservingRevision && revisions == 64 { throw Reason.inspectionLimit }
     }
 
     /// Parse every member against its header bounds with the same grammar and
     /// work counters as physical objects. A type-2 row must match both fields.
     private func unpack(_ input: ArraySlice<UInt8>, dict: [String: Value]) throws
         -> [(number: Int, value: Value, source: ArraySlice<UInt8>)] {
-        guard let count = dict["N"]?.integer, (1..<objectLimit).contains(count),
+        guard let count = dict["N"]?.integer, count > 0,
               let first = dict["First"]?.integer, first >= 0, dict["Extends"] == nil else { throw Reason.malformed }
+        guard count < objectLimit else { throw Reason.inspectionLimit }
         try charge(count)
         let decoded = try decoder.decode(input, dictionary: dict)
         guard first < decoded.count else { throw Reason.malformed }
@@ -164,7 +168,7 @@ final class PdfClassicStructure {
         return try headers.enumerated().map { index, header in
             let start = first + header.offset
             let end = index + 1 < count ? first + headers[index + 1].offset : decoded.count
-            guard i == start else { throw Reason.malformed }
+            guard i == start, !PdfBytes.isWhitespace(bytes[start]) else { throw Reason.malformed }
             let body = try value()
             let source = bytes[start..<i]
             skipSpace()
@@ -183,7 +187,8 @@ final class PdfClassicStructure {
             while i < bytes.count, bytes[i] == 32 { i += 1 }
             guard i < bytes.count, PdfBytes.isDigit(bytes[i]) else { throw Reason.malformed }
             let count = try unsigned()
-            guard count > 0, first < objectLimit, count <= objectLimit - first else { throw Reason.malformed }
+            guard count > 0 else { throw Reason.malformed }
+            guard first < objectLimit, count <= objectLimit - first else { throw Reason.inspectionLimit }
             try charge(count)
             skipSpace()
             for number in first..<(first + count) {
@@ -243,8 +248,9 @@ final class PdfClassicStructure {
             rows.merge(supplement) { _, streamRow in streamRow }
             guard case .direct(stream.offset, 0) = rows[stream.number] else { throw Reason.malformed }
         }
+
         guard !rows.isEmpty, previousXref != nil || rows[0] != nil,
-              let size = trailer["Size"]?.integer, size >= previousSize, size <= objectLimit,
+              let size = trailer["Size"]?.integer, size >= previousSize,
               size == max(previousSize, (rows.keys.max() ?? -1) + 1),
               !hadInfo || trailer["Info"] != nil, !hadID || trailer["ID"] != nil,
               trailer["Prev"] == nil || trailer["Prev"]?.integer != nil,
@@ -255,6 +261,11 @@ final class PdfClassicStructure {
         guard consume("%%EOF") else { throw Reason.malformed }
         while i < bytes.count, bytes[i] == 32 || bytes[i] == 9 { i += 1 }
         guard i == bytes.count || bytes[i] == 10 || bytes[i] == 13 else { throw Reason.malformed }
+        // PDFKit walks table and stream /Prev chains differently. A hybrid
+        // has a primary table. Keep mixed primary chains readable by the typed
+        // parser, but do not authorize new edits when engines disagree.
+        if forEditing, let previousWasTable, previousWasTable != table { throw Reason.unsupportedXref }
+        previousWasTable = table
         previousXref = xref
         previousSize = size
         hadInfo = trailer["Info"] != nil
@@ -321,7 +332,7 @@ final class PdfClassicStructure {
     }
 
     private func budgetComparison(length: Int, passes: Int) throws {
-        guard length <= remainingComparisonBytes / passes else { throw Reason.malformed }
+        guard length <= remainingComparisonBytes / passes else { throw Reason.inspectionLimit }
         remainingComparisonBytes -= length * passes
     }
 
@@ -379,7 +390,8 @@ final class PdfClassicStructure {
     private func token() throws -> String {
         let start = i
         while i < bytes.count, !PdfBytes.isWhitespace(bytes[i]), !PdfBytes.isDelimiter(bytes[i]) { i += 1 }
-        guard i > start, i - start <= 256, bytes[start..<i].allSatisfy({ (33...126).contains($0) })
+        guard i - start <= 256 else { throw Reason.inspectionLimit }
+        guard i > start, bytes[start..<i].allSatisfy({ (33...126).contains($0) })
         else { throw Reason.malformed }
         return String(decoding: bytes[start..<i], as: UTF8.self)
     }
@@ -390,7 +402,6 @@ final class PdfClassicStructure {
         // The portable writer matches literal key spellings. Encoded names
         // could alias a critical or duplicate key that it would miss.
         guard raw.contains("#") else { return raw }
-        portableSyntax = false
         var decoded: [UInt8] = []
         var chars = raw.utf8[...]
         while let b = chars.popFirst() {
@@ -403,13 +414,18 @@ final class PdfClassicStructure {
                 decoded.append(b)
             }
         }
-        return String(decoding: decoded, as: UTF8.self)
+        let name = String(decoding: decoded, as: UTF8.self)
+        // PdfDictSource also decodes names before removing the hybrid pointer.
+        // The dictionary span comparison below independently checks the key.
+        if name != "XRefStm" { portableSyntax = false }
+        return name
     }
 
     private func value(depth: Int = 0) throws -> Value {
         try charge()
         skipSpace()
-        guard depth < 64, i < bytes.count else { throw Reason.malformed }
+        guard depth < 64 else { throw Reason.inspectionLimit }
+        guard i < bytes.count else { throw Reason.malformed }
         let start = i
         if consume("<<") {
             var dict: [String: Value] = [:]

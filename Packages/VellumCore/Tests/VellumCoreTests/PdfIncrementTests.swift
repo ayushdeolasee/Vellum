@@ -122,7 +122,7 @@ final class PdfIncrementTests: XCTestCase {
 
     func testHybridIncrementKeepsRevisionLocalXrefStreamInOriginalTrailer() throws {
         // The hybrid's stream supplies a type-1 entry for the original Info.
-        // The new classic revision replaces that same object.
+        // The new hybrid revision replaces that same object.
         let objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
                        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>", "<< /Title (old) >>"]
         let base = PdfFixtureBuilder.classicObjects(objects)
@@ -138,7 +138,7 @@ final class PdfIncrementTests: XCTestCase {
         let updated = try PdfInfoIncrement.setMetadataIncrement(normalizedData: original, key: "title", value: "new")
         let file = try ClassicPdfFile(data: updated)
         XCTAssertTrue(updated.starts(with: original))
-        XCTAssertFalse(file.trailer.hasKey("XRefStm"))
+        XCTAssertGreaterThan(try XCTUnwrap(file.trailer.integer(forKey: "XRefStm")), first.startXref)
         XCTAssertEqual(file.trailer.integer(forKey: "Prev"), first.startXref)
         XCTAssertEqual(file.trailer.rawValue(forKey: "ID"), first.trailer.rawValue(forKey: "ID"))
         XCTAssertEqual(file.infoNumber.flatMap(file.objectSource)?.textString(forKey: "Title"), "new")
