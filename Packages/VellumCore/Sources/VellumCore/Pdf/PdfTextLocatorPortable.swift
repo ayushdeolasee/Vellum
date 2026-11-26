@@ -46,6 +46,23 @@ public enum PdfTextLocatorPortable {
         return Selection(utf16Range: range, positionData: position)
     }
 
+    /// Begin on text, then snap the moving endpoint to the nearest grapheme caret.
+    /// Both points use the selected page's top-left display coordinates at zoom 1.
+    public static func selection(in page: ExtractedPageText, fromX x: Double, y: Double,
+                                 toX endX: Double, y endY: Double) -> Selection? {
+        guard [x, y, endX, endY].allSatisfy(\.isFinite),
+              page.charUiRects.contains(where: { box in
+                  guard let box else { return false }
+                  return x >= box.x - 2 && x <= box.x + box.width + 2 &&
+                         y >= box.y - 2 && y <= box.y + box.height + 2
+              }),
+              let a = caretOffset(x: x, y: y, in: page),
+              let b = caretOffset(x: endX, y: endY, in: page) else { return nil }
+        let range = min(a, b)..<max(a, b)
+        guard let data = position(for: range, in: page) else { return nil }
+        return Selection(utf16Range: range, positionData: data)
+    }
+
     /// Resize an in-flight selection. The original range pins the opposite
     /// glyph exactly, including when display rotation changes rectangle order.
     /// All points and output rectangles are in zoom-1, top-left display space.

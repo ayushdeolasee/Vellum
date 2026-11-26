@@ -5,6 +5,8 @@ import VellumCore
 
 @MainActor
 final class ReaderController {
+    private let annotations = PdfAnnotationPane()
+    private let pdfReplacement: (URL) -> PdfConditionalReplace?
     private let root: URL
     private var store: ReadOnlyLibraryFileStore?
     private var entries: [LibrarySearchEntry] = []
@@ -22,7 +24,8 @@ final class ReaderController {
     private var webPage: WebPageHost?
     private let webProbe: WebProbe?
 
-    init(root: URL, webProbe: WebProbe? = nil) {
+    init(root: URL, webProbe: WebProbe? = nil, pdfReplacement: @escaping (URL) -> PdfConditionalReplace? = { _ in nil }) {
+        self.pdfReplacement = pdfReplacement
         self.root = root
         self.webProbe = webProbe
     }
@@ -47,10 +50,12 @@ final class ReaderController {
     private func replaceWork(_ operation: @escaping @MainActor (Int) async -> Void) {
         generation += 1
         let token = generation
+        let annotationSave = annotations.detach()
         let prior = work
         prior?.cancel()
         work = Task {
             await prior?.value
+            await annotationSave?.value
             guard isCurrent(token) else { return }
             await operation(token)
         }
@@ -178,7 +183,7 @@ final class ReaderController {
         }
     }
 
-    private func showPage(_ requestedIndex: Int, window: OpaquePointer) {
+    private func showPage(_ requestedIndex: Int, window: OpaquePointer, restorePosition: Bool = true) {
         guard let file = selection, let store else { return }
         let loadingTitle = pdfTitle ?? file.lastPathComponent
         pageIndex = requestedIndex
@@ -202,7 +207,7 @@ final class ReaderController {
                        let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
                                                                stamp: opening.stableIdentifier, fallbackTitle: title) {
                         title = saved.displayTitle
-                        if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
+                        if restorePosition, let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
                     }
@@ -227,6 +232,15 @@ final class ReaderController {
                                     buffer.bindMemory(to: UInt8.self).baseAddress,
                                     Int32(bitmap.width), Int32(bitmap.height), bitmap.bytesPerRow)
                 }
+                await self.annotations.bind(window: window, bytes: data, index: index, info: info,
+                                            replace: self.pdfReplacement(file), reload: {
+                    self.bytes = nil
+                    self.showPage(index, window: window, restorePosition: false)
+                }, publish: { edited, visible in
+                    guard self.selection == file else { return }
+                    self.bytes = edited
+                    if visible { self.showPage(index, window: window) }
+                })
             } catch {
                 guard self.isCurrent(token) else { return }
                 let message: String

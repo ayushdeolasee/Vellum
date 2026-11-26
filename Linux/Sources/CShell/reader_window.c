@@ -4,6 +4,8 @@
 struct ReaderWindow {
     GtkWindow *window;
     GtkListBox *list;
+    GtkWidget *pdf_page;
+    PdfAnnotations *annotations;
     GtkEventController *keys;
     GtkWidget *search, *no_matches;
     GtkWidget *title, *page, *previous, *next, *message, *picture, *stack, *status;
@@ -71,6 +73,10 @@ GtkStack *reader_content_stack(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread());
     return GTK_STACK(r->stack);
 }
+
+PdfAnnotations *reader_pdf_annotations(ReaderWindow *r) { return r->annotations; }
+
+void reader_pdf_editable(ReaderWindow *r) { gtk_label_set_text(GTK_LABEL(r->status), "PDF open · Editing enabled"); }
 
 void reader_finish_close(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread() && r->closing);
@@ -179,7 +185,7 @@ void reader_set_page(ReaderWindow *r, const char *title, int number, int count,
     g_autoptr(GdkTexture) texture = gdk_memory_texture_new(width, height,
                                       GDK_MEMORY_B8G8R8A8, bytes, stride);
     gtk_picture_set_paintable(GTK_PICTURE(r->picture), GDK_PAINTABLE(texture));
-    gtk_stack_set_visible_child(reader_content_stack(r), r->picture);
+    gtk_stack_set_visible_child(reader_content_stack(r), r->pdf_page);
     set_title(r, title);
     reader_set_position(r, number, count);
     gtk_label_set_text(GTK_LABEL(r->status), "PDF open · Read only");
@@ -268,7 +274,8 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_stack_add_child(reader_content_stack(r), r->message);
     r->picture = gtk_picture_new();
     gtk_picture_set_content_fit(GTK_PICTURE(r->picture), GTK_CONTENT_FIT_CONTAIN);
-    gtk_stack_add_child(reader_content_stack(r), r->picture);
+    r->pdf_page = pdf_annotations_new(r->picture, &r->annotations);
+    gtk_stack_add_child(reader_content_stack(r), r->pdf_page);
     gtk_box_append(GTK_BOX(body), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
     r->status = gtk_label_new(NULL);
     gtk_widget_set_margin_top(r->status, 5);
