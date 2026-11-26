@@ -12,3 +12,5 @@ DIR *library_open_directory(int root, const char *relative_path);
 const char *library_next_name(DIR *directory);
 // 1 for a regular file or directory, 0 for a skipped entry, -1 for a lookup error.
 int library_entry_info(DIR *directory, const char *name, struct stat *info);
+// Fresh directory description below the pinned root. Optionally create missing components.
+int library_parent(int root, const char *relative_directory, int create);
