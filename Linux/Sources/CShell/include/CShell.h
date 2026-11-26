@@ -14,3 +14,5 @@ uint64_t shell_pump_wakes(void);
 
 int shell_probe_run(bool busy, ShellCallback pressed, const char *capture_dir);
 void shell_probe_mark(int slot, uint64_t latency_ns);
+
+#include "library_io.h"

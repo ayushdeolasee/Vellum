@@ -1,33 +1,9 @@
 import Foundation
+import VellumCore
 
-/// The file vocabulary used above the local/iCloud routing decision. Callers
-/// cannot enumerate, stat, or write a synced URL behind coordination because
-/// those operations simply do not exist here.
-protocol LibraryFileStore: Sendable {
-    func read(_ url: URL) async throws -> Data?
-    func replace(_ url: URL, with data: Data) async throws
-    func remove(_ url: URL) async throws
-    func list(_ directory: URL, suffix: String?) async throws -> [LibraryFileEntry]
-    var isCoordinated: Bool { get }
-}
-
-struct LibraryFileEntry: Sendable, Equatable {
-    var url: URL
-    var name: String
-    var readiness: ItemReadiness
-    var byteSize: Int64?
-    var contentModifiedAt: Date?
-}
-
-enum LibraryFileError: Error, Sendable, Equatable {
-    case notDownloaded(URL, ItemReadiness)
-    case outsideAllowedRoot(URL)
-    case symbolicLink(URL)
-    case retryable
-    case unavailable
-    case nestedCoordination(URL)
-    case io(String)
-}
+typealias LibraryFileStore = VellumCore.LibraryFileStore
+typealias LibraryFileEntry = VellumCore.LibraryFileEntry
+typealias LibraryFileError = VellumCore.LibraryFileError
 
 /// The existing local/custom-folder behavior, lifted behind the shared seam.
 struct DirectLibraryFileStore: LibraryFileStore {
