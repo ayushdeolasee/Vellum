@@ -94,3 +94,33 @@ BOM. macOS CGPDF decoded the raw string `<EFBBBF616263>` as “ï»¿abc”
 while the portable display decoder reads “abc”. A BOM-prefixed UTF-8 string
 therefore cannot identify an annotation or witness a shared document ID.
 An existing ambiguous stamp is preserved, and the shared file uses its byte hash.
+
+### Sticky-note repair exchange (#519)
+
+Both hosts ran the two selected Debug tests in `PdfAnnotationExchangeTests`
+at `b18ab3446acd1c11e313e017e027f35ae3663207`. Mac and iPadOS 26.5
+each passed 2/2. The exchange selector stamped a disposable copy of
+`linux-on-mac.pdf` with the string ID `3ad19a84-fd80-47e6-af2f-b0ee0b8e5757`
+before opening the private document session. It then changed only the
+contents and pin of `exchange-note`. These retained attachments extend the
+historical #497 exchange above.
+
+| File | XCTest attachment | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `mac-annotation-reply-519.pdf` | `E223DE30-CF84-4E95-B0C3-39228895CD1A.pdf` | 10,310 | `0396683dcb44cf70476e80acb56a190b5fb78fe8aa7ea8b7d00c8389882fd87d` |
+| `ipad-annotation-reply-519.pdf` | `D85C3D9F-016D-4FA7-BECD-F468218855D0.pdf` | 17,003 | `868e8cb912f53fa71203c4287721aec385af1b26fd000cb81255666a6482b5cf` |
+
+For both replies, Linux PDFium and the pure reader recovered all three IDs
+in slot order. The foreign `mac-existing` note kept its author, contents,
+PDF rectangle [50 63 68 81] and displayed anchor (27, 26). The complete
+decoded Linux highlight survived. The pinned `exchange-note` reads
+“Apple reply 東京” with rectangle [84 76 102 94] and anchor (40, 60).
+PDFium and the typed Info reader agreed on the preexisting document stamp.
+The second hosted test matched two same-content notes, preserved a name
+that looked like a derived ID, and explicitly moved the unnamed note to
+[104 136 122 154]. On iPadOS 26 it also checked that an ambiguous match
+left the disposable file byte-identical.
+
+P6's independent output proof at `055860aa` accepted the iPad reply.
+It refused the Mac reply because object 2 has two physical definitions in
+one revision, at byte offsets 238 and 1133. Both readers can display it.
