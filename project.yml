@@ -144,6 +144,9 @@ targets:
     type: bundle.unit-test
     platform: macOS
     sources:
+      - path: Tests/DocumentIdentityTests.swift
+      - path: Tests/PageTextCacheTests.swift
+      - path: Tests/WebProxyUrlTests.swift
       - path: Tests/DocumentActionsTests.swift
       - path: Tests/PdfSearchTests.swift
       - path: Tests/DocumentAccessBookmarkStoreTests.swift
