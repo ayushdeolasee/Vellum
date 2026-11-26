@@ -282,6 +282,29 @@ final class PdfAnnotationIncrementTests: XCTestCase {
                        "f35f10d3-973a-40ef-8b2f-61d9767d1531")
     }
 
+    func testReadsHostedRepliesAfterStickyNoteRepair() throws {
+        let forward = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("linux-on-mac"))
+        let original = try read(forward)
+        for host in ["mac", "ipad"] {
+            let reply = try Data(contentsOf: PdfFixtureBuilder.fixtureURL(host + "-annotation-reply-519"))
+            let records = try checkReply(reply, macNoteID: "mac-existing", noteX: 40)
+            XCTAssertEqual(records.map(\.positionData), original.map(\.positionData))
+            XCTAssertEqual(records.first { $0.id == "exchange-highlight" }, original.first { $0.id == "exchange-highlight" })
+            XCTAssertEqual(ClassicPdfFile.currentInfoText(forKey: "VellumDocId", in: reply),
+                           "3ad19a84-fd80-47e6-af2f-b0ee0b8e5757")
+            let (file, page) = try page(reply)
+            XCTAssertEqual(page.spans.count, 3)
+            let expected = [[50.0, 63, 68, 81], [84, 76, 96, 146], [84, 76, 102, 94]]
+            for (index, rect) in expected.enumerated() {
+                let dict = try XCTUnwrap(page.slot(index, file: file)?.dictionary)
+                let array = try XCTUnwrap(dict.inlineArray(forKey: "Rect"))
+                let spans = try XCTUnwrap(PdfArraySource.elementSpans(inArray: array))
+                let coords = try spans.map { try XCTUnwrap(Double(String(decoding: array[$0], as: UTF8.self))) }
+                XCTAssertEqual(coords, rect)
+            }
+        }
+    }
+
     private func checkReply(_ reply: Data, macNoteID: String, noteX: Double) throws -> [Annotation] {
         let records = try read(reply)
         XCTAssertEqual(records.map(\.id), [macNoteID, "exchange-highlight", "exchange-note"])
