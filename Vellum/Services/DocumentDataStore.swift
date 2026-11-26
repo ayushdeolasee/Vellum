@@ -26,6 +26,8 @@ enum DocumentDataStore {
     private struct Access: Sendable {
         let store: any LibraryFileStore
         let documentsRoot: URL
+        var sharedPDFs: SharedPDFLocation? = nil
+        var sharedContainer: (any SyncedContainer)? = nil
         let fallbackRoot: URL?
         let backend: StorageBackendKind
     }
@@ -42,10 +44,16 @@ enum DocumentDataStore {
         return try await coordinator.withStorageContext { context in
             let localRoot = WebStorageLayout.local(storeDir: WebLibrary.storeDir).documentsDir
             let activeRoot = context.layout.documentsDir
+            let folderContainer: (any SyncedContainer)?
+            if context.layout.pdfsDir != nil, case .coordinated(let container, _) = context {
+                folderContainer = container
+            } else { folderContainer = nil }
             return try await operation(Access(
                 store: context.fileStore,
                 documentsRoot: activeRoot,
-                fallbackRoot: localRoot.standardizedFileURL == activeRoot.standardizedFileURL
+                sharedPDFs: context.layout.pdfsDir.map { _ in SharedPDFLocation(root: context.layout.rootDir) },
+                sharedContainer: folderContainer,
+                fallbackRoot: context.layout.pdfsDir != nil || localRoot.standardizedFileURL == activeRoot.standardizedFileURL
                     ? nil : localRoot,
                 backend: context.layout.backend))
         }
@@ -278,21 +286,32 @@ enum DocumentDataStore {
         coordinator: StorageCoordinator
     ) async throws {
         let key = DocumentIdentity.storageKey(for: document)
-        let existing = try await loadMeta(forKey: key, coordinator: coordinator)
-        if !force, existing == nil,
-           try await hasDataFiles(forKey: key, coordinator: coordinator) == false {
-            return
+        try await withAccess(coordinator: coordinator) { access in
+            let url = documentDir(forKey: key, root: access.documentsRoot).appendingPathComponent("meta.json")
+            let prior = try await access.store.read(url)
+            let previous: Data?
+            if prior == nil, access.fallbackRoot != nil {
+                previous = try await readData(forKey: key, relativeName: "meta.json", access: access)
+            } else { previous = prior }
+            let existing = try previous.map { try JSONDecoder().decode(Meta.self, from: $0) }
+            if !force, existing == nil, access.sharedPDFs == nil || document.kind != .pdf {
+                guard try await hasDataFiles(forKey: key, access: access) else { return }
+            }
+            var path = document.pdfPath
+            if document.kind == .pdf, let location = access.sharedPDFs {
+                guard let relative = location.relativePath(for: URL(fileURLWithPath: path)) else {
+                    throw DocumentAccessError.unavailable(path)
+                }
+                path = relative
+            }
+            let meta = Meta(unknownFields: existing?.unknownFields ?? [:], version: 1,
+                            kind: document.kind.rawValue, title: document.title ?? existing?.title,
+                            lastKnownPath: path, lastOpened: WebLibrary.rfc3339Now())
+            let bytes = try WebLibrary.jsonEncoderPretty.encode(meta)
+            if let container = access.sharedContainer {
+                guard try await container.replace(url, with: bytes, ifCurrent: prior) else { throw LibraryFileError.retryable }
+            } else { try await access.store.replace(url, with: bytes) }
         }
-        let meta = Meta(
-            unknownFields: existing?.unknownFields ?? [:],
-            version: 1,
-            kind: document.kind.rawValue,
-            title: document.title ?? existing?.title,
-            lastKnownPath: document.pdfPath,
-            lastOpened: WebLibrary.rfc3339Now())
-        try await replaceData(
-            try WebLibrary.jsonEncoderPretty.encode(meta), forKey: key,
-            relativeName: "meta.json", coordinator: coordinator)
     }
 
     // MARK: - scratchpad.md
@@ -723,7 +742,7 @@ enum DocumentDataStore {
                     }
                 }
                 let meta: Meta? = if let data = try await readData(
-                    forKey: key, relativeName: "meta.json", coordinator: coordinator)
+                    forKey: key, relativeName: "meta.json", access: access)
                 {
                     try? JSONDecoder().decode(Meta.self, from: data)
                 } else {
@@ -732,6 +751,9 @@ enum DocumentDataStore {
                 let sourceExists: Bool = {
                     guard let meta else { return true }
                     if meta.kind == DocumentKind.web.rawValue { return true }
+                    if let shared = access.sharedPDFs {
+                        return documentAccess.scoped(to: shared.root).sourceExists(key: key, lastKnownPath: meta.lastKnownPath)
+                    }
                     return documentAccess.sourceExists(
                         key: key, lastKnownPath: meta.lastKnownPath)
                 }()
@@ -824,8 +846,12 @@ enum DocumentDataStore {
                 guard fileNames.contains("meta.json"),
                       let data = try await readData(
                         forKey: key, relativeName: "meta.json", access: access),
-                      let meta = try? JSONDecoder().decode(Meta.self, from: data)
+                      var meta = try? JSONDecoder().decode(Meta.self, from: data)
                 else { continue }
+                if meta.kind == "pdf", let location = access.sharedPDFs {
+                    guard let url = location.resolve(meta.lastKnownPath) else { continue }
+                    meta.lastKnownPath = url.path
+                }
                 entries.append(DocumentMetaEntry(
                     key: key,
                     meta: meta,

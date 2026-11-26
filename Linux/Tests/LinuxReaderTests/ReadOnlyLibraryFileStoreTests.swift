@@ -49,6 +49,7 @@ struct ReadOnlyLibraryFileStoreTests {
             await #expect(throws: ReaderFileError.readOnly) { try await files.remove(record) }
             #expect(try fm.contentsOfDirectory(atPath: positions.path).sorted() == (siblings + [record.lastPathComponent]).sorted())
             #expect(try Data(contentsOf: record) == bytes)
+            #expect(try fm.contentsOfDirectory(atPath: url.path) == [".vellum"])
         }
     }
 

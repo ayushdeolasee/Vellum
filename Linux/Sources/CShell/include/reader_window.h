@@ -5,8 +5,8 @@
 
 typedef struct _GtkStack GtkStack;
 typedef struct ReaderWindow ReaderWindow;
-typedef enum { READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE } ReaderEvent;
-typedef void (*ReaderCallback)(ReaderWindow *, ReaderEvent, int row, void *context);
+typedef enum { READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE, READER_SEARCH } ReaderEvent;
+typedef void (*ReaderCallback)(ReaderWindow *, ReaderEvent, int entry, void *context);
 
 // All calls and callbacks run on GTK's startup pthread. The window is borrowed
 // until reader_run returns. Every exit from an opened window sends CLOSE once.
@@ -16,7 +16,11 @@ int reader_run(ReaderCallback callback, void *context);
 // share the same sidebar and window; the stack owns each added child.
 GtkStack *reader_content_stack(ReaderWindow *reader);
 void reader_finish_close(ReaderWindow *reader);
-void reader_add_row(ReaderWindow *reader, const char *name);
+void reader_enable_search(ReaderWindow *reader);
+const char *reader_search_query(ReaderWindow *reader);
+void reader_clear_rows(ReaderWindow *reader);
+void reader_show_no_matches(ReaderWindow *reader);
+void reader_add_row(ReaderWindow *reader, int entry, const char *title, const char *filename);
 void reader_select_row(ReaderWindow *reader, int index);
 void reader_set_message(ReaderWindow *reader, const char *title, const char *message);
 void reader_page_message(ReaderWindow *reader, const char *title, const char *message, int number, int count);

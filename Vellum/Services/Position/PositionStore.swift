@@ -115,6 +115,18 @@ actor PositionStore {
         }
     }
 
+    /// A journaled library operation is about to replace complete device records.
+    /// Rehydrate on next use so a later scroll cannot republish pre-migration keys.
+    func prepareForExternalRekey() async throws {
+        await flush()
+        await hydration?.value
+        guard !dirty, inFlightWrite == nil else { throw PositionStorageError.io("Pending reading positions could not be saved.") }
+        hydrated = false
+        documents.removeAll()
+        recordFields.removeAll()
+        lastStamps.removeAll()
+    }
+
     // MARK: - Reads
 
     func resume(for key: DocumentKey) async -> ResumeEntry? {

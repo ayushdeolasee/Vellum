@@ -1,4 +1,6 @@
 import Foundation
+import OSLog
+import VellumCore
 
 /// App-level owner of storage lifecycles. Local and custom folders use direct
 /// stores. iCloud and any installed folder backend use a `SyncedContainer`
@@ -22,6 +24,7 @@ actor StorageCoordinator {
         case iCloudUnavailable
         case customFolderUnavailable
         case syncedFolderUnavailable
+        case syncedFolderSyncDisabled
         case syncedFolderBackendUnavailable
         case coordinatorStopped
     }
@@ -38,6 +41,7 @@ actor StorageCoordinator {
     enum OperationError: Error, Sendable, Equatable {
         case unavailable
         case suspended
+        case storageChanged
     }
 
     struct Status: Sendable, Equatable {
@@ -45,6 +49,7 @@ actor StorageCoordinator {
         var effectiveMode: WebStorageMode
         var lifecycle: Lifecycle
         var availability: Availability
+        var activeSharedFolderRoot: URL?
         var acceptsCoordinatedOperations: Bool
         var pendingConflicts: Int
         var inFlightConflicts: Int
@@ -232,10 +237,10 @@ actor StorageCoordinator {
         syncedFolderRootResolver: @escaping @Sendable () async -> URL? = {
             await WebStorageSettings.resolveSyncedFolderRoot()
         },
-        // S5b installs { layout in await SharedFolderContainerFactory.make(root: layout.rootDir) } here.
-        folderContainerFactory: @escaping StorageAccess.FolderContainerFactory = { layout in
-            await SharedFolderContainerFactory.make(root: layout.rootDir)
-        },
+        folderContainerFactory: @escaping StorageAccess.FolderContainerFactory =
+            StorageCoordinator.sharedFolderActivation { layout in
+                await SharedFolderContainerFactory.make(root: layout.rootDir)
+            },
         conflictArchiveRegistry: ConflictArchiveRegistry = .live
     ) {
         self.storeDir = storeDir
@@ -247,6 +252,24 @@ actor StorageCoordinator {
         self.folderContainerFactory = folderContainerFactory
         self.conflictArchiveRegistry = conflictArchiveRegistry
         self.layout = .local(storeDir: storeDir)
+    }
+
+    static func sharedFolderActivation(
+        _ makeContainer: @escaping StorageAccess.FolderContainerFactory
+    ) -> StorageAccess.FolderContainerFactory {
+        { layout in
+            guard layout.backend == .syncedFolder else { return nil }
+            do {
+                _ = try await Task.detached(priority: .utility) {
+                    try StignoreManager.ensure(at: layout.rootDir)
+                }.value
+            } catch {
+                Logger(subsystem: Bundle.main.bundleIdentifier ?? "Vellum", category: "Storage")
+                    .error("Could not prepare shared-folder ignore rules: \(error.localizedDescription, privacy: .private)")
+                return nil
+            }
+            return await makeContainer(layout)
+        }
     }
 
     func currentStatus() -> Status {
@@ -472,6 +495,19 @@ actor StorageCoordinator {
         }
     }
 
+    func performExclusiveSharedPDFOperation(root: URL, operation: @escaping @Sendable () async -> Result<Void, Error>)
+        async -> Result<Void, Error> {
+        await performExclusiveStorageOperation {
+            guard await self.isActiveSharedFolder(root) else { return .failure(LibraryFileError.unavailable) }
+            return await operation()
+        }
+    }
+
+    private func isActiveSharedFolder(_ root: URL) -> Bool {
+        layout.backend == .syncedFolder && access.container != nil
+            && layout.rootDir.standardizedFileURL.resolvingSymlinksInPath().path == root.path
+    }
+
     /// Lend both sides of a relocation while normal storage admission and
     /// conflict delivery are closed. Either side may be the coordinated iCloud
     /// layout; local/custom sides receive the direct adapter. A nil context
@@ -554,6 +590,19 @@ actor StorageCoordinator {
     func withStorageContext<T: Sendable>(
         _ operation: @Sendable (StorageContext) async throws -> T
     ) async throws -> T {
+        try await withStorageContext(expectedGeneration: nil) { context, _ in
+            try await operation(context)
+        }
+    }
+
+    /// A maintenance action must still address the storage it was listed from.
+    func withStorageContext<T: Sendable>(
+        expectedGeneration: Int?,
+        _ operation: @Sendable (StorageContext, Int) async throws -> T
+    ) async throws -> T {
+        if let expectedGeneration, expectedGeneration != storageGeneration {
+            throw OperationError.storageChanged
+        }
         try beginOperation(requiresContainer: false)
         let context: StorageContext
         if let container = access.container {
@@ -562,7 +611,7 @@ actor StorageCoordinator {
             context = .direct(layout: layout)
         }
         do {
-            let value = try await operation(context)
+            let value = try await operation(context, storageGeneration)
             finishOperation()
             return value
         } catch {
@@ -673,8 +722,10 @@ actor StorageCoordinator {
                     availability: .degradedToLocal(.iCloudUnavailable))
             }
         case .syncedFolder:
-            guard RuntimeProfile.current.syncEnabled,
-                  let root = await syncedFolderRootResolver() else {
+            guard RuntimeProfile.current.syncEnabled else {
+                return syncedFolderFallback(reason: .syncedFolderSyncDisabled)
+            }
+            guard let root = await syncedFolderRootResolver() else {
                 return syncedFolderFallback(reason: .syncedFolderUnavailable)
             }
             let layout = WebStorageLayout.syncedFolder(root: root)
@@ -1341,6 +1392,8 @@ actor StorageCoordinator {
             effectiveMode: effectiveMode,
             lifecycle: lifecycle,
             availability: availability,
+            activeSharedFolderRoot: effectiveMode == .syncedFolder && availability == .coordinated
+                ? layout.rootDir : nil,
             acceptsCoordinatedOperations: acceptsCoordinatedOperations,
             pendingConflicts: pendingConflicts.count,
             inFlightConflicts: inFlightConflict == nil ? 0 : 1,
