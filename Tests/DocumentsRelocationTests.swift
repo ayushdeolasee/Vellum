@@ -97,10 +97,10 @@ final class DocumentsRelocationTests: XCTestCase {
 
     private var localLayout: WebStorageLayout { .local(storeDir: storeDir) }
     private var icloudLayout: WebStorageLayout {
-        .pretty(root: prettyRoot, recordsInRoot: true, localStoreDir: storeDir)
+        .iCloud(root: prettyRoot)
     }
     private var customLayout: WebStorageLayout {
-        .pretty(root: prettyRoot, recordsInRoot: false, localStoreDir: storeDir)
+        .custom(root: prettyRoot, storeDir: storeDir)
     }
 
     /// Write a document folder with the three synced files under `documentsDir`.

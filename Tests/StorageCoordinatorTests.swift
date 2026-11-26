@@ -369,10 +369,7 @@ struct StorageCoordinatorTests {
         let storeDir = scratch("storage-incomplete-relocation")
         let root = scratch("storage-root")
         let localLayout = WebStorageLayout.local(storeDir: storeDir)
-        let source = WebStorageLayout.pretty(
-            root: root.appendingPathComponent("Documents/Vellum", isDirectory: true),
-            recordsInRoot: true,
-            localStoreDir: storeDir)
+        let source = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum", isDirectory: true))
         let container = FakeSyncedContainer()
         container.failNextList(with: .timedOut(source.recordsDir))
         installRoot(root)
@@ -405,8 +402,7 @@ struct StorageCoordinatorTests {
         let storeDir = scratch("storage-web-conflict-restart")
         let root = scratch("storage-root")
         let syncedRoot = root.appendingPathComponent("Documents/Vellum", isDirectory: true)
-        let layout = WebStorageLayout.pretty(
-            root: syncedRoot, recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: syncedRoot)
         let original = layout.archivesDir.appendingPathComponent("Article.vellumweb")
         let archive = layout.archivesDir.appendingPathComponent(
             "conflicts/Article.v-loser.vellumweb")
@@ -454,8 +450,7 @@ struct StorageCoordinatorTests {
     func reviewedConflictRestorationIsRecoverable() async throws {
         let storeDir = scratch("conflict-restore")
         let root = scratch("conflict-root")
-        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
-                                             recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum"))
         let original = layout.documentsDir.appendingPathComponent("abc123/conversations.json")
         let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
         let descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
@@ -507,8 +502,7 @@ struct StorageCoordinatorTests {
     func committedRestoreFailureRemainsReviewable(onReadBack: Bool) async throws {
         let storeDir = scratch("restore-postcommit")
         let root = scratch("restore-root")
-        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
-                                             recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum"))
         let original = layout.documentsDir.appendingPathComponent("abc12345/conversations.json")
         let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
         var descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
@@ -560,8 +554,7 @@ struct StorageCoordinatorTests {
         let storeDir = scratch("pending-chat")
         let root = scratch("pending-chat-root")
         let key = UUID().uuidString.lowercased()
-        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
-                                             recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum"))
         let original = layout.documentsDir.appendingPathComponent("\(key)/conversations.json")
         let gate = AsyncGate()
         let container = FakeSyncedContainer(beforeReplace: { url in
@@ -606,8 +599,7 @@ struct StorageCoordinatorTests {
         let storeDir = scratch("workspace-restore")
         let root = scratch("workspace-restore-root")
         let key = UUID().uuidString.lowercased()
-        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
-                                             recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum"))
         let original = layout.documentsDir.appendingPathComponent("\(key)/conversations.json")
         let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
         let descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
@@ -673,8 +665,7 @@ struct StorageCoordinatorTests {
         let storeDir = scratch("restore-cleared-chat")
         let root = scratch("restore-cleared-root")
         let key = UUID().uuidString.lowercased()
-        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
-                                             recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum"))
         let original = layout.documentsDir.appendingPathComponent("\(key)/conversations.json")
         let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
         let descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
@@ -762,8 +753,7 @@ struct StorageCoordinatorTests {
     func restoreRejectsPeerWriteAtReplacement() async throws {
         let storeDir = scratch("restore-peer-race")
         let root = scratch("restore-peer-root")
-        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
-                                             recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum"))
         let original = layout.documentsDir.appendingPathComponent("abc12345/conversations.json")
         let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
         let descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
@@ -832,8 +822,7 @@ struct StorageCoordinatorTests {
         let storeDir = scratch("restore-journal")
         let root = scratch("restore-journal-root")
         let key = UUID().uuidString.lowercased()
-        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
-                                             recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum"))
         let original = layout.documentsDir.appendingPathComponent("\(key)/conversations.json")
         let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
         let descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
@@ -905,8 +894,7 @@ struct StorageCoordinatorTests {
         let root = scratch("restore-attachment-root")
         let key = UUID().uuidString.lowercased()
         let attachmentId = UUID().uuidString.lowercased()
-        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
-                                             recordsInRoot: true, localStoreDir: storeDir)
+        let layout = WebStorageLayout.iCloud(root: root.appendingPathComponent("Documents/Vellum"))
         let original = layout.documentsDir.appendingPathComponent("\(key)/attachments/\(attachmentId).png")
         let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/\(attachmentId).loser.png")
         let attachment = StorageCoordinator.ArchivedConflict(archiveURL: archive,

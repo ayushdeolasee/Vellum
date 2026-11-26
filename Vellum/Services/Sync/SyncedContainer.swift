@@ -92,13 +92,12 @@ enum SyncedContainerAccessor {
 
 /// Which storage discipline a location gets. Local and custom-folder layouts
 /// keep the existing uncoordinated tmp+rename path exactly as it is and never
-/// construct a container at all; only iCloud is coordinated.
+/// construct a container. Both synced backends use a container lease;
+/// only the iCloud implementation uses Apple file coordination.
 enum StorageAccess: Sendable {
     case direct(root: URL)
     case coordinated(any SyncedContainer, root: URL)
-    /// iCloud was chosen but the container could not be opened (no entitlement,
-    /// signed out). Represented explicitly so a caller degrades knowingly
-    /// instead of silently addressing a container with a nil identifier.
+    /// The selected synced backend could not be opened.
     case unavailable
 
     /// Synchronous routing with an injected container factory. There is
@@ -119,12 +118,23 @@ enum StorageAccess: Sendable {
             let root = WebStorageLayout.resolve(mode: mode, storeDir: storeDir).recordsDir
             return .direct(root: root)
         case .icloud:
-            guard let root = icloudRoot else { return .unavailable }
-            guard let container = container() else { return .unavailable }
-            let layout = WebStorageLayout.pretty(
-                root: root, recordsInRoot: true, localStoreDir: storeDir)
-            return .coordinated(container, root: layout.recordsDir)
+            guard let root = icloudRoot, let container = container() else { return .unavailable }
+            return .coordinated(container, root: WebStorageLayout.iCloud(root: root).recordsDir)
+        case .syncedFolder:
+            return .unavailable
         }
+    }
+
+    /// S5b injects its folder container here. A missing adapter must never
+    /// lend a direct store pointed at the shared folder.
+    typealias FolderContainerFactory = @Sendable (WebStorageLayout) async -> (any SyncedContainer)?
+
+    static func resolveSyncedFolder(
+        layout: WebStorageLayout, factory: FolderContainerFactory
+    ) async -> StorageAccess {
+        guard layout.backend == .syncedFolder,
+              let container = await factory(layout) else { return .unavailable }
+        return .coordinated(container, root: layout.recordsDir)
     }
 
     /// The default path. Safe to call from the main actor: the ubiquity lookup
@@ -142,11 +152,9 @@ enum StorageAccess: Sendable {
                 let root = WebStorageSettings.icloudVellumRoot
                 return (root, root == nil ? nil : ICloudSyncedContainer())
             }.value
-            guard let root else { return .unavailable }
-            guard let container else { return .unavailable }
-            let layout = WebStorageLayout.pretty(
-                root: root, recordsInRoot: true, localStoreDir: storeDir)
-            return .coordinated(container, root: layout.recordsDir)
+            return resolve(mode: .icloud, storeDir: storeDir, icloudRoot: root) { container }
+        case .syncedFolder:
+            return .unavailable
         }
     }
 
