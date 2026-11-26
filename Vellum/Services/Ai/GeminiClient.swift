@@ -55,14 +55,12 @@ final class GeminiClient {
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-            let bytes = try await openStream(request)
-
             var text = ""
             var calls: [[String: Any]] = []
             var replayParts: [[String: Any]] = []
             var finishReason: String?
-            for try await payload in SSE.dataPayloads(bytes) {
-                guard let object = Self.jsonObjectOrNil(payload) else { continue }
+            try await AiStreaming.receive(request, provider: .gemini) { payload in
+                guard let object = Self.jsonObjectOrNil(payload) else { return }
                 // A 200 stream can carry an in-band error object instead of
                 // candidates; surface it rather than finishing with an empty reply.
                 if let error = object["error"] as? [String: Any],
@@ -76,13 +74,13 @@ final class GeminiClient {
                        let reason = feedback["blockReason"] as? String {
                         throw AiClientError.message("Gemini blocked the request (\(reason)).")
                     }
-                    continue
+                    return
                 }
                 if let reason = candidate["finishReason"] as? String, !reason.isEmpty {
                     finishReason = reason
                 }
                 guard let parts = (candidate["content"] as? [String: Any])?["parts"] as? [[String: Any]]
-                else { continue }
+                else { return }
                 for part in parts {
                     Self.accumulateReplayPart(part, into: &replayParts)
                     if let chunk = part["text"] as? String, !chunk.isEmpty,
@@ -147,68 +145,9 @@ final class GeminiClient {
         parts.append(part)
     }
 
-    /// Open the SSE stream, retrying once on transient failures before any bytes
-    /// are consumed. Reads the (small) error body to surface a real message.
-    private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
-        var lastError: Error?
-        for attempt in 0...1 {
-            let bytes: URLSession.AsyncBytes
-            let response: URLResponse
-            do {
-                (bytes, response) = try await URLSession.shared.bytes(for: request)
-            } catch is CancellationError {
-                throw CancellationError() // user-initiated abort: never retry
-            } catch let error as URLError where error.code == .cancelled {
-                throw CancellationError() // URLSession task cancelled: never retry
-            } catch {
-                lastError = error
-                if attempt == 1 { throw error }
-                // Brief backoff before the single retry (try? keeps cancellation
-                // working: a cancelled sleep just falls through to retry, where
-                // the request throws CancellationError).
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                continue // transient network failure: retry once
-            }
-
-            guard let http = response as? HTTPURLResponse else {
-                throw AiClientError.message("Gemini returned an invalid HTTP response.")
-            }
-            if (200..<300).contains(http.statusCode) { return bytes }
-            let data = try await Self.drain(bytes)
-            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(bytes: data, encoding: .utf8) ?? "")
-            let error = AiClientError.message(message.isEmpty ? "Gemini request failed with status \(http.statusCode)." : message)
-            if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
-                lastError = error
-                // Back off before retrying — immediate retry on 429 usually
-                // just re-hits the limit.
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                continue // transient status: retry once
-            }
-            throw error // non-retryable status: escapes immediately
-        }
-        throw lastError ?? AiClientError.message("Gemini request failed.")
-    }
-
-    private static func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
-        var data = Data()
-        for try await byte in bytes { data.append(byte) }
-        return data
-    }
-
-    private static func jsonObject(_ data: Data) throws -> [String: Any] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AiClientError.message("Gemini returned invalid JSON.")
-        }
-        return object
-    }
-
     private static func jsonObjectOrNil(_ payload: String) -> [String: Any]? {
         guard let data = payload.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
-
-    private static func providerMessage(_ object: [String: Any], fallback: String) -> String {
-        ((object["error"] as? [String: Any])?["message"] as? String) ?? fallback
     }
 
     private static func toolArguments(from value: [String: Any]) -> AiToolArguments {

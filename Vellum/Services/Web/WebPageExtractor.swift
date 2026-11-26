@@ -59,24 +59,10 @@ enum WebFetch {
         guard let requestUrl = URL(string: url) else {
             throw SessionServiceError.io("Failed to fetch page: invalid URL")
         }
-        let bytes: URLSession.AsyncBytes
-        let response: URLResponse
-        do {
-            (bytes, response) = try await session.bytes(for: URLRequest(url: requestUrl))
-        } catch {
-            throw SessionServiceError.io("Failed to fetch page: \(error.localizedDescription)")
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw SessionServiceError.io("Failed to fetch page: not an HTTP response")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw SessionServiceError.io("The server responded with HTTP \(http.statusCode)")
-        }
-        let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "text/html"
-        let body = try await readBodyCapped(bytes, expected: http.expectedContentLength, cap: maxResponseBytes)
-
+        let (head, body) = try await fetch(requestUrl, cap: maxResponseBytes)
+        let contentType = head.header("Content-Type") ?? "text/html"
         if contentType.contains("text/html") || contentType.contains("application/xhtml") {
-            let finalUrl = (http.url ?? requestUrl).absoluteString
+            let finalUrl = (head.url ?? requestUrl).absoluteString
             return .html(html: decodeHtml(body, contentType: contentType), finalUrl: finalUrl)
         }
         return .other(contentType: contentType, body: body)
@@ -85,54 +71,51 @@ enum WebFetch {
     /// Asset fetch used by snapshot capture: failures return nil (skipped).
     static func fetchAsset(_ url: String) async -> (contentType: String, body: Data)? {
         guard let requestUrl = URL(string: url) else { return nil }
-        do {
-            let (bytes, response) = try await session.bytes(for: URLRequest(url: requestUrl))
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else { return nil }
-            let contentType = http.value(forHTTPHeaderField: "Content-Type")
-                ?? "application/octet-stream"
-            let body = try await readBodyCapped(
-                bytes, expected: http.expectedContentLength, cap: maxAssetBytes)
-            return (contentType, body)
-        } catch {
-            return nil
+        guard let (head, body) = try? await fetch(requestUrl, cap: maxAssetBytes) else { return nil }
+        return (head.header("Content-Type") ?? "application/octet-stream", body)
+    }
+
+    private actor CappedResponse {
+        var head: StreamingHead?
+        var body = Data()
+
+        func receive(_ head: StreamingHead, cap: Int) throws {
+            self.head = head
+            guard (200..<300).contains(head.status) else {
+                throw SessionServiceError.io("The server responded with HTTP \(head.status)")
+            }
+            if let length = head.header("Content-Length").flatMap(Int64.init), length > cap {
+                throw SessionServiceError.io("Response is too large to load")
+            }
+        }
+
+        func append(_ data: Data, cap: Int) throws {
+            guard data.count <= cap - body.count else {
+                throw SessionServiceError.io("Response is too large to load")
+            }
+            body.append(data)
         }
     }
 
-    /// Cap enforced *while* streaming so a missing/false Content-Length or a
-    /// decompression bomb can't exhaust memory before a post-hoc check.
-    private static func readBodyCapped(
-        _ bytes: URLSession.AsyncBytes, expected: Int64, cap: Int
-    ) async throws -> Data {
-        if expected > 0, expected > Int64(cap) {
-            throw SessionServiceError.io("Response is too large to load")
-        }
-        var body = Data()
-        // Data.append per byte repeatedly crosses Foundation's storage layer.
-        // Keep a small Swift buffer, while still enforcing the decoded size cap
-        // during streaming rather than after an unbounded download.
-        var chunk = [UInt8]()
-        chunk.reserveCapacity(64 * 1024)
+    private static func fetch(_ url: URL, cap: Int) async throws -> (StreamingHead, Data) {
+        let response = CappedResponse()
         do {
-            for try await byte in bytes {
-                guard body.count + chunk.count < cap else {
-                    throw SessionServiceError.io("Response is too large to load")
-                }
-                chunk.append(byte)
-                if chunk.count == 64 * 1024 {
-                    try Task.checkCancellation()
-                    body.append(contentsOf: chunk)
-                    chunk.removeAll(keepingCapacity: true)
-                }
-            }
-            try Task.checkCancellation()
-            body.append(contentsOf: chunk)
+            try await AppleStreamingTransport(session: session).execute(
+                URLRequest(url: url),
+                onHead: { try await response.receive($0, cap: cap) },
+                onChunk: { try await response.append($0, cap: cap) })
         } catch let error as SessionServiceError {
             throw error
+        } catch AppleStreamingTransport.Failure.nonHTTPResponse {
+            throw SessionServiceError.io("Failed to fetch page: not an HTTP response")
         } catch {
-            throw SessionServiceError.io("Failed to read response body: \(error.localizedDescription)")
+            let context = await response.head == nil ? "fetch page" : "read response body"
+            throw SessionServiceError.io("Failed to \(context): \(error.localizedDescription)")
         }
-        return body
+        guard let head = await response.head else {
+            throw SessionServiceError.io("Failed to fetch page: not an HTTP response")
+        }
+        return (head, await response.body)
     }
 
     /// Decode HTML honoring the charset from the Content-Type header
