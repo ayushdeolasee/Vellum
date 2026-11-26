@@ -5,6 +5,66 @@ typedef struct {
     GCancellable *cancellable;
 } FolderRequest;
 
+typedef struct {
+    GtkEntryBuffer parent;
+    GtkEntryBuffer *secret;
+    const char *inserting; // Borrowed during a synchronous editable insertion.
+} ReaderKeyBuffer;
+typedef GtkEntryBufferClass ReaderKeyBufferClass;
+
+G_DEFINE_TYPE(ReaderKeyBuffer, reader_key_buffer, GTK_TYPE_ENTRY_BUFFER)
+
+// GTK 4.14 can return a GtkPasswordEntry's editable text over AT-SPI. Keep
+// Vellum's input in GTK's original secure buffer and expose only the mask
+// through the attached buffer, including its text-change notifications.
+static guint key_buffer_insert(GtkEntryBuffer *buffer, guint position, const char *text, guint length) {
+    ReaderKeyBuffer *self = (ReaderKeyBuffer *)buffer;
+    GtkEntryBufferClass *parent = GTK_ENTRY_BUFFER_CLASS(reader_key_buffer_parent_class);
+    const char *secret = self->inserting ? self->inserting : text;
+    guint stored = gtk_entry_buffer_insert_text(self->secret, position, secret, length);
+    if (!stored) return 0;
+    g_autofree char *mask = g_strnfill(stored, '*');
+    guint inserted = parent->insert_text(buffer, position, mask, stored);
+    if (inserted < stored)
+        gtk_entry_buffer_delete_text(self->secret, position + inserted, stored - inserted);
+    return inserted;
+}
+
+static guint key_buffer_delete(GtkEntryBuffer *buffer, guint position, guint length) {
+    ReaderKeyBuffer *self = (ReaderKeyBuffer *)buffer;
+    GtkEntryBufferClass *parent = GTK_ENTRY_BUFFER_CLASS(reader_key_buffer_parent_class);
+    guint removed = gtk_entry_buffer_delete_text(self->secret, position, length);
+    return parent->delete_text(buffer, position, removed);
+}
+
+static void reader_key_buffer_dispose(GObject *buffer) {
+    ReaderKeyBuffer *self = (ReaderKeyBuffer *)buffer;
+    g_clear_object(&self->secret);
+    G_OBJECT_CLASS(reader_key_buffer_parent_class)->dispose(buffer);
+}
+
+static void reader_key_buffer_class_init(ReaderKeyBufferClass *class) {
+    G_OBJECT_CLASS(class)->dispose = reader_key_buffer_dispose;
+    class->insert_text = key_buffer_insert;
+    class->delete_text = key_buffer_delete;
+}
+
+static void reader_key_buffer_init(ReaderKeyBuffer *buffer) {}
+
+static void mask_key_insertion(GtkEditable *entry, const char *text, int bytes, int *position,
+                               ReaderKeyBuffer *buffer) {
+    if (buffer->inserting) return;
+    glong length = g_utf8_strlen(text, bytes);
+    if (!length) return;
+    // The legacy AT-SPI editable bridge also observes the insertion signal,
+    // so let only the masked insertion propagate to its observers.
+    g_autofree char *mask = g_strnfill(length, '*');
+    g_signal_stop_emission_by_name(entry, "insert-text");
+    buffer->inserting = text;
+    gtk_editable_insert_text(entry, mask, (int)length, position);
+    buffer->inserting = NULL;
+}
+
 struct ReaderSettings {
     GtkWindow *parent;
     ReaderWindow *reader;
@@ -12,6 +72,7 @@ struct ReaderSettings {
     FolderRequest *folder_request;
     GtkWidget *page, *path, *library_status, *choose, *reopen;
     GtkWidget *providers, *provider_status, *key_section, *key, *save, *remove, *key_status;
+    GtkEntryBuffer *key_material; // Borrowed from the installed ReaderKeyBuffer.
     unsigned provider_count;
     gboolean changing_provider, key_busy;
 };
@@ -69,8 +130,8 @@ static void done(GtkButton *button, ReaderSettings *s) {
     notify(s, READER_SETTINGS_DONE, -1, NULL);
 }
 
-static void provider_changed(GtkCheckButton *choice, ReaderSettings *s) {
-    if (s->changing_provider || !gtk_check_button_get_active(choice)) return;
+static void provider_changed(GtkToggleButton *choice, ReaderSettings *s) {
+    if (s->changing_provider || !gtk_toggle_button_get_active(choice)) return;
     int index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(choice), "provider-index"));
     gtk_editable_set_text(GTK_EDITABLE(s->key), "");
     notify(s, READER_CHANGE_PROVIDER, index, NULL);
@@ -87,7 +148,7 @@ static void key_changed(GtkEditable *key, ReaderSettings *s) {
 
 static void save_key(GtkButton *button, ReaderSettings *s) {
     GtkEditable *key = GTK_EDITABLE(s->key);
-    const char *text = gtk_editable_get_text(key);
+    const char *text = gtk_entry_buffer_get_text(s->key_material);
     if (*text && !s->key_busy) {
         notify(s, READER_SAVE_KEY, -1, text);
         gtk_editable_set_text(key, "");
@@ -157,7 +218,8 @@ ReaderSettings *reader_settings_new(GtkWindow *parent, ReaderWindow *reader, Rea
     GtkWidget *provider_label = label("AI Provider", "heading");
     gtk_box_append(ai, provider_label);
     s->providers = gtk_grid_new();
-    gtk_grid_set_column_spacing(GTK_GRID(s->providers), 16);
+    gtk_grid_set_column_spacing(GTK_GRID(s->providers), 6);
+    gtk_grid_set_row_spacing(GTK_GRID(s->providers), 6);
     gtk_accessible_update_relation(GTK_ACCESSIBLE(s->providers), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
                                    provider_label, NULL, -1);
     gtk_box_append(ai, s->providers);
@@ -173,6 +235,13 @@ ReaderSettings *reader_settings_new(GtkWindow *parent, ReaderWindow *reader, Rea
     s->key_status = label(NULL, "dim-label");
     gtk_box_append(credentials, s->key_status);
     s->key = gtk_password_entry_new();
+    GtkText *editor = GTK_TEXT(gtk_editable_get_delegate(GTK_EDITABLE(s->key)));
+    g_autoptr(GtkEntryBuffer) mask = g_object_new(reader_key_buffer_get_type(), NULL);
+    s->key_material = g_object_ref(gtk_text_get_buffer(editor));
+    ((ReaderKeyBuffer *)mask)->secret = s->key_material;
+    gtk_text_set_buffer(editor, mask);
+    g_signal_connect_object(s->key, "insert-text", G_CALLBACK(mask_key_insertion), mask, 0);
+    g_signal_connect_object(editor, "insert-text", G_CALLBACK(mask_key_insertion), mask, 0);
     gtk_password_entry_set_show_peek_icon(GTK_PASSWORD_ENTRY(s->key), FALSE);
     g_object_set(s->key, "placeholder-text", "Enter API key", NULL);
     gtk_accessible_update_property(GTK_ACCESSIBLE(s->key), GTK_ACCESSIBLE_PROPERTY_LABEL, "API key", -1);
@@ -206,9 +275,9 @@ void reader_settings_free(ReaderSettings *s) {
 
 void reader_settings_add_provider(ReaderSettings *s, const char *name) {
     GtkGrid *grid = GTK_GRID(s->providers);
-    GtkWidget *choice = gtk_check_button_new_with_label(name);
+    GtkWidget *choice = gtk_toggle_button_new_with_label(name);
     GtkWidget *first = gtk_grid_get_child_at(grid, 0, 0);
-    if (first) gtk_check_button_set_group(GTK_CHECK_BUTTON(choice), GTK_CHECK_BUTTON(first));
+    if (first) gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(choice), GTK_TOGGLE_BUTTON(first));
     unsigned index = s->provider_count++;
     g_object_set_data(G_OBJECT(choice), "provider-index", GUINT_TO_POINTER(index));
     gtk_grid_attach(grid, choice, index % PROVIDERS_PER_ROW, index / PROVIDERS_PER_ROW, 1, 1);
@@ -219,7 +288,7 @@ void reader_settings_set_provider(ReaderSettings *s, unsigned index, const char 
     s->changing_provider = TRUE;
     GtkWidget *choice = gtk_grid_get_child_at(GTK_GRID(s->providers), index % PROVIDERS_PER_ROW,
                                               index / PROVIDERS_PER_ROW);
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(choice), TRUE);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(choice), TRUE);
     s->changing_provider = FALSE;
     gtk_label_set_text(GTK_LABEL(s->provider_status), message);
     gtk_widget_set_visible(s->provider_status, *message != '\0');
