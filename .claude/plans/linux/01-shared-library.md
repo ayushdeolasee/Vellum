@@ -22,6 +22,12 @@ Vellum library without corrupting it or silently dropping each other's data?
   `scratchpad.md`, `attachments/`. One small file per concern, which keeps conflicts small.
 - **Positions are per-device files** (`positions/<device>.v<N>.json`, merged by `PositionMerge`).
   Two devices never write the same file, so this part never conflicts.
+- **Custom-folder mode does not share most of the library today.** Only iCloud mode puts
+  `records/`, `documents/` and `positions/` under the library root
+  (`WebStorageLayout.resolve`, `recordsInRoot: true`). Custom mode passes
+  `recordsInRoot: false`, so only `Web Pages/` and `.vellum/index.json` live in the chosen
+  folder. Notes, scratchpads, conversations and positions stay in Application Support.
+  **Pointing Syncthing at a custom folder today would sync almost nothing that matters.**
 - **Conflicts today are iCloud-shaped**: `ConflictResolver` reacts to `NSFileVersion`
   conflict events. Folder-sync tools signal conflicts differently (extra files with a
   marker in the name), which nothing in Vellum recognises yet.
@@ -35,7 +41,8 @@ Vellum library without corrupting it or silently dropping each other's data?
 | NAS / SMB share | Both apps open the same network folder live | One copy of the truth, no conflicts by design | Breaks offline; network-filesystem locking and `rename` semantics are unreliable; slow PDFs |
 | Own sync server | Vellum talks to a service we run | Full control, real merges | Far too big for personal use; revisit only for public release |
 
-**Recommendation:** Syncthing, with the Mac's *shared* library in custom-folder mode.
+**Recommendation:** Syncthing, with a new **shared-folder** storage mode on both apps that uses the
+iCloud layout (`recordsInRoot: true`) inside any plain folder.
 iCloud stays available on Apple devices, but anything shared with Linux lives in the
 Syncthing folder.
 
@@ -85,16 +92,39 @@ Mac and on Linux, so one unstamped PDF gets **two different identities**, and it
 notes, scratchpad and conversations split in two.
 
 Rules:
-- Hash the path **relative to the library root**, not the absolute path, for anything in
-  the shared library. Or stamp every PDF on import into the shared library.
+- Stamp `/VellumDocId` on import into the shared library (Vellum already stamps on first
+  write in `PdfSessionBackend.writeAndRefreshCache`), so identity never depends on the path.
+  For read-only PDFs that can't be stamped, hash the path **relative to the library root**.
 - Until the cross-platform round-trip test passes, **only one machine writes** to the
   shared library at a time. Linux starts read-only (layer 4, step 5).
 
+## What Syncthing needs from Vellum (Gemini 4 Neon research)
+
+- **Ignore Vellum's temp files.** Atomic writes create `.{name}.tmp-{uuid}`
+  (`DirectLibraryFileStore.replace`) and `.{name}.vellum-{uuid}.tmp` (`PdfAtomicWriter`).
+  Syncthing only ignores its own temp files. Vellum writes a `.stignore` into the shared
+  root with `(?d).*.tmp-*` and `(?d).*.vellum-*.tmp`.
+- **Conflict copies look like real files.** Syncthing names the losing copy
+  `<stem>.sync-conflict-YYYYMMDD-HHMMSS-<DEVICE>.<ext>`. `DirectLibraryFileStore.list`
+  matches on suffix, so `abc.sync-conflict-….json` in `records/` would load as a
+  **phantom duplicate web page**. The list must filter these out.
+- **The merge logic already exists.** `PreserveLosersConflictResolver` works on
+  `ConflictEvent` + `Data`, not on `NSFileVersion`, so a folder adapter can feed it
+  Syncthing conflict copies. It already merges web records, `meta.json` and conversations,
+  and archives the losing copy.
+- **`meta.json` stores an absolute `lastKnownPath`.** `/Users/…` vs `/home/…`: store it
+  relative to the library root inside the shared folder, or treat it as per-device.
+- **Linux file watching (inotify) costs one watch per directory.** Large libraries can hit the
+  default limit. Fall back to periodic rescans on `ENOSPC`.
+
 ## Work this layer implies (not done in this PR)
+
+- A **shared-folder storage mode** (iCloud layout in a plain folder) on the Mac and Linux.
+- `.stignore` management, plus filtering of `.sync-conflict-` files in `DirectLibraryFileStore.list`.
 
 - A Linux `SyncedContainer` adapter for a plain folder: inotify change watching,
   ignoring sync-tool temp files, conflict-copy detection.
-- The same conflict-copy detection on the Mac's custom-folder mode.
+- The same conflict-copy detection on the Mac's shared-folder mode (FSEvents instead of inotify).
 - An unknown-field-preserving JSON pattern in `VellumCore`, adopted by every shared type.
 - A cross-platform round-trip test fixture: a library written by the Mac, opened and
   re-saved by Linux, then diffed.
