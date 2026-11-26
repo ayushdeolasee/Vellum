@@ -241,24 +241,63 @@ final class PdfAnnotationIncrementTests: XCTestCase {
         }
     }
 
-    func testReadsMacHostedReplyToLinuxEdits() throws { try checkReply(from: "mac") }
+    func testReadsMacHostedReplyToLinuxEdits() throws {
+        let reply = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("mac-annotation-reply"))
+        let records = try checkReply(reply, macNoteID: "mac-existing", noteX: 40)
+        XCTAssertEqual(records.first?.positionData?.rects, [.init(x: 27, y: 26, width: 0, height: 0)])
+    }
 
-    private func checkReply(from platform: String) throws {
-        let reply = try Data(contentsOf: PdfFixtureBuilder.fixtureURL(platform + "-annotation-reply"))
+    func testReadsIPadHostedReplyToLinuxEdits() throws {
+        let forward = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("linux-on-mac"))
+        let reply = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("ipad-annotation-reply"))
+        let before = try read(forward)
+        guard before.count == 3 else { return XCTFail("Expected three forward records") }
+        XCTAssertEqual(before.map(\.id), ["mac-existing", "exchange-highlight", "exchange-note"])
+        XCTAssertEqual(before[0].positionData?.rects, [.init(x: 27, y: 26, width: 0, height: 0)])
+        XCTAssertEqual(before[2].positionData?.rects, [.init(x: 40, y: 60, width: 0, height: 0)])
+        XCTAssertEqual(before[2].content, "Linux note")
+        XCTAssertFalse(before[2].pinned)
+
+        // This retained iPadOS 26.5 export lost the foreign /NM and widened
+        // both sticky-note icons. Read their actual anchors from the new /Rects.
+        let after = try checkReply(reply, macNoteID: "pdf-direct-1-0", noteX: 34)
+        guard after.count == 3 else { return XCTFail("Expected three iPad reply records") }
+        XCTAssertEqual(after[0].positionData?.rects, [.init(x: 21, y: 26, width: 0, height: 0)])
+        XCTAssertEqual(after[1], before[1])
+        XCTAssertEqual(after[2].createdAt, before[2].createdAt)
+        XCTAssertEqual(after[2].updatedAt, "2026-11-26T20:58:31.100000+00:00")
+        XCTAssertEqual(after[2].positionData?.selectedText, before[2].positionData?.selectedText)
+
+        let (file, page) = try page(reply)
+        XCTAssertEqual(page.spans.count, 3)
+        let slots = try page.spans.indices.map { try XCTUnwrap(page.slot($0, file: file)) }
+        let macNote = try XCTUnwrap(slots.first)
+        XCTAssertNil(macNote.dictionary.rawValue(forKey: "NM"))
+        XCTAssertEqual(slots.map { $0.dictionary.textString(forKey: "NM") }, [nil, "exchange-highlight", "exchange-note"])
+        XCTAssertEqual(slots.map(\.object), [7, 8, 9])
+        XCTAssertEqual(slots.map { $0.object.flatMap { file.objectOffsets[$0] } }, [5919, 14942, 15420])
+        XCTAssertEqual(PdfEditEligibility.classify(reply), .editable)
+        XCTAssertNil(ClassicPdfFile.currentInfoText(forKey: "VellumDocId", in: forward))
+        XCTAssertEqual(ClassicPdfFile.currentInfoText(forKey: "VellumDocId", in: reply),
+                       "f35f10d3-973a-40ef-8b2f-61d9767d1531")
+    }
+
+    private func checkReply(_ reply: Data, macNoteID: String, noteX: Double) throws -> [Annotation] {
         let records = try read(reply)
-        XCTAssertEqual(records.map(\.id).sorted(), ["exchange-highlight", "exchange-note", "mac-existing"])
+        XCTAssertEqual(records.map(\.id), [macNoteID, "exchange-highlight", "exchange-note"])
         let note = try XCTUnwrap(records.first { $0.id == "exchange-note" })
         XCTAssertEqual(note.type, .note)
         XCTAssertEqual(note.content, "Apple reply 東京")
-        XCTAssertEqual(note.pinned, true)
-        XCTAssertEqual(note.positionData?.rects, [.init(x: 40, y: 60, width: 0, height: 0)])
+        XCTAssertTrue(note.pinned)
+        XCTAssertEqual(note.positionData?.rects, [.init(x: noteX, y: 60, width: 0, height: 0)])
         let highlight = try XCTUnwrap(records.first { $0.id == "exchange-highlight" })
         XCTAssertEqual(highlight.positionData?.selectedText, "Café 東京")
         XCTAssertEqual(highlight.positionData?.rects, [rect])
         XCTAssertEqual(highlight.color, "#1256ab")
         XCTAssertEqual(highlight.content, "Linux")
         XCTAssertTrue(highlight.pinned)
-        XCTAssertEqual(records.first { $0.id == "mac-existing" }?.content, "Mac source note")
+        XCTAssertEqual(records.first?.content, "Mac source note")
+        return records
     }
 
     func testIneligibleOriginalsAndInvalidEdits() throws {
