@@ -94,6 +94,42 @@ final class PdfXrefStreamTests: XCTestCase {
         XCTAssertEqual(PdfEditEligibility.classify(suffix), .readOnly(.signed))
     }
 
+    func testLaterCompressedRowMustNameTheSameMemberAndCannotReviveFreedInfo() throws {
+        let bytes = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("resume-stream-string"))
+        let file = try ClassicPdfFile(data: bytes)
+        let info = try XCTUnwrap(file.infoNumber)
+        // This fixture stores Info 10 in container 1 at slot 8.
+        XCTAssertEqual(info, 10)
+        let stream = file.size
+        let offset = bytes.count
+        func revision(row: [UInt8]) -> Data {
+            var dict = file.trailer
+            for key in ["Filter", "DecodeParms"] { dict.removeEntry(forKey: key) }
+            dict.setValue(forKey: "W", raw: Array("[1 4 1]".utf8))
+            dict.setValue(forKey: "Index", raw: Array("[10 1 \(stream) 1]".utf8))
+            dict.setInteger(forKey: "Size", to: stream + 1)
+            dict.setInteger(forKey: "Prev", to: file.startXref)
+            dict.setInteger(forKey: "Length", to: 12)
+            var data = bytes
+            data.append(contentsOf: "\(stream) 0 obj\n".utf8)
+            data.append(contentsOf: dict.sourceBytes)
+            data.append(contentsOf: "\nstream\n".utf8)
+            data.append(contentsOf: row)
+            data.append(1)
+            withUnsafeBytes(of: UInt32(offset).bigEndian) { data.append(contentsOf: $0) }
+            data.append(0)
+            data.append(contentsOf: "\nendstream\nendobj\nstartxref\n\(offset)\n%%EOF\n".utf8)
+            return data
+        }
+        XCTAssertEqual(identity(revision(row: [2, 0, 0, 0, 1, 8])), stamp)
+        for row: [UInt8] in [[2, 0, 0, 0, 1, 7], [2, 0, 0, 0, 1, 9], [0, 0, 0, 0, 0, 1]] {
+            let changed = revision(row: row)
+            XCTAssertNil(identity(changed))
+            XCTAssertEqual(PdfEditEligibility.classify(changed), .readOnly(.malformed))
+            XCTAssertThrowsError(try PdfInfoIncrement.setMetadataIncrement(normalizedData: changed, key: "title", value: "x"))
+        }
+    }
+
     func testPredictorsAndDecodeBudget() throws {
         func decode(_ compressed: [UInt8], predictor: Int, columns: Int,
                     colors: Int = 1, bits: Int = 8, limit: Int = 1024) throws -> [UInt8] {
