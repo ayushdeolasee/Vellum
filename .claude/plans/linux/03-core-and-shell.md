@@ -192,7 +192,7 @@ Either colima or OrbStack works; the commands are identical (`docker …`). **Yo
 - **N3:** colima or OrbStack?
 - **N8 (resolved, both reviewers agree):** share formats and operations, not Stores, for now.
 - **N9:** look and feel (libadwaita vs plain GTK4) waits until the step-5 window exists.
-- Stable path for unstamped PDFs across machines: resolved in layer 2 (stamp on import, root-relative fallback).
+- Stable identity for unstamped PDFs across machines: resolved in layer 2 (stamp on import; byte-hash fallback).
 
 ## Work items (C0–C8), manifests, container, scripts, and the main-loop probe
 
@@ -214,6 +214,13 @@ PDFium tarball and checksum, the arm64 Swift image digest, and the upstream brid
 | C7a (= P3) | Edit eligibility from original bytes | M | C6, P3 design |
 | C7b (= P5) | Linux page-annotation writer + cross-platform qualification | L + M | C7a, P5 design, P7 |
 | C8 | Streaming transport (SSE) + credential store seams | M + M | C2 |
+
+**Round 4 corrections (authoritative).**
+- C6, C7a and C7b follow the single designs fixed in layer 3's "Round 4: one authoritative design per item":
+  C7a's eligibility API; C6's file split plus numeric `PageGeometry` (moved here from C7b); C7b's `applying(_:to:now:)` API.
+- C5b moves only the `LibraryFileStore` protocol, its value types and `ItemReadiness` into Core. S5b (layer 2)
+  moves `SyncedContainer`, the conflict types and the resolver. Apple storage implementations stay in the app.
+- C3 promotes the existing `PositionJSON` coder verbatim as Core's `JSONValue`; S3 reuses it.
 
 Round 3 resolved the main-loop disagreement procedurally: C5a's probe runs **auto, timer, missing-SPI and
 strict-eventfd** modes under idle and busy load, records idle CPU, wakes and p50/p95/max hop latency, and
@@ -384,7 +391,7 @@ public init(
 
 **Acceptance.** G. Run the same fixed expected values on Mac and Linux. Verify the iOS plain-HTTP rejection separately. `storageKey(for:)` still returns an existing `docId` verbatim. Canonical-key filtering remains at the existing trust boundaries.
 
-**Gotcha.** The proposed shared-folder *root-relative* fallback is an S-layer migration. Changing today's path hash during extraction strands existing data. Similarly, decoding/re-encoding `WebPageRecord` is not yet a general unknown-field-preserving write path.
+**Gotcha.** The shared-folder identity change (stamp on import, byte-hash fallback; layer 2 S8) is an S-layer migration. Changing today's path hash during extraction strands existing data. Similarly, decoding/re-encoding `WebPageRecord` is not yet a general unknown-field-preserving write path.
 
 ### C3 — Extract reading positions with injected storage and identity
 
@@ -1374,15 +1381,15 @@ C4 + C5b
   → C5c offline WebKit proof
 C5b
   → C6 PDF byte primitives and metadata/outline increments
-C6 + P3
-  → C7a eligibility parser
-C7a + P5 + P7
-  → C7b writer on disposable files
+C6 (= P4, now including numeric PageGeometry)
+  → C7a (= P3) eligibility parser
+C7a + P7
+  → C7b (= P5) writer on disposable files
 
 C5b + P1 → I1 (read-only PDF ink)
 C5c + I4 + I5 → later portable web-ink display
-C7b + S3 + S1/S2 + S5–S7 + passing two-peer offline recovery
+C7b + S1–S8 + passing S9 (two-peer offline recovery)
   → eligible shared-folder writes
 ```
 
-The `S-*`, `P-*`, and `I-*` labels identify required deliverables from the other layers; the five checked-in documents have not assigned those issue IDs. The first usable Linux milestone is **C5b**. Its evidence is a rendered real PDF, a proven main-actor hop, a successful normal close, and a byte-identical library copy. C5c adds offline web evidence. Neither milestone needs a writable Syncthing library, AI credentials, or a licence choice.
+Cross-layer IDs (S1–S9, P1–P7, I0–I12) refer to the work items in layers 2, 3 and 5. The first usable Linux milestone is **C5b**. Its evidence is a rendered real PDF, a proven main-actor hop, a successful normal close, and a byte-identical library copy. C5c adds offline web evidence. Neither milestone needs a writable Syncthing library, AI credentials, or a licence choice.
