@@ -144,6 +144,7 @@ targets:
     type: bundle.unit-test
     platform: macOS
     sources:
+      - path: Tests/PdfAnnotationExchangeTests.swift
       - path: Tests/ArchiveExchangeTests.swift
       - path: Tests/Fixtures/harbor-linux.vellumweb
         buildPhase: resources
