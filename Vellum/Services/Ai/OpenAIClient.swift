@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 @MainActor
 final class OpenAIClient {
@@ -61,8 +62,7 @@ final class OpenAIClient {
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-            let bytes = try await openStream(request)
-            let turn = try await Self.consumeTurn(bytes, onEvent: onEvent)
+            let turn = try await Self.consumeTurn(request, onEvent: onEvent)
 
             // The gate is the only route from a streamed turn into the tool
             // loop, so a truncated response cannot reach `toolEngine.run` (#107).
@@ -108,18 +108,14 @@ final class OpenAIClient {
         var hitTokenLimit = false
     }
 
-    /// Consume one Responses SSE stream into a `StreamedTurn`, forwarding text
-    /// deltas live. Generic over the byte source so the loop can be driven from
-    /// an SSE fixture in tests instead of a network response.
-    ///
-    static func consumeTurn<Bytes: AsyncSequence>(
-        _ bytes: Bytes,
+    static func consumeTurn(
+        _ request: URLRequest, transport: any StreamingTransport = AppleStreamingTransport(),
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
-    ) async throws -> StreamedTurn where Bytes.Element == UInt8 {
+    ) async throws -> StreamedTurn {
         var turn = StreamedTurn()
-        for try await payload in SSE.dataPayloads(bytes) {
+        try await AiStreaming.receive(request, provider: .openAI, transport: transport) { payload in
             guard let object = jsonObjectOrNil(payload),
-                  let type = object["type"] as? String else { continue }
+                  let type = object["type"] as? String else { return }
             switch type {
             case "response.output_text.delta":
                 if let delta = object["delta"] as? String, !delta.isEmpty {
@@ -351,59 +347,9 @@ final class OpenAIClient {
         return "The response ended early (reason: \(reason))."
     }
 
-    private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
-        var lastError: Error?
-        for attempt in 0...1 {
-            let bytes: URLSession.AsyncBytes
-            let response: URLResponse
-            do {
-                (bytes, response) = try await URLSession.shared.bytes(for: request)
-            } catch is CancellationError {
-                throw CancellationError() // user-initiated abort: never retry
-            } catch let error as URLError where error.code == .cancelled {
-                throw CancellationError() // URLSession task cancelled: never retry
-            } catch {
-                lastError = error
-                if attempt == 1 { throw error }
-                continue // transient network failure: retry once
-            }
-
-            guard let http = response as? HTTPURLResponse else {
-                throw AiClientError.message("OpenAI returned an invalid HTTP response.")
-            }
-            if (200..<300).contains(http.statusCode) { return bytes }
-            let data = try await Self.drain(bytes)
-            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
-            let error = AiClientError.message(message.isEmpty ? "OpenAI request failed with status \(http.statusCode)." : message)
-            if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
-                lastError = error
-                continue // transient status: retry once
-            }
-            throw error // non-retryable status: escapes immediately
-        }
-        throw lastError ?? AiClientError.message("OpenAI request failed.")
-    }
-
-    private static func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
-        var data = Data()
-        for try await byte in bytes { data.append(byte) }
-        return data
-    }
-
-    private static func jsonObject(_ data: Data) throws -> [String: Any] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AiClientError.message("OpenAI returned invalid JSON.")
-        }
-        return object
-    }
-
     private static func jsonObjectOrNil(_ payload: String) -> [String: Any]? {
         guard let data = payload.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
-
-    private static func providerMessage(_ object: [String: Any], fallback: String) -> String {
-        ((object["error"] as? [String: Any])?["message"] as? String) ?? fallback
     }
 
     private static func toolArguments(from value: [String: Any]) -> AiToolArguments {

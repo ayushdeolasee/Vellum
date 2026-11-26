@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 protocol IntegrationCredentials: Sendable {
     func credential(for provider: IntegrationProvider) async -> String?
@@ -21,42 +22,27 @@ extension IntegrationCredentials {
 struct KeychainIntegrationCredentials: IntegrationCredentials {
     static let service = "com.vellum.integrations"
 
-    // Each call hops to a detached task so a keychain access prompt (or lock
-    // contention with another Vellum instance) blocks neither the caller's
-    // actor nor, transitively, the sync engine's serial executor.
+    var store: any CredentialStore = AppleCredentialStore()
+
     func credential(for provider: IntegrationProvider) async -> String? {
-        let account = account(for: provider)
-        return await Task.detached(priority: .userInitiated) {
-            KeychainStore.get(account, service: Self.service)
-        }.value
+        guard case .value(let value) = await readCredential(for: provider) else { return nil }
+        return value
     }
 
     func readCredential(for provider: IntegrationProvider) async -> KeychainStore.CredentialRead {
-        let account = account(for: provider)
-        return await Task.detached(priority: .userInitiated) {
-            KeychainStore.read(account, service: Self.service)
-        }.value
+        await store.read(account(for: provider), service: Self.service)
     }
 
     func writeCredential(_ credential: String, for provider: IntegrationProvider) async -> KeychainStore.CredentialWrite {
-        let account = account(for: provider)
-        return await Task.detached(priority: .userInitiated) {
-            KeychainStore.writeCredential(account, credential, service: Self.service)
-        }.value
+        await store.write(credential, account: account(for: provider), service: Self.service)
     }
 
     func setCredential(_ credential: String, for provider: IntegrationProvider) async -> Bool {
-        let account = account(for: provider)
-        return await Task.detached(priority: .userInitiated) {
-            KeychainStore.set(account, credential, service: Self.service)
-        }.value
+        await writeCredential(credential, for: provider) == .saved
     }
 
     func deleteCredential(for provider: IntegrationProvider) async -> Bool {
-        let account = account(for: provider)
-        return await Task.detached(priority: .userInitiated) {
-            KeychainStore.delete(account, service: Self.service)
-        }.value
+        await store.delete(account(for: provider), service: Self.service)
     }
 
     private func account(for provider: IntegrationProvider) -> String {
