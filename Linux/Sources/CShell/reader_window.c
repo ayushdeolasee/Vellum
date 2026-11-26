@@ -75,6 +75,13 @@ void reader_set_message(ReaderWindow *r, const char *title, const char *message)
     gtk_label_set_text(GTK_LABEL(r->status), "Read-only library");
 }
 
+void reader_web_ready(ReaderWindow *r, const char *title, const char *position) {
+    g_assert(shell_on_gtk_thread());
+    set_title(r, title);
+    gtk_label_set_text(GTK_LABEL(r->page), position);
+    gtk_label_set_text(GTK_LABEL(r->status), "Offline archive · Read only");
+}
+
 void reader_set_position(ReaderWindow *r, int number, int count) {
     g_assert(shell_on_gtk_thread());
     g_autofree char *position = g_strdup_printf("Page %d of %d", number, count);

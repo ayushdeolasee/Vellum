@@ -21,3 +21,4 @@ void reader_set_message(ReaderWindow *reader, const char *title, const char *mes
 void reader_set_position(ReaderWindow *reader, int number, int count);
 void reader_set_page(ReaderWindow *reader, const char *title, int number, int count,
                      const uint8_t *pixels, int width, int height, size_t stride);
+void reader_web_ready(ReaderWindow *reader, const char *title, const char *position);
