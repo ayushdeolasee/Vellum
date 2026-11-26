@@ -74,6 +74,36 @@ final class ArchiveCompatibilityTests: XCTestCase {
         XCTAssertThrowsError(try ArchiveCodec.decode(MiniZip.write(entries: [manifestEntry, corrupt, ink])))
     }
 
+    func testMissingPathReportsIO() {
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        for read in [{ _ = try ArchiveCodec.readManifest(at: missing) }, { _ = try ArchiveCodec.decode(at: missing) }] {
+            XCTAssertThrowsError(try read()) { error in
+                guard case ArchiveCodecError.io = error else { return XCTFail("Unexpected error: \(error)") }
+            }
+        }
+    }
+
+    func testAssetCountIsIndependentOfOptionalMemberCount() throws {
+        let source = try appleExport()
+        var manifest = try ArchiveCodec.readManifest(data: source)
+        manifest.hashes.ink = nil
+        let snapshot = try zip(source).readCapped("snapshot/index.html", cap: 4096)
+        let assets = (0...ArchiveCodec.maxAssets).map {
+            MiniZip.Entry(name: "snapshot/assets/a\($0).png", data: Data(), stored: true)
+        }
+        let required = [MiniZip.Entry(name: "manifest.json", data: try JSONEncoder().encode(manifest), stored: true),
+                        MiniZip.Entry(name: "snapshot/index.html", data: snapshot, stored: true)]
+        XCTAssertEqual(try ArchiveCodec.decode(MiniZip.write(entries: required + assets.dropLast())).assets.count,
+                       ArchiveCodec.maxAssets)
+        XCTAssertThrowsError(try ArchiveCodec.decode(MiniZip.write(entries: required + assets))) { error in
+            XCTAssertTrue(error.localizedDescription.contains("too many assets"))
+        }
+        let asset = try XCTUnwrap(manifest.assets.first)
+        manifest.assets = Array(repeating: asset, count: ArchiveCodec.maxAssets + 1)
+        let meta = MiniZip.Entry(name: "manifest.json", data: try JSONEncoder().encode(manifest), stored: false)
+        XCTAssertThrowsError(try ArchiveCodec.readManifest(data: MiniZip.write(entries: [meta])))
+    }
+
     #if os(Linux)
     func testSparseFileRejectedBeforeParsing() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -113,6 +143,23 @@ final class ArchiveCompatibilityTests: XCTestCase {
         XCTAssertThrowsError(try zip(underdeclared).readCapped("text", cap: 7)) { error in
             XCTAssertTrue(error.localizedDescription.contains("exceeds its size limit"))
         }
+
+        // A generous caller cap must not let inflation overrun the smaller
+        // size already charged to the cumulative central-directory budget.
+        XCTAssertThrowsError(try zip(underdeclared).readCapped("text", cap: 2048)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("exceeds its size limit"))
+        }
+        XCTAssertThrowsError(try valid.readCapped("text", cap: 7))
+        var overdeclared = bytes
+        overdeclared[central + 24] += 1
+        XCTAssertThrowsError(try zip(overdeclared).readCapped("text", cap: 2048))
+
+        var wrongCRC = bytes
+        wrongCRC[central + 16] ^= 1
+        XCTAssertThrowsError(try zip(wrongCRC).readCapped("text", cap: 2048))
+        var trailing = bytes
+        trailing[central + 20] += 1
+        XCTAssertThrowsError(try zip(trailing).readCapped("text", cap: 2048))
 
         var truncated = bytes
         truncated[central + 20] -= 1 // one byte short of the final DEFLATE block

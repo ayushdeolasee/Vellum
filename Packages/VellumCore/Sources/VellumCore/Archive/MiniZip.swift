@@ -101,6 +101,7 @@ public struct MiniZip {
 
     private struct CentralEntry {
         var method: UInt16
+        var crc: UInt32
         var compressedSize: Int
         var uncompressedSize: Int
         var localHeaderOffset: Int
@@ -125,7 +126,20 @@ public struct MiniZip {
     func contains(_ name: String) -> Bool { entries[name] != nil }
 
     public init(contentsOf path: URL, maxBytes: Int, maxEntries: Int,
-         maxUncompressedBytes: Int) throws {
+                maxUncompressedBytes: Int) throws {
+        let bytes: Data
+        do {
+            bytes = try Self.readFile(path, maxBytes: maxBytes)
+        } catch let error as ArchiveCodecError {
+            throw error
+        } catch {
+            throw ArchiveCodecError.io(error.localizedDescription)
+        }
+        try self.init(data: bytes, maxBytes: maxBytes, maxEntries: maxEntries,
+                      maxUncompressedBytes: maxUncompressedBytes)
+    }
+
+    private static func readFile(_ path: URL, maxBytes: Int) throws -> Data {
         guard maxBytes >= 0 else { throw Self.invalid("negative size limit") }
         let handle = try FileHandle(forReadingFrom: path)
         defer { try? handle.close() }
@@ -142,9 +156,7 @@ public struct MiniZip {
             }
             bytes.append(chunk)
         }
-        data = bytes
-        (entries, orderedNames) = try Self.parseCentralDirectory(
-            data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
+        return bytes
     }
 
     public init(data: Data, maxBytes: Int, maxEntries: Int, maxUncompressedBytes: Int) throws {
@@ -215,6 +227,7 @@ public struct MiniZip {
                 names.append(name)
                 entries[name] = CentralEntry(
                     method: method,
+                    crc: UInt32(u32(cursor + 16)),
                     compressedSize: compressedSize,
                     uncompressedSize: uncompressedSize,
                     localHeaderOffset: localOffset)
@@ -257,16 +270,17 @@ public struct MiniZip {
         }
         let payload = bytes[(bytes.startIndex + dataStart)..<(bytes.startIndex + dataStart + entry.compressedSize)]
 
+        let decoded: Data
         switch entry.method {
         case 0:
             if payload.count > entry.uncompressedSize {
                 throw ArchiveCodecError.invalidDocument(
                     "Archive entry \(name) exceeds its size limit")
             }
-            return Data(payload)
+            decoded = Data(payload)
         case 8:
             do {
-                return try MiniZip.inflate(payload, cap: entry.uncompressedSize)
+                decoded = try MiniZip.inflate(payload, cap: entry.uncompressedSize)
             } catch is SizeLimitExceeded {
                 throw ArchiveCodecError.invalidDocument(
                     "Archive entry \(name) exceeds its size limit")
@@ -278,6 +292,10 @@ public struct MiniZip {
             throw ArchiveCodecError.invalidDocument(
                 "Failed to read \(name): unsupported compression method")
         }
+        guard decoded.count == entry.uncompressedSize, Self.crc32(decoded) == entry.crc else {
+            throw ArchiveCodecError.invalidDocument("Failed to read \(name): size or CRC mismatch")
+        }
+        return decoded
     }
 
     // MARK: Raw DEFLATE (RFC 1951)
@@ -327,7 +345,10 @@ public struct MiniZip {
                 let produced = window - Int(stream.avail_out)
                 guard produced <= remaining else { throw SizeLimitExceeded() }
                 output.append(buffer, count: produced)
-                if status == Z_STREAM_END { return output }
+                if status == Z_STREAM_END {
+                    guard stream.avail_in == 0 else { throw CodecError() }
+                    return output
+                }
                 guard status == Z_OK else { throw CodecError() }
             }
         }
@@ -335,22 +356,10 @@ public struct MiniZip {
 
     // MARK: CRC32 / DOS timestamps
 
-    private static let crcTable: [UInt32] = {
-        (0..<256).map { index -> UInt32 in
-            var value = UInt32(index)
-            for _ in 0..<8 {
-                value = (value & 1) != 0 ? (0xedb8_8320 ^ (value >> 1)) : (value >> 1)
-            }
-            return value
-        }
-    }()
-
     private static func crc32(_ data: Data) -> UInt32 {
-        var crc: UInt32 = 0xffff_ffff
-        for byte in data {
-            crc = crcTable[Int((crc ^ UInt32(byte)) & 0xff)] ^ (crc >> 8)
+        data.withUnsafeBytes { raw in
+            UInt32(CZlib.crc32_z(0, raw.bindMemory(to: UInt8.self).baseAddress, raw.count))
         }
-        return crc ^ 0xffff_ffff
     }
 
     private static func dosDateTime(_ date: Date) -> (time: UInt16, date: UInt16) {
