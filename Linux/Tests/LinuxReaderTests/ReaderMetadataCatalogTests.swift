@@ -158,5 +158,22 @@ import VellumCore
         #expect(resolved.lastPage == (path == relative ? 1 : nil))
         #expect(resolved.displayTitle == (path == relative ? "Signed paper" : "File"))
     }
+    let recorded = "PDFs/Papers/Caf\u{e9}.pdf"
+    let decomposed = root.appendingPathComponent(recorded.decomposedStringWithCanonicalMapping)
+    try write(JSONEncoder().encode(["kind": "pdf", "title": "Signed paper", "last_known_path": recorded]), meta)
+    try write(bytes, decomposed)
+    func page(_ url: URL, bytes: Data) async throws -> Int? {
+        try await catalog.sharedPDF(bytes: bytes, file: url, stamp: nil, fallbackTitle: "File").lastPage
+    }
+    #expect(try await page(decomposed, bytes: bytes) == 1)
+    let changed = bytes + Data([10])
+    try write(changed, decomposed)
+    #expect(try await page(decomposed, bytes: changed) == nil)
+    #expect(try await page(decomposed, bytes: bytes) == nil)
+    try write(bytes, decomposed)
+    let composed = root.appendingPathComponent(recorded)
+    try write(bytes, composed)
+    #expect(try await page(decomposed, bytes: bytes) == nil)
+    #expect(try await page(composed, bytes: bytes) == 1)
     #expect(try await store.read(file) == bytes)
 }
