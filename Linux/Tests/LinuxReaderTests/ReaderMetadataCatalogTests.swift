@@ -77,6 +77,8 @@ import VellumCore
         try fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: path)
     }
+    let sidecarNamedDirectory = records + other.hash + ".ink.json"
+    try fm.createDirectory(at: original.appendingPathComponent(sidecarNamedDirectory), withIntermediateDirectories: false)
     let store = ReadOnlyLibraryFileStore(root: try await RootDirectory.open(original))
     try fm.moveItem(at: original, to: moved)
     // A path-based reopen would now see a different peer and miss the sidecar.
@@ -116,7 +118,7 @@ import VellumCore
     #expect(unkeyed.position == nil && unkeyed.displayTitle == "Filename" && !unkeyed.hasInkSidecar)
 
     let actual = try fm.subpathsOfDirectory(atPath: moved.path)
-    let directories = [".vellum", ".vellum/records", ".vellum/positions", "Web Pages"]
+    let directories = [".vellum", ".vellum/records", ".vellum/positions", "Web Pages", sidecarNamedDirectory]
     #expect(Set(actual) == Set(files.keys).union(directories))
     for (relative, bytes) in files {
         #expect(try Data(contentsOf: moved.appendingPathComponent(relative)) == bytes)

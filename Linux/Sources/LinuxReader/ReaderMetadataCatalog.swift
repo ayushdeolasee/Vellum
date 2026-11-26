@@ -26,7 +26,7 @@ public struct ReaderMetadataCatalog: Sendable {
         var remainingBytes = 32 * 1024 * 1024
         for entry in try await store.list(positions, suffix: ".json") {
             try Task.checkCancellation()
-            guard let name = PositionLayout.parseFileName(entry.name),
+            guard !entry.url.hasDirectoryPath, let name = PositionLayout.parseFileName(entry.name),
                   name.version == PositionLayout.schemaVersion,
                   PositionLayout.fileName(for: name.device) == entry.name,
                   let bytes = try? await store.read(entry.url),
@@ -49,7 +49,7 @@ public struct ReaderMetadataCatalog: Sendable {
         var inkKeys = Set<DocumentKey>()
         for entry in try await store.list(directory, suffix: suffix) {
             try Task.checkCancellation()
-            if let key = DocumentKey(rawValue: "web:" + entry.name.dropLast(suffix.count)) {
+            if !entry.url.hasDirectoryPath, let key = DocumentKey(rawValue: "web:" + entry.name.dropLast(suffix.count)) {
                 inkKeys.insert(key)
             }
         }
