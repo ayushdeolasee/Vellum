@@ -220,7 +220,8 @@ final class PdfXrefStreamTests: XCTestCase {
         let last = try PdfAnnotationIncrement.applying(
             .create(.init(type: .note, pageNumber: 1, id: "last")), to: bytes, now: "2026-11-26T00:00:00Z")
         XCTAssertTrue(last.starts(with: bytes))
-        try PdfEditEligibility.inspect(last, reservingRevision: false)
+        try PdfEditEligibility.validateForReading(last)
+        try PdfEditEligibility.validateOutput(last)
         XCTAssertEqual(PdfEditEligibility.classify(last), .readOnly(.inspectionLimit))
         XCTAssertThrowsError(try PdfAnnotationIncrement.applying(.delete(id: "last"), to: last, now: "2026-11-26T00:00:00Z")) {
             XCTAssertEqual($0 as? PdfReadOnlyReason, .inspectionLimit)

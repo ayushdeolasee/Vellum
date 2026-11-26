@@ -64,3 +64,28 @@ extension PdfiumTests {
         }
     }
 }
+
+extension PdfiumTests {
+    @Test func streamAnnotationAndVerifiedStorageKeyUseOneRevision() async throws {
+        let stamp = "01234567-89ab-cdef-0123-456789abcdef"
+        for name in ["xref-stream-objstm", "resume-stream-string", "resume-stream-name"] {
+            let original = try fixture(name)
+            let edit = PdfAnnotationEdit.create(.init(type: .note, pageNumber: 1, content: "literal endobj", id: "shared"))
+            let key = name == "resume-stream-string" ? stamp : DocumentIdentity.byteHash(original)
+            let date = "2026-11-26T00:00:00Z"
+            if name == "resume-stream-name" {
+                #expect(throws: (any Error).self) {
+                    try PdfAnnotationIncrement.applying(edit, to: original, now: date, preservingStorageKey: key)
+                }
+                continue
+            }
+            let output = try PdfAnnotationIncrement.applying(edit, to: original, now: date, preservingStorageKey: key)
+            try PdfEditEligibility.validateForReading(output)
+            #expect(output.starts(with: original))
+            let suffix = output.dropFirst(original.count)
+            #expect(suffix.ranges(of: Data("startxref".utf8)).count == 1)
+            #expect(try await PdfiumDocument.openingInfo(in: output).stableIdentifier == key)
+            #expect(try PdfAnnotationPureReader.annotations(on: 1, in: output, now: date).contains { $0.id == "shared" })
+        }
+    }
+}

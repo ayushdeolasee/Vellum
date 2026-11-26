@@ -41,6 +41,12 @@ public enum PdfEditEligibility: Equatable, Sendable {
         try inspect(candidate, reservingRevision: false)
     }
 
+    /// Prove the existing revision within the normal structure and work limits.
+    /// This does not reserve room for an edit; writers must still use classify.
+    public static func validateForReading(_ data: Data) throws {
+        try inspect(data, reservingRevision: false)
+    }
+
     // The last provable revision can be saved and read. Classifying it for
     // another edit must report the limit before starting a new increment.
     static func inspect(_ data: Data, reservingRevision: Bool) throws {
