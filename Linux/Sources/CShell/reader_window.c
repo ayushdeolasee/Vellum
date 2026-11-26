@@ -4,19 +4,44 @@
 struct ReaderWindow {
     GtkWindow *window;
     GtkListBox *list;
+    GtkEventController *keys;
+    GtkWidget *search, *no_matches;
     GtkWidget *title, *page, *previous, *next, *message, *picture, *stack, *status;
     ReaderCallback callback;
     void *context;
     gboolean closing, drained;
 };
 
-static void notify(ReaderWindow *r, ReaderEvent event, int row) {
+static void notify(ReaderWindow *r, ReaderEvent event, int entry) {
     g_assert(shell_on_gtk_thread());
-    r->callback(r, event, row, r->context);
+    r->callback(r, event, entry, r->context);
 }
 
 static void selected(GtkListBox *list, GtkListBoxRow *row, ReaderWindow *r) {
-    if (row && !r->closing) notify(r, READER_SELECT, gtk_list_box_row_get_index(row));
+    if (row && !r->closing)
+        notify(r, READER_SELECT, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "entry-id")) - 1);
+}
+
+static void search_changed(GtkEditable *entry, ReaderWindow *r) {
+    if (!r->closing) notify(r, READER_SEARCH, -1);
+}
+
+static void search_activated(GtkSearchEntry *entry, ReaderWindow *r) {
+    GtkListBoxRow *first = gtk_list_box_get_row_at_index(r->list, 0);
+    if (!r->closing && first && *gtk_editable_get_text(GTK_EDITABLE(entry)))
+        gtk_list_box_select_row(r->list, first);
+}
+
+static void search_stopped(GtkSearchEntry *entry, ReaderWindow *r) {
+    if (!r->closing) gtk_editable_set_text(GTK_EDITABLE(entry), "");
+}
+
+static gboolean focus_search(GtkEventControllerKey *controller, guint key, guint keycode,
+                             GdkModifierType state, ReaderWindow *r) {
+    GdkModifierType modifiers = state & gtk_accelerator_get_default_mod_mask();
+    if (!r->closing && key == GDK_KEY_f && modifiers == GDK_CONTROL_MASK)
+        return gtk_widget_grab_focus(r->search);
+    return FALSE;
 }
 
 static void clicked(GtkButton *button, ReaderWindow *r) {
@@ -53,13 +78,51 @@ void reader_finish_close(ReaderWindow *r) {
     r->drained = TRUE;
 }
 
-void reader_add_row(ReaderWindow *r, const char *name) {
+void reader_enable_search(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread());
-    GtkWidget *label = gtk_label_new(name);
+    gtk_widget_set_sensitive(r->search, TRUE);
+}
+
+const char *reader_search_query(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    return gtk_editable_get_text(GTK_EDITABLE(r->search));
+}
+
+void reader_clear_rows(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    gtk_list_box_remove_all(r->list);
+    gtk_widget_set_visible(r->no_matches, FALSE);
+}
+
+void reader_show_no_matches(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    gtk_widget_set_visible(r->no_matches, TRUE);
+}
+
+static GtkWidget *row_label(const char *text) {
+    GtkWidget *label = gtk_label_new(text);
     gtk_label_set_xalign(GTK_LABEL(label), 0);
     gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
-    gtk_widget_set_tooltip_text(label, name);
-    gtk_list_box_append(r->list, label);
+    return label;
+}
+
+void reader_add_row(ReaderWindow *r, int entry, const char *title, const char *filename) {
+    g_assert(shell_on_gtk_thread());
+    GtkWidget *row = gtk_list_box_row_new();
+    g_object_set_data(G_OBJECT(row), "entry-id", GINT_TO_POINTER(entry + 1));
+    gtk_widget_set_tooltip_text(row, filename);
+    GtkWidget *label = row_label(title);
+    if (g_strcmp0(title, filename) != 0) {
+        GtkWidget *labels = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        GtkWidget *subtitle = row_label(filename);
+        gtk_widget_add_css_class(subtitle, "dim-label");
+        gtk_box_append(GTK_BOX(labels), label);
+        gtk_box_append(GTK_BOX(labels), subtitle);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), labels);
+    } else {
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+    }
+    gtk_list_box_append(r->list, row);
 }
 
 void reader_select_row(ReaderWindow *r, int index) {
@@ -163,11 +226,36 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_widget_set_vexpand(paned, TRUE);
     gtk_box_append(GTK_BOX(body), paned);
-    GtkWidget *sidebar = gtk_scrolled_window_new();
+    GtkWidget *sidebar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    r->search = gtk_search_entry_new();
+    gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(r->search), "Search library");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(r->search), GTK_ACCESSIBLE_PROPERTY_LABEL, "Search library", -1);
+    gtk_widget_set_margin_start(r->search, 6);
+    gtk_widget_set_margin_end(r->search, 6);
+    gtk_widget_set_margin_top(r->search, 6);
+    gtk_widget_set_sensitive(r->search, FALSE);
+    gtk_box_append(GTK_BOX(sidebar), r->search);
+    // Editable's immediate change signal clears old results before Enter can use them.
+    g_signal_connect(r->search, "changed", G_CALLBACK(search_changed), r);
+    g_signal_connect(r->search, "activate", G_CALLBACK(search_activated), r);
+    g_signal_connect(r->search, "stop-search", G_CALLBACK(search_stopped), r);
+    r->keys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(r->keys, GTK_PHASE_CAPTURE);
+    g_signal_connect(r->keys, "key-pressed", G_CALLBACK(focus_search), r);
+    gtk_widget_add_controller(GTK_WIDGET(r->window), r->keys);
+
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(scroll, TRUE);
     r->list = GTK_LIST_BOX(gtk_list_box_new());
-    gtk_list_box_set_selection_mode(r->list, GTK_SELECTION_BROWSE);
+    gtk_list_box_set_selection_mode(r->list, GTK_SELECTION_SINGLE);
     gtk_widget_add_css_class(GTK_WIDGET(r->list), "navigation-sidebar");
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sidebar), GTK_WIDGET(r->list));
+    r->no_matches = gtk_label_new("No matching documents");
+    gtk_widget_add_css_class(r->no_matches, "dim-label");
+    gtk_widget_set_margin_top(r->no_matches, 8);
+    gtk_widget_set_visible(r->no_matches, FALSE);
+    gtk_box_append(GTK_BOX(sidebar), r->no_matches);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(r->list));
+    gtk_box_append(GTK_BOX(sidebar), scroll);
     gtk_paned_set_start_child(GTK_PANED(paned), sidebar);
     gtk_paned_set_resize_start_child(GTK_PANED(paned), FALSE);
     gtk_paned_set_position(GTK_PANED(paned), 220);
@@ -208,7 +296,9 @@ int reader_run(ReaderCallback callback, void *context) {
     g_signal_handlers_disconnect_by_data(app, &reader);
     if (reader.window) {
         g_signal_handlers_disconnect_by_data(reader.window, &reader);
+        g_signal_handlers_disconnect_by_data(reader.keys, &reader);
         g_signal_handlers_disconnect_by_data(reader.list, &reader);
+        g_signal_handlers_disconnect_by_data(reader.search, &reader);
         g_signal_handlers_disconnect_by_data(reader.previous, &reader);
         g_signal_handlers_disconnect_by_data(reader.next, &reader);
         g_clear_object(&reader.window);

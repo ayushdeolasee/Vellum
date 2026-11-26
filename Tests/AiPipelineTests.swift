@@ -1,5 +1,6 @@
 import UIKit
 import XCTest
+import VellumCore
 @testable import Vellum
 
 // Deterministic tests for the AI request pipeline (issue #37 review):
@@ -475,16 +476,17 @@ final class AiPipelineTests: XCTestCase {
 
     // MARK: - SSE fixtures
 
-    private struct FixtureBytes: AsyncSequence {
-        typealias Element = UInt8
-        let bytes: [UInt8]
+    private static let fixtureRequest = URLRequest(url: URL(string: "http://127.0.0.1/fixture")!)
 
-        struct Iterator: AsyncIteratorProtocol {
-            var remaining: ArraySlice<UInt8>
-            mutating func next() async -> UInt8? { remaining.popFirst() }
+    private struct FixtureTransport: StreamingTransport {
+        let bytes: Data
+
+        func execute(_ request: URLRequest,
+                     onHead: @escaping @Sendable (StreamingHead) async throws -> Void,
+                     onChunk: @escaping @Sendable (Data) async throws -> Void) async throws {
+            try await onHead(.init(status: 200, headers: [:]))
+            try await onChunk(bytes)
         }
-
-        func makeAsyncIterator() -> Iterator { Iterator(remaining: bytes[...]) }
     }
 
     func testSSEPayloadExtractionFromFixture() async throws {
@@ -498,12 +500,56 @@ final class AiPipelineTests: XCTestCase {
         data: [DONE]
         """
         var payloads: [String] = []
-        for try await payload in SSE.dataPayloads(FixtureBytes(bytes: Array(fixture.utf8))) {
+        try await AiStreaming.receive(Self.fixtureRequest, provider: .openAI, transport: FixtureTransport(bytes: Data(fixture.utf8))) { payload in
             payloads.append(payload)
         }
         XCTAssertEqual(payloads.count, 2)
         XCTAssertTrue(payloads[0].contains("Hel"))
         XCTAssertTrue(payloads[1].contains("lo"))
+    }
+
+    private actor StatusFixture: StreamingTransport {
+        let statuses: [Int]
+        let body: Data
+        private(set) var attempts = 0
+        init(_ statuses: [Int], body: Data) {
+            self.statuses = statuses
+            self.body = body
+        }
+        func execute(_ request: URLRequest,
+                     onHead: @escaping @Sendable (StreamingHead) async throws -> Void,
+                     onChunk: @escaping @Sendable (Data) async throws -> Void) async throws {
+            let status = statuses[min(attempts, statuses.count - 1)]
+            attempts += 1
+            try await onHead(.init(status: status, headers: [:]))
+            try await onChunk(status == 200 ? Data("data: ok\n".utf8) : body)
+        }
+    }
+
+    func testProviderStatusRetryAndErrorMessages() async throws {
+        for provider: AiStreaming.Provider in [.openAI, .openRouter, .openCode("OpenCode Zen"),
+                                               .openCode("OpenCode Go"), .gemini] {
+            let transient = StatusFixture([429, 200], body: Data(repeating: 65, count: 65537))
+            var received: [String] = []
+            try await AiStreaming.receive(Self.fixtureRequest, provider: provider, transport: transient) {
+                received.append($0)
+            }
+            let retries = await transient.attempts
+            XCTAssertEqual(retries, 2)
+            XCTAssertEqual(received, ["ok"])
+
+            let denied = StatusFixture([401], body: Data(#"{"error":{"message":"fixture denied"}}"#.utf8))
+            do {
+                try await AiStreaming.receive(Self.fixtureRequest, provider: provider, transport: denied) { _ in
+                    XCTFail("Unexpected successful payload")
+                }
+                XCTFail("Expected HTTP 401")
+            } catch {
+                XCTAssertEqual(error.localizedDescription, "fixture denied")
+            }
+            let attempts = await denied.attempts
+            XCTAssertEqual(attempts, 1)
+        }
     }
 
     // MARK: - Tool loop vs. the output-token limit (#107)
@@ -514,7 +560,7 @@ final class AiPipelineTests: XCTestCase {
     /// one does, with `response.completed`. The intermediate
     /// `function_call_arguments.delta` is there because the real API sends it and
     /// the client must ignore it (the completed item is the source of truth).
-    private func toolCallFixture(truncated: Bool, text: String = "Let me check page 4") -> FixtureBytes {
+    private func toolCallFixture(truncated: Bool, text: String = "Let me check page 4") -> FixtureTransport {
         var lines = ""
         if !text.isEmpty {
             lines += """
@@ -545,7 +591,7 @@ final class AiPipelineTests: XCTestCase {
             data: {"type":"response.completed","response":{"status":"completed"}}
             """
         }
-        return FixtureBytes(bytes: Array(lines.utf8))
+        return FixtureTransport(bytes: Data(lines.utf8))
     }
 
     /// The regression: a response cut off at its token budget must NOT run the
@@ -555,7 +601,7 @@ final class AiPipelineTests: XCTestCase {
     func testTokenLimitDropsQueuedFunctionCallsInsteadOfRunningThem() async throws {
         var deltas: [String] = []
         let turn = try await OpenAIClient.consumeTurn(
-            toolCallFixture(truncated: true),
+            Self.fixtureRequest, transport: toolCallFixture(truncated: true),
             onEvent: { if case .textDelta(let delta) = $0 { deltas.append(delta) } })
         // Fixture sanity: the model really did queue a call before the cutoff,
         // and the text it streamed was forwarded live on the way through.
@@ -577,7 +623,7 @@ final class AiPipelineTests: XCTestCase {
     /// the same call still runs it, so the tool loop keeps working.
     func testQueuedFunctionCallsStillRunWhenTheResponseWasNotTruncated() async throws {
         let turn = try await OpenAIClient.consumeTurn(
-            toolCallFixture(truncated: false), onEvent: { _ in })
+            Self.fixtureRequest, transport: toolCallFixture(truncated: false), onEvent: { _ in })
         XCTAssertFalse(turn.hitTokenLimit)
 
         switch try OpenAIClient.turnOutcome(turn, hasPriorActions: false) {
@@ -595,7 +641,7 @@ final class AiPipelineTests: XCTestCase {
     /// the error the no-calls path has always produced.
     func testTokenLimitWithNoTextAndNoPriorWorkErrorsRatherThanRunningTools() async throws {
         let turn = try await OpenAIClient.consumeTurn(
-            toolCallFixture(truncated: true, text: ""), onEvent: { _ in })
+            Self.fixtureRequest, transport: toolCallFixture(truncated: true, text: ""), onEvent: { _ in })
         XCTAssertEqual(turn.calls.count, 1)
         XCTAssertTrue(turn.text.isEmpty)
 
@@ -616,7 +662,7 @@ final class AiPipelineTests: XCTestCase {
     /// results kept, instead of throwing them away with an error.
     func testTokenLimitKeepsWorkDoneByEarlierTurnsInsteadOfThrowing() async throws {
         let turn = try await OpenAIClient.consumeTurn(
-            toolCallFixture(truncated: true, text: ""), onEvent: { _ in })
+            Self.fixtureRequest, transport: toolCallFixture(truncated: true, text: ""), onEvent: { _ in })
 
         switch try OpenAIClient.turnOutcome(turn, hasPriorActions: true) {
         case .runTools:
@@ -633,11 +679,11 @@ final class AiPipelineTests: XCTestCase {
         event: response.incomplete
         data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}
         """
-        func fixture() -> FixtureBytes { FixtureBytes(bytes: Array(filtered.utf8)) }
+        func fixture() -> FixtureTransport { FixtureTransport(bytes: Data(filtered.utf8)) }
 
         do {
             _ = try await OpenAIClient.consumeTurn(
-                fixture(), onEvent: { _ in })
+                Self.fixtureRequest, transport: fixture(), onEvent: { _ in })
             XCTFail("the direct client must surface a non-token cutoff")
         } catch {
             XCTAssertTrue(

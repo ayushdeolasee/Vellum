@@ -132,7 +132,7 @@ public struct ReaderMetadataCatalog: Sendable {
         return .web(normalizedURL: normalized)
     }
 
-    private static func title(_ text: String?) -> String? {
+    static func title(_ text: String?) -> String? {
         guard let text, !text.utf8.contains(0),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return text

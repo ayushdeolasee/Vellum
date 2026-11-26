@@ -56,13 +56,11 @@ final class OpenRouterClient {
             request.setValue("https://vellum.app", forHTTPHeaderField: "HTTP-Referer")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-            let bytes = try await openStream(request)
-
             var text = ""
             var toolAccumulators: [Int: ToolCallAccumulator] = [:]
             var finishReason: String?
-            for try await payload in SSE.dataPayloads(bytes) {
-                guard let object = Self.jsonObjectOrNil(payload) else { continue }
+            try await AiStreaming.receive(request, provider: .openRouter) { payload in
+                guard let object = Self.jsonObjectOrNil(payload) else { return }
                 // OpenRouter can deliver a mid-stream error as a JSON payload.
                 if let error = object["error"] as? [String: Any],
                    let message = error["message"] as? String {
@@ -76,11 +74,11 @@ final class OpenRouterClient {
                 }
                 #endif
                 guard let choices = object["choices"] as? [[String: Any]],
-                      let choice = choices.first else { continue }
+                      let choice = choices.first else { return }
                 if let reason = choice["finish_reason"] as? String, !reason.isEmpty {
                     finishReason = reason
                 }
-                guard let delta = choice["delta"] as? [String: Any] else { continue }
+                guard let delta = choice["delta"] as? [String: Any] else { return }
                 if let chunk = delta["content"] as? String, !chunk.isEmpty {
                     text += chunk
                     onEvent(.textDelta(chunk))
@@ -232,63 +230,9 @@ final class OpenRouterClient {
         return body
     }
 
-    /// Open the SSE stream, retrying once on transient failures before any bytes
-    /// are consumed. Reads the (small) error body to surface a real message.
-    /// Only the network call is wrapped in the retry `catch`; non-retryable HTTP
-    /// statuses and cancellation escape immediately instead of being retried.
-    private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
-        var lastError: Error?
-        for attempt in 0...1 {
-            let bytes: URLSession.AsyncBytes
-            let response: URLResponse
-            do {
-                (bytes, response) = try await URLSession.shared.bytes(for: request)
-            } catch is CancellationError {
-                throw CancellationError() // user-initiated abort: never retry
-            } catch let error as URLError where error.code == .cancelled {
-                throw CancellationError() // URLSession task cancelled: never retry
-            } catch {
-                lastError = error
-                if attempt == 1 { throw error }
-                continue // transient network failure: retry once
-            }
-
-            guard let http = response as? HTTPURLResponse else {
-                throw AiClientError.message("OpenRouter returned an invalid HTTP response.")
-            }
-            if (200..<300).contains(http.statusCode) { return bytes }
-            let data = try await Self.drain(bytes)
-            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
-            let error = AiClientError.message(message.isEmpty ? "OpenRouter request failed with status \(http.statusCode)." : message)
-            if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
-                lastError = error
-                continue // transient status: retry once
-            }
-            throw error // non-retryable status: escapes immediately
-        }
-        throw lastError ?? AiClientError.message("OpenRouter request failed.")
-    }
-
-    private static func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
-        var data = Data()
-        for try await byte in bytes { data.append(byte) }
-        return data
-    }
-
-    private static func jsonObject(_ data: Data) throws -> [String: Any] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AiClientError.message("OpenRouter returned invalid JSON.")
-        }
-        return object
-    }
-
     private static func jsonObjectOrNil(_ payload: String) -> [String: Any]? {
         guard let data = payload.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
-
-    private static func providerMessage(_ object: [String: Any], fallback: String) -> String {
-        ((object["error"] as? [String: Any])?["message"] as? String) ?? fallback
     }
 
     private static func toolArguments(from value: [String: Any]) -> AiToolArguments {
