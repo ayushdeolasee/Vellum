@@ -8,11 +8,13 @@ enum PdfFixtureBuilder {
     static func fixtureURL(_ name: String) throws -> URL {
         #if SWIFT_PACKAGE
         let bundle = Bundle.module
+        let directory = "Fixtures/Pdf"
         #else
         let bundle = Bundle(for: BundleToken.self)
+        let directory = "Pdf"
         #endif
-        guard let url = bundle.url(forResource: name, withExtension: "pdf", subdirectory: "Fixtures/Pdf") else {
-            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: "Fixtures/Pdf/\(name).pdf"])
+        guard let url = bundle.url(forResource: name, withExtension: "pdf", subdirectory: directory) else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: "\(directory)/\(name).pdf"])
         }
         return url
     }
