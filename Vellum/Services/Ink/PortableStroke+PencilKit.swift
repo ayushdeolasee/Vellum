@@ -141,10 +141,16 @@ extension PKStroke {
         self.init(ink: ink, path: path, transform: placement, mask: mask, randomSeed: stroke.randomSeed)
         // PencilKit clips differently when a stroke is placed after erasure.
         // Keep direct construction when it matches an existing record. For a
-        // moved stroke, clip the raw path first and then apply its placement.
+        // moved stroke, transform the drawing so PencilKit moves the erase
+        // mask with the path. On iPadOS 26.5 assigning PKStroke.transform
+        // directly recomputes different intervals, even after serialization.
         if let mask, !placement.isIdentity, !matchesVisibleRanges(stroke.visibleRanges) {
-            self = PKStroke(ink: ink, path: path, mask: mask, randomSeed: stroke.randomSeed)
-            self.transform = placement
+            let local = PKStroke(ink: ink, path: path, mask: mask, randomSeed: stroke.randomSeed)
+            let placed = PKDrawing(strokes: [local]).transformed(using: placement)
+            guard placed.strokes.count == 1, let moved = placed.strokes.first else {
+                throw PortableStrokeConversionError.signatureMismatch
+            }
+            self = moved
         }
 
         let rebuiltMask = self.mask
@@ -158,7 +164,8 @@ extension PKStroke {
         }
 
         let transform = self.transform
-        guard self.path.count == stroke.points.count,
+        guard self.ink.inkType == inkType, self.randomSeed == stroke.randomSeed,
+              self.path.count == stroke.points.count,
               zip(stroke.points, self.path).allSatisfy({ $0.matches($1) }),
               try InkTimestamp.format(self.path.creationDate) == stroke.createdAt,
               close([transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty], m),
