@@ -133,8 +133,7 @@ actor PageTextCache {
     /// adopts them. New entries are keyed by the caller's session-stable storage
     /// key (docId when stamped, else this).
     static func pathKey(_ path: String) -> String {
-        let digest = SHA256.hash(data: Data(path.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        DocumentIdentity.sha256Hex(path)
     }
 
     /// Validation hash over (UInt64 LE byte count + first 4 MB + last 4 MB) —

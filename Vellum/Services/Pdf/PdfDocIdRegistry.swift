@@ -44,35 +44,6 @@ enum PdfDocIdRegistry {
         lock.lock()
         defer { lock.unlock() }
         pending.removeAll()
-        knownStamps.removeAll()
-    }
-}
-
-extension PdfDocIdRegistry {
-    // macOS keeps "this session already knows the file's docId" as the
-    // PdfDocumentIO actor's `docId` property. The iPad's write path is a set of
-    // `nonisolated static` functions behind PdfFileGate (plus InkDiskWriter,
-    // which only ever has a path), so the equivalent fast path lives here —
-    // otherwise every single write would pay a CGPDF re-parse just to discover
-    // the file is already stamped.
-
-    // Guarded by `lock` on every access, so the unchecked annotation is sound.
-    nonisolated(unsafe) fileprivate static var knownStamps: [String: String] = [:]
-
-    /// The doc id this process has already seen stamped on `path`, if any.
-    static func knownStamp(forPath path: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return knownStamps[path]
-    }
-
-    /// Remember that `path` durably carries `id`, so later writes skip the
-    /// re-parse. Called both after a successful stamp and after a read that
-    /// found an existing /VellumDocId.
-    static func recordStamp(_ id: String, forPath path: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        knownStamps[path] = id
     }
 }
 

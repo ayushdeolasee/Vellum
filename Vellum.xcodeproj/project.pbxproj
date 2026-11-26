@@ -167,6 +167,7 @@
 		2BE8BEC13A818A2165AB7176 /* VellumExternalWebLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D8D9A5B0DCD8407B5043AE6 /* VellumExternalWebLink.swift */; };
 		2BEE16BAF654C853233F2E5E /* ReadLaterPrefetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1910F6AF80DFD95D7531CC28 /* ReadLaterPrefetcher.swift */; };
 		2C1F0711357BA1CF11111099 /* ExternalLibraryFilteringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B753184F67511D027B50AA /* ExternalLibraryFilteringTests.swift */; };
+		2C4EC613B65AAF9A1FBAB11C /* DocumentIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCBBA9A1DAB0373185D8F5EA /* DocumentIdentityTests.swift */; };
 		2D9B44E54F3EF77786B0CCBC /* InkController_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96A7991568F0B38518672931 /* InkController_iOS.swift */; };
 		2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */; };
 		2E571A6857F9CA8EA709937C /* VellumDeepLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A06AA119CD408C8DC6DAFFA /* VellumDeepLink.swift */; };
@@ -330,6 +331,7 @@
 		66372F50396064574FF1D5E3 /* LibraryRowContent_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 656551BD8605C356B7BCA1A1 /* LibraryRowContent_iOS.swift */; };
 		66443C7BC51669EFE1450BC6 /* VellumApp_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 721E9C680C7E5E5E6ECBFDB9 /* VellumApp_iOS.swift */; };
 		66994E1A97D429CAC940EECC /* WalkthroughSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B19503ACED68A5C202EBE2E4 /* WalkthroughSheet_iOS.swift */; };
+		66ECB05D4DF62E3628B6FB50 /* WebProxyUrlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BAF3F69842AC6333D1D9C38 /* WebProxyUrlTests.swift */; };
 		67B320CA1556DCBF8C2A8507 /* PdfGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102BFBC5EF5B66C15AC2BC86 /* PdfGeometry.swift */; };
 		67CDC5DFB158096C330ACA62 /* DocumentIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28BDBF0FA0F7F13C32A07F05 /* DocumentIdentity.swift */; };
 		68FEAF941D6095976CE73952 /* AiUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17D3131ADA1819B327BDBB6 /* AiUsage.swift */; };
@@ -698,6 +700,7 @@
 		E62EBB8FB7E1797C60DD26E7 /* SessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7280818785023514C87C04C9 /* SessionService.swift */; };
 		E6378797B66A947C83D76EE4 /* HighlightLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */; };
 		E6B0CB4F9698FD21D03270E1 /* WebContentScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F083E5C02A66A025F06638 /* WebContentScript.swift */; };
+		E74B34B7449691A9CDDE76C0 /* PageTextCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */; };
 		E76ADFB8CB195942D8A8F759 /* InkPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 887BAD6DD07D5B3101E1873B /* InkPersistenceTests.swift */; };
 		E78BFF377446A5AD393C5D35 /* SecurityScopedBookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4352F4BA23CA855F4267806D /* SecurityScopedBookmark.swift */; };
 		E78CBF78DBC4E0696C350ECA /* PdfSelectionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1D02EF244DA61F5397D68B /* PdfSelectionBridge.swift */; };
@@ -2797,13 +2800,16 @@
 				53383D04BAEFB64A3762F5B4 /* AiPromptContextTests.swift in Sources */,
 				B3E44891A8E2A43F2685347A /* DocumentAccessBookmarkStoreTests.swift in Sources */,
 				6D471798D0195D7D153CB1A1 /* DocumentActionsTests.swift in Sources */,
+				2C4EC613B65AAF9A1FBAB11C /* DocumentIdentityTests.swift in Sources */,
 				9033E11592AF76E1B9E32114 /* FakeSyncedContainer.swift in Sources */,
 				5E4689891BF4419809DD57AF /* HomeDropTests.swift in Sources */,
 				D5B2CDAC6898F29FDAB0BC1C /* MarkdownParserTests.swift in Sources */,
+				E74B34B7449691A9CDDE76C0 /* PageTextCacheTests.swift in Sources */,
 				EDEA6E3022E09A620D3BC395 /* PdfSearchTests.swift in Sources */,
 				A166F385754680A7B2DAC538 /* ReleaseIsolationTests.swift in Sources */,
 				44D261051D7E8718BB8843F9 /* StorageIsolationTrait.swift in Sources */,
 				C159DD0B58BEA682A89DA1B9 /* StorageMigrationRecoveryTests.swift in Sources */,
+				66ECB05D4DF62E3628B6FB50 /* WebProxyUrlTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
