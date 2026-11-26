@@ -119,6 +119,9 @@ struct WebInkRecord: Codable, Equatable, Sendable {
         var anchor: Anchor?
     }
 
+    var history = InkMergeHistory()
+    // Session-only PencilKit undo provenance, excluded from Codable.
+    var rememberedClusters: [String: Cluster] = [:]
     var version: Int
     var url: String
     var updatedAt: String
@@ -131,6 +134,7 @@ struct WebInkRecord: Codable, Equatable, Sendable {
         case updatedAt = "updated_at"
         case layout
         case clusters
+        case deleted = "deleted_ids", restored = "restored_ids", updated = "stroke_updated_at", nativeIDs = "stroke_native_ids"
     }
 }
 
@@ -407,45 +411,14 @@ enum WebInkStore {
     /// path through the shared `WebLibrary` lock registry so two sessions on
     /// the same page can never interleave ink writes (decision 6).
     static func saveRecord(_ record: WebInkRecord, forKey key: String) throws {
-        let path = inkPath(forKey: key)
-        let lock = WebLibrary.recordLock(for: path)
-        lock.lock()
-        defer { lock.unlock() }
-        if !WebICloud.materialize(at: path),
-           FileManager.default.fileExists(atPath: WebICloud.placeholderURL(for: path).path) {
-            // Same refusal rule as WebLibrary.withRecord: the sidecar exists in
-            // iCloud but its bytes couldn't download — a full-replace write here
-            // would overwrite ink made on another device once iCloud reconnects.
-            throw SessionServiceError.io(
-                "This page's ink is in iCloud but hasn't downloaded yet — check your connection and try again")
-        }
-        let dir = path.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        } catch {
-            throw SessionServiceError.io("Failed to create web store dir: \(error.localizedDescription)")
-        }
-        var record = record
-        if FileManager.default.fileExists(atPath: path.path) {
-            let previous = try readRecord(at: path)
-            try previous.validateForEditing()
-            carryUnknownFields(into: &record, from: [previous], reclustered: true)
-        }
-        let json: Data
-        do {
-            json = try WebLibrary.jsonEncoderPretty.encode(record)
-        } catch {
-            throw SessionServiceError.io("Failed to serialize web ink record: \(error.localizedDescription)")
-        }
-        let tmp = path.appendingPathExtension("tmp")
-        do {
-            try json.write(to: tmp)
-        } catch {
-            throw SessionServiceError.io("Failed to write web ink record: \(error.localizedDescription)")
-        }
-        guard rename(tmp.path, path.path) == 0 else {
-            try? FileManager.default.removeItem(at: tmp)
-            throw SessionServiceError.io("Failed to commit web ink record: rename failed")
+        try withLockedCandidateRecords(forKey: key) { destination, current in
+            if let current {
+                try current.validateForEditing()
+                _ = try coordinatedSnapshot(current: current, baseline: current, incoming: record,
+                                            returningObservation: false) { try writeRecord($0, to: destination) }
+            } else {
+                try writeRecord(record, to: destination)
+            }
         }
     }
 
@@ -478,73 +451,291 @@ enum WebInkStore {
     static func applySnapshot(
         _ incoming: WebInkRecord,
         replacing baseline: WebInkRecord?,
-        forKey key: String
+        forKey key: String,
+        returningObservation: Bool = false
     ) throws -> WebInkRecord {
         try withLockedCandidateRecords(forKey: key) { destination, current in
-            _ = try incoming.validatedMergedDrawing()
             try baseline?.validateForEditing()
-            let result = try current.map {
-                try coordinatedSnapshot(current: $0, baseline: baseline, incoming: incoming)
-            } ?? incoming
-            try writeRecord(result, to: destination)
-            return result
+            if current == nil, baseline == nil {
+                var first = incoming
+                try discardDeleted(from: &first)
+                _ = try first.validatedMergedDrawing()
+                try writeRecord(first, to: destination)
+                return first
+            }
+            var empty = incoming
+            empty.clusters = []
+            return try coordinatedSnapshot(current: current ?? baseline ?? empty, baseline: baseline, incoming: incoming,
+                                           returningObservation: returningObservation) {
+                try writeRecord($0, to: destination)
+            }
         }
     }
 
-    /// Observed-remove merge at STROKE granularity. Cluster-level replacement
-    /// is insufficient because two runtimes can concurrently add different
-    /// strokes near the same paragraph and therefore produce the same cluster
-    /// id. A stroke is matched by PencilKit's persisted path creation date plus
-    /// its original control-point geometry. Its mutable rendering state
-    /// (transform, ink, and eraser mask) is compared separately, so erasing or
-    /// moving a stroke is an update rather than a new stroke. Do not use
-    /// `PKDrawing.dataRepresentation()` as identity: PencilKit's archive bytes
-    /// are not canonical and change after an encode/decode round-trip.
+    /// Neighboring canvas strokes can have identical geometry but different wire IDs.
+    /// Keep the cluster and slot with the native stroke all the way through reclustering.
+    private final class Source {
+        let cluster: WebInkRecord.Cluster
+        let local: PKDrawing
+        let strokes: [PKStroke]
+        let wireIndices: [Int?]
+
+        init(_ cluster: WebInkRecord.Cluster) throws {
+            self.cluster = cluster
+            local = try cluster.localDrawing()
+            wireIndices = try cluster.portableIndices(for: local)
+            strokes = local.transformed(using: CGAffineTransform(translationX: cluster.bounds.x,
+                                                                 y: cluster.bounds.y)).strokes
+        }
+    }
+
+    private struct Member {
+        var id: String
+        let nativeID: String
+        let source: Source
+        let slot: Int
+        var stroke: PKStroke { source.strokes[slot] }
+        var portable: PortableStroke? { source.wireIndices[slot].flatMap { source.cluster.strokes?[$0] } }
+    }
+
+    private static func members(_ record: WebInkRecord) throws -> [Member] {
+        guard (1...WebInkRecord.currentVersion).contains(record.version) else {
+            throw SessionServiceError.invalidDocument("Unsupported web ink version")
+        }
+        return try record.clusters.flatMap { cluster in
+            let source = try Source(cluster)
+            return try source.strokes.enumerated().map { i, stroke in
+                let nativeID = try PortableStroke.rawPathID(of: stroke)
+                let wire = source.wireIndices[i].flatMap { cluster.strokes?[$0] }
+                return Member(id: wire?.id ?? nativeID, nativeID: nativeID, source: source, slot: i)
+            }
+        }
+    }
+
+    private struct Identities {
+        var byNative: [String: Set<String>] = [:]
+
+        init(_ members: [Member], history: InkMergeHistory) {
+            for member in members where member.source.cluster.hasPortablePayload {
+                byNative[member.nativeID, default: []].insert(member.id)
+            }
+            for (id, nativeID) in history.nativeIDs where nativeID != id {
+                byNative[nativeID, default: []].insert(id)
+            }
+        }
+
+        /// An erase first seen on a drawing-only canvas has only the I3 digest.
+        /// Once a wire copy arrives, bind that receipt to its actual, opaque ID.
+        func bindingNativeErases(in original: InkMergeHistory) throws -> InkMergeHistory {
+            var result = original
+            for (native, erase) in original.deleted where original.nativeIDs[native] == native {
+                guard let candidates = byNative[native] else { continue }
+                guard candidates.count == 1, let id = candidates.first else {
+                    throw SessionServiceError.invalidDocument("Ambiguous erased handwriting identity")
+                }
+                guard id != native else { continue }
+                var receipt = InkMergeHistory()
+                receipt.deleted[id] = erase
+                receipt.restored[id] = original.restored[native]
+                receipt.nativeIDs[id] = native
+                result.formUnion(receipt)
+            }
+            return result
+        }
+
+        /// An old native-only archive cannot identify a foreign, opaque deletion
+        /// without its raw-path alias. Refuse this ambiguous import intact.
+        func validateOffline(_ members: [Member], from source: InkMergeHistory, against combined: InkMergeHistory) throws {
+            guard members.contains(where: { !$0.source.cluster.hasPortablePayload && byNative[$0.nativeID] == nil }) else { return }
+            let knownWireIDs = Set(byNative.values.flatMap { $0 })
+            for (id, erase) in combined.deleted where !combined.admits(id, from: combined) {
+                if combined.nativeIDs[id] != nil || knownWireIDs.contains(id) || source.deleted[id] == erase { continue }
+                let isDigest = id.utf8.count == 64 && id.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+                if !isDigest { throw SessionServiceError.invalidDocument("Missing native identity for erased portable ink") }
+            }
+        }
+
+        func resolve(_ input: [Member]) throws -> [Member] {
+            var seen: Set<String> = []
+            return try input.map { member in
+                var resolved = member
+                if !member.source.cluster.hasPortablePayload, let ids = byNative[member.nativeID] {
+                    guard ids.count == 1, let id = ids.first else {
+                        throw SessionServiceError.invalidDocument("Ambiguous native handwriting identity")
+                    }
+                    resolved.id = id
+                }
+                guard seen.insert(resolved.id).inserted else {
+                    throw SessionServiceError.invalidDocument("Duplicate handwriting identity")
+                }
+                return resolved
+            }
+        }
+    }
+
+    /// Native snapshots have no place for a foreign ID. The observation returned to
+    /// the editor remembers its own erase receipts and source clusters for PencilKit undo.
+    /// This session-only provenance is never encoded or added to the visible drawing.
     private static func coordinatedSnapshot(
-        current: WebInkRecord,
-        baseline: WebInkRecord?,
-        incoming: WebInkRecord
+        current: WebInkRecord, baseline: WebInkRecord?, incoming: WebInkRecord,
+        returningObservation: Bool, write: (WebInkRecord) throws -> Void
     ) throws -> WebInkRecord {
-        let currentStrokes = try current.validatedMergedDrawing().strokes
-        let baselineStrokes = try baseline?.validatedMergedDrawing().strokes ?? []
-        let incomingStrokes = try incoming.validatedMergedDrawing().strokes
-        let baselineById = Dictionary(
-            baselineStrokes.map { (strokeIdentity($0), $0) }, uniquingKeysWith: { _, newest in newest })
-        let incomingById = Dictionary(
-            incomingStrokes.map { (strokeIdentity($0), $0) }, uniquingKeysWith: { _, newest in newest })
-
-        var resultStrokes = currentStrokes
-        for (id, baselineStroke) in baselineById {
-            guard let incomingStroke = incomingById[id] else {
-                // This runtime observed the stroke and then removed it.
-                resultStrokes.removeAll { strokeIdentity($0) == id }
-                continue
-            }
-            guard strokeSignature(incomingStroke) != strokeSignature(baselineStroke) else {
-                // Unchanged observed content is not an addition, so a stale
-                // runtime cannot resurrect a stroke another runtime removed.
-                continue
-            }
-            // Eraser masks, ink changes, and re-anchor translations replace
-            // the version this runtime observed while preserving list order.
-            if let index = resultStrokes.firstIndex(where: { strokeIdentity($0) == id }) {
-                resultStrokes[index] = incomingStroke
-            } else {
-                resultStrokes.append(incomingStroke)
-            }
+        let disk = try members(current)
+        let canvas = try members(incoming)
+        let observed = try baseline.map(members) ?? []
+        var remembered = baseline?.rememberedClusters ?? [:]
+        var old = incoming
+        old.clusters = Array(remembered.values)
+        let undoSources = try members(old).filter { remembered[$0.id] != nil }
+        var history = current.history
+        history.formUnion(incoming.history)
+        if let baseline { history.formUnion(baseline.history) }
+        let ids = Identities(disk + canvas + observed + undoSources, history: history)
+        history = try ids.bindingNativeErases(in: history)
+        let diskHistory = try ids.bindingNativeErases(in: current.history)
+        let latest = try ids.resolve(disk)
+        let pending = try ids.resolve(canvas)
+        let base = try ids.resolve(observed)
+        let baseByID = Dictionary(uniqueKeysWithValues: base.map { ($0.id, $0) })
+        let pendingIDs = Set(pending.map(\.id))
+        let surviving = latest.filter { history.admits($0.id, from: diskHistory) }
+        var chosen = Dictionary(uniqueKeysWithValues: surviving.map { ($0.id, $0) })
+        var observationHistory = baseline?.history ?? InkMergeHistory()
+        observationHistory.formUnion(incoming.history)
+        observationHistory = try ids.bindingNativeErases(in: observationHistory)
+        func editTime(_ id: String) -> String {
+            let prior = baseline?.history.updated[id] ?? baseline?.updatedAt
+            return InkMergeHistory.next(incoming.updatedAt, after: prior)
         }
-        for incomingStroke in incomingStrokes {
-            let id = strokeIdentity(incomingStroke)
-            guard baselineById[id] == nil,
-                  resultStrokes.contains(where: { strokeIdentity($0) == id }) == false else { continue }
-            resultStrokes.append(incomingStroke)
+        for member in base where !pendingIDs.contains(member.id) {
+            let id = member.id
+            let time = InkMergeHistory.next(editTime(id), after: observationHistory.restored[id])
+            var erase = InkMergeHistory()
+            erase.deleted[id] = time
+            if member.nativeID != id || !member.source.cluster.hasPortablePayload {
+                erase.nativeIDs[id] = member.nativeID
+            }
+            observationHistory.formUnion(erase)
+            history.formUnion(erase)
+            if returningObservation {
+                var erased = member.source.cluster
+                if member.source.strokes.count > 1 {
+                    erased.strokes = member.portable.map { [$0] }
+                    if erased.drawing != nil {
+                        let local = member.source.local.strokes[member.slot]
+                        erased.drawing = PKDrawing(strokes: [local]).dataRepresentation()
+                    }
+                }
+                remembered[id] = erased
+            }
+            if !history.admits(id, from: diskHistory) { chosen.removeValue(forKey: id) }
         }
-
-        var result = try mergedSnapshot(strokes: resultStrokes, metadata: incoming,
-                                        sources: [current, incoming], anchors: incoming.clusters + current.clusters)
-        carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
+        for member in pending {
+            let id = member.id
+            let previous = baseByID[id]
+            if let previous, strokeSignature(member.stroke) == strokeSignature(previous.stroke) { continue }
+            var time = editTime(id)
+            if previous == nil, remembered[id] != nil, let seenErase = observationHistory.deleted[id],
+               !observationHistory.admits(id, from: observationHistory) {
+                time = InkMergeHistory.next(time, after: seenErase)
+                observationHistory.restored[id] = time
+                history.formUnion(observationHistory)
+            }
+            guard history.admits(id, from: observationHistory) else { continue }
+            if chosen[id] != nil {
+                guard previous != nil || remembered[id] != nil else { continue }
+                let onDisk = current.history.updated[id] ?? current.updatedAt
+                // An observed edit wins over its own base even on an equal clock.
+                if let previous, let stored = chosen[id],
+                   strokeSignature(previous.stroke) != strokeSignature(stored.stroke),
+                   !InkMergeHistory.newer(time, than: onDisk) { continue }
+            }
+            chosen[id] = member
+            history.updated[id] = time
+            observationHistory.updated[id] = time
+        }
+        // Freeze the timestamp of unchanged legacy strokes before the page clock advances.
+        for member in latest where chosen[member.id] != nil && history.updated[member.id] == nil {
+            history.updated[member.id] = current.updatedAt
+        }
+        let diskIDs = Set(latest.map(\.id))
+        let order = latest.map(\.id) + pending.map(\.id).filter { !diskIDs.contains($0) }
+        let sources = latest + base + undoSources + pending
+        var result = try mergedSnapshot(order.compactMap { chosen[$0] }, metadata: incoming,
+                                        sources: sources, records: [current, incoming])
+        result.history = history
         result.updatedAt = WebLibrary.rfc3339Now()
-        return result
+        guard returningObservation else {
+            try write(result)
+            return result
+        }
+        // Include only what this canvas saw, even if a concurrent change won on disk.
+        var observation = try mergedSnapshot(pending, metadata: incoming, sources: sources, records: [current, incoming])
+        observation.history = observationHistory
+        for id in pendingIDs { remembered.removeValue(forKey: id) }
+        observation.rememberedClusters = remembered
+        try write(result)
+        return observation
+    }
+
+    /// A peer may send both an old payload and its tombstone. Filter in cluster-local
+    /// space before any reader, including archive adoption into an empty library.
+    static func discardDeleted(from record: inout WebInkRecord) throws {
+        if record.history.deleted.keys.contains(where: { record.history.nativeIDs[$0] == $0 }),
+           record.clusters.contains(where: { $0.strokes != nil }) {
+            var aliases = Identities([], history: record.history)
+            for wire in record.clusters.flatMap({ $0.strokes ?? [] }) {
+                aliases.byNative[wire.rawPathID, default: []].insert(wire.id)
+            }
+            record.history = try aliases.bindingNativeErases(in: record.history)
+        }
+        let erased = Set(record.history.deleted.keys.filter { !record.history.admits($0, from: record.history) })
+        guard !erased.isEmpty, !record.clusters.isEmpty else { return }
+
+        // Learn aliases before looking at any drawing-only copies, regardless of cluster order.
+        var paired: [Int: Source] = [:]
+        for (index, cluster) in record.clusters.enumerated() {
+            guard let wire = cluster.strokes, wire.contains(where: { erased.contains($0.id) }) else { continue }
+            let source = try Source(cluster)
+            paired[index] = source
+            for (slot, wireIndex) in source.wireIndices.enumerated() {
+                guard let wireIndex, erased.contains(wire[wireIndex].id) else { continue }
+                let id = wire[wireIndex].id
+                let native = try PortableStroke.rawPathID(of: source.strokes[slot])
+                if id != native { record.history.nativeIDs[id] = native }
+            }
+        }
+        let hiddenPaths = Set(erased.map { record.history.nativeIDs[$0] ?? $0 })
+        var kept: [WebInkRecord.Cluster] = []
+        for (index, original) in record.clusters.enumerated() {
+            var cluster = original
+            let local = try paired[index]?.local ?? cluster.localDrawing()
+            let strokes = local.strokes
+            let nativeIDs = try strokes.map(PortableStroke.rawPathID(of:))
+            if paired[index] == nil, nativeIDs.allSatisfy({ !hiddenPaths.contains($0) }) {
+                // An unrelated deletion must not turn an I4-readable stale dual blob into a load error.
+                kept.append(cluster)
+                continue
+            }
+            let slots = try paired[index]?.wireIndices ?? cluster.portableIndices(for: local)
+            let survivors = strokes.indices.filter { slot in
+                if let i = slots[slot], let wire = cluster.strokes { return !erased.contains(wire[i].id) }
+                // An omitted native member of a dual has its own canonical ID.
+                return cluster.hasPortablePayload ? !erased.contains(nativeIDs[slot]) : !hiddenPaths.contains(nativeIDs[slot])
+            }
+            guard !survivors.isEmpty else { continue }
+            if survivors.count != strokes.count {
+                if cluster.drawing != nil {
+                    cluster.drawing = PKDrawing(strokes: survivors.map { strokes[$0] }).dataRepresentation()
+                }
+                if let wire = cluster.strokes {
+                    let indices = survivors.compactMap { slots[$0] }.sorted()
+                    cluster.strokes = indices.isEmpty ? nil : indices.map { wire[$0] }
+                }
+            }
+            kept.append(cluster)
+        }
+        record.clusters = kept
     }
 
     /// Snapshotting rebuilds bounds and can change a cluster's derived id.
@@ -594,8 +785,17 @@ enum WebInkStore {
     }
 
     /// Relocation keeps the newest whole canvas, including its deletions.
-    static func relocationSnapshot(current: WebInkRecord, incoming: WebInkRecord) -> WebInkRecord {
+    static func relocationSnapshot(current: WebInkRecord, incoming: WebInkRecord) throws -> WebInkRecord {
         var result = WebArchive.newerThan(incoming.updatedAt, current.updatedAt) ? incoming : current
+        let other = WebArchive.newerThan(incoming.updatedAt, current.updatedAt) ? current : incoming
+        // Relocation still selects the newer whole canvas. Carry older erases
+        // without importing strokes absent from the selected snapshot.
+        var erases = other.history
+        erases.restored = [:]
+        erases.updated = [:]
+        result.history.formUnion(erases)
+        try discardDeleted(from: &result)
+        result.history.formUnion(other.history)
         carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
         return result
     }
@@ -618,6 +818,7 @@ enum WebInkStore {
         var colorComponents: [CGFloat]
         var points: [StrokeSignaturePoint]
         var mask: CGPath?
+        var maskEvenOdd: Bool?
         var randomSeed: UInt32
         var visibleRanges: [ClosedRange<CGFloat>]
     }
@@ -652,7 +853,7 @@ enum WebInkStore {
                     azimuth: $0.azimuth, altitude: $0.altitude,
                     secondaryScale: $0.secondaryScale)
             },
-            mask: stroke.mask?.cgPath, randomSeed: stroke.randomSeed,
+            mask: stroke.mask?.cgPath, maskEvenOdd: stroke.maskEvenOdd, randomSeed: stroke.randomSeed,
             visibleRanges: stroke.maskedPathRanges)
     }
 
@@ -660,175 +861,157 @@ enum WebInkStore {
     /// again. Cluster ids are layout/anchor metadata and may legitimately
     /// change when a once-unanchored stroke gains a text anchor, so using them
     /// as content identity can duplicate or replace the user's ink.
-    static func additivelyMerged(
-        current: WebInkRecord, incoming: WebInkRecord
-    ) throws -> WebInkRecord {
-        var strokes = try current.validatedMergedDrawing().strokes
-        let incomingStrokes = try incoming.validatedMergedDrawing().strokes
-        var indices = Dictionary(
-            strokes.enumerated().map { (strokeIdentity($0.element), $0.offset) },
-            uniquingKeysWith: { _, newest in newest })
-        let incomingNewer = WebArchive.newerThan(incoming.updatedAt, current.updatedAt)
-        for stroke in incomingStrokes {
-            let id = strokeIdentity(stroke)
-            if let index = indices[id] {
-                if incomingNewer, strokeSignature(strokes[index]) != strokeSignature(stroke) {
-                    strokes[index] = stroke
-                }
-            } else {
-                indices[id] = strokes.count
-                strokes.append(stroke)
-            }
+    static func additivelyMerged(current: WebInkRecord, incoming: WebInkRecord) throws -> WebInkRecord {
+        let incumbent = try members(current)
+        let offered = try members(incoming)
+        var history = current.history
+        history.formUnion(incoming.history)
+        let ids = Identities(incumbent + offered, history: history)
+        try ids.validateOffline(incumbent, from: current.history, against: history)
+        try ids.validateOffline(offered, from: incoming.history, against: history)
+        let left = try ids.resolve(incumbent)
+        let right = try ids.resolve(offered)
+        let selection = try InkMergeHistory.merge(current: ids.bindingNativeErases(in: current.history),
+            ids: left.map(\.id), timestamp: current.updatedAt, incoming: ids.bindingNativeErases(in: incoming.history),
+            incomingIDs: right.map(\.id), incomingTimestamp: incoming.updatedAt)
+        let records = WebArchive.newerThan(incoming.updatedAt, current.updatedAt) ? [incoming, current] : [current, incoming]
+        let winners = selection.strokes.map { $0.incoming ? right[$0.index] : left[$0.index] }
+        var result = try mergedSnapshot(winners, metadata: records[0], sources: winners + left + right, records: records,
+            nativeIDs: Set((left + right).filter { $0.source.cluster.drawing != nil }.map(\.id)))
+        result.history = selection.history
+        for member in left + right where result.history.deleted[member.id] != nil && member.id != member.nativeID {
+            result.history.nativeIDs[member.id] = member.nativeID
         }
-
-        let metadata = incomingNewer ? incoming : current
-        let other = incomingNewer ? current : incoming
-        var result = try mergedSnapshot(strokes: strokes, metadata: metadata,
-                                        sources: [metadata, other], anchors: metadata.clusters + other.clusters)
         result.version = min(current.version, incoming.version)
-        carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
-        result.updatedAt = metadata.updatedAt
         return result
     }
 
-    /// Keep existing portable records separate from native additions, even when
-    /// the canvas groups both under the same text anchor. A portable array must
-    /// describe its entire cluster, and new strokes still use drawing only.
     private static func mergedSnapshot(
-        strokes: [PKStroke], metadata: WebInkRecord, sources: [WebInkRecord], anchors: [WebInkRecord.Cluster]
+        _ winners: [Member], metadata: WebInkRecord, sources: [Member], records: [WebInkRecord], nativeIDs: Set<String> = []
     ) throws -> WebInkRecord {
-        let originals = try sources.flatMap(\.clusters).map(StoredCluster.init)
-        var portableSource: [StrokeIdentity: Int] = [:]
-        var nativeSource: [StrokeIdentity: Int] = [:]
-        for (index, original) in originals.enumerated() {
-            for id in original.indices.keys {
-                if let wireID = original.wireID(for: id) {
-                    if let previous = portableSource[id], originals[previous].wireID(for: id) != wireID {
-                        throw SessionServiceError.invalidDocument("Conflicting portable stroke identities")
-                    }
-                    if portableSource[id] == nil { portableSource[id] = index }
-                } else if original.cluster.strokes != nil {
-                    if portableSource[id] == nil { portableSource[id] = index }
-                } else if nativeSource[id] == nil {
-                    nativeSource[id] = index
-                }
-            }
+        let byID = Dictionary(grouping: sources, by: \.id)
+        // A canvas snapshot is drawing-only. Recover the portable representation from
+        // the persisted source, including its cluster-local transform and native mask.
+        let wireSources = winners.map { member in
+            member.portable != nil ? member : byID[member.id]?.first { $0.portable != nil }
         }
-
+        let anchors = ([metadata] + records).flatMap(\.clusters)
+        func needsNative(_ index: Int) -> Bool {
+            wireSources[index]?.source.cluster.drawing != nil || nativeIDs.contains(winners[index].id)
+        }
+        let reserved = Set(wireSources.compactMap { $0?.source.cluster.id })
+        var used: Set<String> = []
         var result = metadata
         result.clusters = []
-        let reserved = Set(originals.filter { $0.cluster.strokes != nil }.map { $0.cluster.id })
-        var used: Set<String> = []
-        for spatial in WebInkClustering.clusters(of: PKDrawing(strokes: strokes)) {
-            let members = spatial.drawing.strokes
+        for indices in WebInkClustering.groups(of: winners.map(\.stroke)) {
             var start = 0
-            while start < members.count {
-                let firstID = strokeIdentity(members[start])
-                let source = portableSource[firstID]
+            while start < indices.count {
+                let first = indices[start]
+                let wire = wireSources[first]
                 var end = start + 1
-                while end < members.count, portableSource[strokeIdentity(members[end])] == source { end += 1 }
-                let group = PKDrawing(strokes: Array(members[start..<end]))
+                var paths: Set<String> = [winners[first].nativeID]
+                while end < indices.count {
+                    let next = indices[end]
+                    guard wireSources[next]?.source === wire?.source, needsNative(next) == needsNative(first) else { break }
+                    if wire != nil, needsNative(next), !paths.insert(winners[next].nativeID).inserted { break }
+                    end += 1
+                }
+                let run = indices[start..<end]
+                let group = PKDrawing(strokes: run.map { winners[$0].stroke })
+                let original = wire?.source ?? winners[first].source
                 let anchor = anchors.compactMap { cluster -> (CGFloat, WebInkRecord.Anchor)? in
                     guard let anchor = cluster.anchor else { return nil }
                     let overlap = group.bounds.intersection(cluster.bounds.rect)
                     return overlap.isNull ? nil : (overlap.width * overlap.height, anchor)
-                }.max { $0.0 < $1.0 }?.1
-                let candidate = (source ?? nativeSource[firstID]).map { originals[$0] }
-                var cluster = try mergedCluster(group, anchor: anchor, original: candidate)
-                // Two representations under one anchor still need distinct cluster IDs.
-                if source == nil, reserved.contains(cluster.id) { cluster.id += ":native" }
+                }.max { $0.0 < $1.0 }?.1 ?? (original.cluster.bounds.rect.intersects(group.bounds)
+                    ? original.cluster.anchor : nil)
+                let unchanged = group.strokes.map(strokeSignature) == original.strokes.map(strokeSignature)
+                let bounds = unchanged ? original.cluster.bounds.rect : group.bounds
+                var cluster = original.cluster
+                if !unchanged || cluster.anchor != anchor {
+                    cluster.id = WebInkRecord.clusterId(anchor: anchor, bounds: bounds)
+                }
+                cluster.anchor = anchor
+                cluster.bounds = .init(bounds)
+                let local = group.transformed(using: CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
+                if !unchanged, cluster.drawing != nil { cluster.drawing = local.dataRepresentation() }
+                if cluster.drawing == nil, needsNative(first) {
+                    cluster.drawing = local.dataRepresentation()
+                }
+                if wire != nil {
+                    cluster.strokes = try zip(run, local.strokes).map { i, localStroke in
+                        let member = winners[i]
+                        guard let prior = wireSources[i], var portable = prior.portable else {
+                            throw SessionServiceError.invalidDocument("Missing source for portable ink")
+                        }
+                        if strokeSignature(member.stroke) == strokeSignature(prior.stroke) {
+                            portable.transform[4] += prior.source.cluster.bounds.x - bounds.minX
+                            portable.transform[5] += prior.source.cluster.bounds.y - bounds.minY
+                        } else {
+                            var edited = try PortableStroke(localStroke)
+                            guard edited.points.count == portable.points.count,
+                                  zip(edited.points, portable.points).allSatisfy({ lhs, rhs in
+                                      lhs.x == rhs.x && lhs.y == rhs.y && lhs.t == rhs.t
+                                  }) else {
+                                throw SessionServiceError.invalidDocument("Inconsistent dual ink paths")
+                            }
+                            // A move can normalize equivalent AppKit/UIKit path commands.
+                            // Keep the exact saved mask whenever its fill geometry still matches.
+                            if try portable.matchesMask(of: localStroke) { edited.mask = portable.mask }
+                            portable = edited
+                            portable.id = member.id
+                            // Refuse an edit that cannot reproduce its native erase geometry.
+                            _ = try PKStroke(portable)
+                        }
+                        for source in byID[member.id] ?? [] {
+                            if let old = source.portable { portable.inheritInkFields(from: old) }
+                        }
+                        return portable
+                    }
+                }
+                if wire == nil {
+                    // A dual source can omit a fully masked native member. It has no wire ID.
+                    for i in run where !winners[i].stroke.maskedPathRanges.isEmpty {
+                        if byID[winners[i].id]?.contains(where: { $0.source.cluster.hasPortablePayload && $0.portable == nil }) == true {
+                            throw SessionServiceError.invalidDocument("A newly visible stroke has no portable identity")
+                        }
+                    }
+                    cluster.strokes = nil
+                    if reserved.contains(cluster.id) { cluster.id += ":native" }
+                }
                 let base = cluster.id
                 var suffix = 1
                 while !used.insert(cluster.id).inserted {
                     suffix += 1
                     cluster.id = "\(base):\(suffix)"
                 }
+                // Use the actual contributing strokes even when cluster IDs/bounds changed.
+                for i in run {
+                    for source in byID[winners[i].id] ?? [] {
+                        inheritClusterFields(into: &cluster, from: source.source.cluster)
+                    }
+                }
+                if cluster.drawing != nil && cluster.strokes != nil && !unchanged {
+                    _ = try cluster.portableIndices(for: cluster.localDrawing())
+                }
                 result.clusters.append(cluster)
                 start = end
             }
         }
+        for record in records {
+            result.unknownFields.inheritInkFields(from: record.unknownFields)
+            result.layout.unknownFields.inheritInkFields(from: record.layout.unknownFields)
+        }
         return result
     }
 
-    private struct StoredCluster {
-        let cluster: WebInkRecord.Cluster
-        let strokes: [PKStroke]
-        let indices: [StrokeIdentity: Int]
-        let wireIndices: [Int?]
-
-        init(_ cluster: WebInkRecord.Cluster) throws {
-            self.cluster = cluster
-            let local = try cluster.localDrawing()
-            wireIndices = try cluster.portableIndices(for: local)
-            strokes = local.transformed(using: CGAffineTransform(translationX: cluster.bounds.x, y: cluster.bounds.y)).strokes
-            indices = Dictionary(strokes.enumerated().map { (strokeIdentity($0.element), $0.offset) },
-                                 uniquingKeysWith: { first, _ in first })
-            guard !cluster.hasPortablePayload || indices.count == strokes.count else {
-                throw SessionServiceError.invalidDocument("Multiple saved strokes match the same canvas path.")
-            }
+    private static func inheritClusterFields(into cluster: inout WebInkRecord.Cluster, from old: WebInkRecord.Cluster) {
+        cluster.unknownFields.inheritInkFields(from: old.unknownFields)
+        cluster.bounds.unknownFields.inheritInkFields(from: old.bounds.unknownFields)
+        if let anchor = old.anchor {
+            cluster.anchor?.unknownFields.inheritInkFields(from: anchor.unknownFields)
+            cluster.anchor?.rect.unknownFields.inheritInkFields(from: anchor.rect.unknownFields)
         }
-
-        func wireID(for id: StrokeIdentity) -> String? {
-            guard let native = indices[id], let i = wireIndices[native] else { return nil }
-            return cluster.strokes?[i].id
-        }
-    }
-
-    private static func mergedCluster(
-        _ group: PKDrawing, anchor: WebInkRecord.Anchor?, original: StoredCluster?
-    ) throws -> WebInkRecord.Cluster {
-        if let original, group.strokes.map(strokeSignature) == original.strokes.map(strokeSignature) {
-            // No stroke changed. Keep even noncanonical native drawing bytes.
-            var cluster = original.cluster
-            if cluster.anchor != anchor {
-                cluster.anchor = anchor
-                cluster.id = WebInkRecord.clusterId(anchor: anchor, bounds: cluster.bounds.rect)
-            }
-            return cluster
-        }
-        let bounds = group.bounds
-        let local = group.transformed(using: CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
-        var cluster = WebInkRecord.Cluster(id: WebInkRecord.clusterId(anchor: anchor, bounds: bounds),
-            drawing: local.dataRepresentation(), bounds: .init(bounds), anchor: anchor)
-        guard let original, let stored = original.cluster.strokes else { return cluster }
-        cluster.strokes = try zip(group.strokes, local.strokes).compactMap { stroke, localStroke in
-            guard let i = original.indices[strokeIdentity(stroke)] else {
-                throw SessionServiceError.invalidDocument("Missing original ink stroke")
-            }
-            guard let wireIndex = original.wireIndices[i] else {
-                // A native-only erased stroke remains in the drawing blob.
-                guard stroke.maskedPathRanges.isEmpty else {
-                    throw SessionServiceError.invalidDocument("A newly visible stroke has no portable identity")
-                }
-                return nil
-            }
-            var wire = stored[wireIndex]
-            if strokeSignature(stroke) == strokeSignature(original.strokes[i]) {
-                // Only the cluster-local origin changed after a split.
-                wire.transform[4] += original.cluster.bounds.x - bounds.minX
-                wire.transform[5] += original.cluster.bounds.y - bounds.minY
-                return wire
-            }
-            // Update only a representation already on disk. Retain its opaque
-            // identity and fields that PencilKit cannot carry through an edit.
-            var edited = try PortableStroke(localStroke)
-            guard edited.points.count == wire.points.count else {
-                throw SessionServiceError.invalidDocument("Inconsistent dual ink paths")
-            }
-            edited.id = wire.id
-            edited.unknownFields = wire.unknownFields
-            for p in edited.points.indices { edited.points[p].unknownFields = wire.points[p].unknownFields }
-            // Translation or recoloring leaves the local mask intact. Keep its
-            // original wire commands across AppKit/UIKit path normalization.
-            if try wire.matchesMask(of: localStroke) {
-                edited.mask = wire.mask
-            } else {
-                edited.mask?.unknownFields = wire.mask?.unknownFields ?? [:]
-            }
-            return edited
-        }
-        if original.cluster.drawing == nil { cluster.drawing = nil }
-        return cluster
     }
 
     /// Archive import intentionally remains additive, but its whole
@@ -923,7 +1106,7 @@ enum WebInkStore {
                 // Unreadable source: leave it in place for inspection.
                 return false
             }
-            let merged = relocationSnapshot(current: dest, incoming: src)
+            guard let merged = try? relocationSnapshot(current: dest, incoming: src) else { return false }
             if merged != dest {
                 guard (try? writeRecord(merged, to: destination)) != nil else { return false }
             }
@@ -964,9 +1147,10 @@ actor WebInkIO {
     @discardableResult
     func write(
         _ record: WebInkRecord,
-        replacing baseline: WebInkRecord? = nil
+        replacing baseline: WebInkRecord? = nil,
+        returningObservation: Bool = false
     ) throws -> WebInkRecord {
-        try WebInkStore.applySnapshot(record, replacing: baseline, forKey: key)
+        try WebInkStore.applySnapshot(record, replacing: baseline, forKey: key, returningObservation: returningObservation)
     }
 
     /// Complete additive archive merge under the same per-path lock as live
@@ -991,16 +1175,19 @@ actor WebInkIO {
 extension WebInkRecord {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        history = try InkMergeHistory(from: decoder)
         version = try container.decode(Int.self, forKey: .version)
         url = try container.decode(String.self, forKey: .url)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
         layout = try container.decode(Layout.self, forKey: .layout)
         clusters = try container.decode([Cluster].self, forKey: .clusters)
         unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+        try WebInkStore.discardDeleted(from: &self)
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try history.encode(to: encoder)
         try container.encode(version, forKey: .version)
         try container.encode(url, forKey: .url)
         try container.encode(updatedAt, forKey: .updatedAt)

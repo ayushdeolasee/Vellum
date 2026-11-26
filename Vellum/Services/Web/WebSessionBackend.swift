@@ -361,7 +361,7 @@ final class WebDocumentSession: DocumentSession {
         let inkKey = localKey
         let inkJson = try await Task.detached(priority: .userInitiated) { () throws -> Data? in
             guard let record = try WebInkStore.loadRecordForExport(forKey: inkKey),
-                  !record.clusters.isEmpty else { return nil }
+                  !record.clusters.isEmpty || !record.history.deleted.isEmpty else { return nil }
             return try WebLibrary.jsonEncoderPretty.encode(record)
         }.value
         let written: (path: String, bytes: Int)
