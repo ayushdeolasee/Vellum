@@ -57,9 +57,11 @@ public enum SharedPDFIdentity {
         let id = preferredID ?? UUID().uuidString.lowercased()
         if writable, observed == nil, DocumentIdentity.isCanonicalKey(id),
            PdfEditEligibility.classify(original) == .editable,
-           let bytes = try? PdfInfoIncrement.setMetadataIncrement(normalizedData: original, key: "doc_id", value: id),
+           let bytes = try? PdfInfoIncrement.setMetadataIncrement(normalizedData: original, entries: [("doc_id", id)],
+                                                                 requiringAbsentKey: "VellumDocId"),
            bytes.count > original.count, bytes.starts(with: original),
-           PdfEditEligibility.classify(bytes) == .editable, stamp(in: bytes, readerID: readID(bytes)) == id {
+           (try? PdfEditEligibility.inspect(bytes, reservingRevision: false)) != nil,
+           stamp(in: bytes, readerID: readID(bytes)) == id {
             return (bytes, id)
         }
         return (original, DocumentIdentity.byteHash(original))

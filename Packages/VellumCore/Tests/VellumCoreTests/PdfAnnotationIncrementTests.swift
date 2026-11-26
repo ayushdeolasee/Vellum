@@ -96,7 +96,7 @@ final class PdfAnnotationIncrementTests: XCTestCase {
     }
 
     func testForeignRichNoteEditsAndPDFTextEncodings() throws {
-        for subtype in ["Text", "FreeText"] {
+        for subtype in ["Text", "FreeText", "Highlight"] {
             let original = PdfFixtureBuilder.classicObjects([
                 "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [null 4 0 R] >>",
@@ -124,6 +124,43 @@ final class PdfAnnotationIncrementTests: XCTestCase {
         for invalid in ["/NotAString", "<< /Fake (id) >>", "<not-hex>", "<EFBBBF80>"] {
             XCTAssertNil(PdfDictSource.decodeTextString(Array(invalid.utf8)))
         }
+    }
+
+    func testUTF8BOMIsDisplayTextButCannotIdentifyAnAnnotation() throws {
+        func fixture(nm: String) -> Data {
+            PdfFixtureBuilder.classicObjects([
+                "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [4 0 R] >>",
+                "<< /Subtype /Text /Rect [1 2 3 4] /Contents <EFBBBF616263> /NM \(nm) >>"
+            ])
+        }
+        for raw in ["<EFBBBF616263>", #"(\357\273\277abc)"#] {
+            let pdf = fixture(nm: raw)
+            XCTAssertEqual(PdfEditEligibility.classify(pdf), .readOnly(.ambiguousAnnotation))
+            XCTAssertThrowsError(try read(pdf)) { XCTAssertEqual($0 as? PdfReadOnlyReason, .ambiguousAnnotation) }
+            for id in ["abc", "ï»¿abc", "pdf-direct-1-0"] {
+                XCTAssertThrowsError(try apply(.update(.init(id: id, content: "replacement")), pdf))
+            }
+        }
+        for nm in ["(abc)", "<FEFF006100620063>"] {
+            let record = try XCTUnwrap(read(fixture(nm: nm)).first)
+            XCTAssertEqual(record.id, "abc")
+            XCTAssertEqual(record.content, "abc")
+        }
+    }
+
+    func testTinyCoordinatesReportGeometryInsteadOfAProofLimit() throws {
+        let data = PdfFixtureBuilder.makeClassicPdf(pages: [.init()])
+        func edit(x: Double) -> PdfAnnotationEdit {
+            let position = PositionData(rects: [.init(x: x, y: 5, width: 1, height: 1)], pageWidth: 612, pageHeight: 792)
+            return .create(.init(type: .note, pageNumber: 1, positionData: position, id: "tiny"))
+        }
+        XCTAssertThrowsError(try apply(edit(x: 1e-300), data)) {
+            XCTAssertEqual($0 as? PdfReadOnlyReason, .unsupportedGeometry)
+        }
+        let result = try apply(edit(x: 1e-8), data)
+        let anchor = try XCTUnwrap(read(result).first?.positionData?.rects.first)
+        XCTAssertEqual(anchor.x, 1e-8, accuracy: 1e-20)
     }
 
     func testDeletingAdjacentDirectDictionaryKeepsTokenBoundaries() throws {

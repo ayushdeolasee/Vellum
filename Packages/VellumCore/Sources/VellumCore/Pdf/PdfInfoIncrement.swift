@@ -13,6 +13,11 @@ public enum PdfInfoIncrement {
     /// a lazy doc_id stamp onto a metadata write that was happening anyway, so
     /// the file is still rewritten only once per user action.
     public static func setMetadataIncrement(normalizedData: Data, entries: [(key: String, value: String)]) throws -> Data {
+        try setMetadataIncrement(normalizedData: normalizedData, entries: entries, requiringAbsentKey: nil)
+    }
+
+    static func setMetadataIncrement(normalizedData: Data, entries: [(key: String, value: String)],
+                                     requiringAbsentKey: String?) throws -> Data {
         let file = try ClassicPdfFile(data: normalizedData)
 
         var increment = PdfIncrement(file: file)
@@ -33,6 +38,9 @@ public enum PdfInfoIncrement {
             }
         }
 
+        if let key = requiringAbsentKey, info.hasKey(key) {
+            throw PdfCoreError.invalidDocument("PDF already has /\(key)")
+        }
         for (key, value) in entries {
             switch key {
             case "title":

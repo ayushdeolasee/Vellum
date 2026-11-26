@@ -23,6 +23,41 @@ final class SharedPDFMigrationTests: XCTestCase {
         XCTAssertEqual(locked.key, DocumentIdentity.byteHash(unsigned))
     }
 
+    func testAmbiguousBOMStampIsNeitherTrustedNorOverwritten() throws {
+        let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column"))
+        let canonical = "01234567-89ab-cdef-0123-456789abcdef"
+        let encoded = canonical.utf8.map { String(format: "%02X", $0) }.joined()
+        for raw in ["<EFBBBF\(encoded)>", #"(\357\273\277"# + canonical + ")"] {
+            var increment = PdfIncrement(file: try ClassicPdfFile(data: original))
+            let number = increment.allocateObjectNumber()
+            increment.setObject(number, source: Array("<< /VellumDocId \(raw) /Title \(raw) >>".utf8))
+            let bytes = increment.appended(infoNumber: number)
+            XCTAssertEqual(ClassicPdfFile.currentInfoText(forKey: "Title", in: bytes), canonical)
+            XCTAssertNil(id(bytes))
+            XCTAssertNil(SharedPDFIdentity.stamp(in: bytes, readerID: canonical))
+            for observed: String? in [nil, canonical, "ï»¿" + canonical] {
+                let result = SharedPDFIdentity.prepare(bytes) { _ in observed }
+                XCTAssertEqual(result.bytes, bytes)
+                XCTAssertEqual(result.key, DocumentIdentity.byteHash(bytes))
+            }
+        }
+    }
+
+    func testSharedStampMayOccupyLastProvableRevision() throws {
+        var bytes = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column"))
+        for edit in 1...62 {
+            bytes = try PdfInfoIncrement.setMetadataIncrement(normalizedData: bytes, key: "title", value: String(edit))
+        }
+        let preferred = "01234567-89ab-cdef-0123-456789abcdef"
+        XCTAssertEqual(PdfEditEligibility.classify(bytes), .editable)
+        let last = SharedPDFIdentity.prepare(bytes, preferredID: preferred, readID: id)
+        XCTAssertGreaterThan(last.bytes.count, bytes.count)
+        XCTAssertTrue(last.bytes.starts(with: bytes))
+        XCTAssertEqual(last.key, preferred)
+        XCTAssertEqual(id(last.bytes), preferred)
+        XCTAssertEqual(PdfEditEligibility.classify(last.bytes), .readOnly(.inspectionLimit))
+    }
+
     func testMigrationAcrossPrefixesInterruptionRollbackAndPeerChanges() async throws {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)

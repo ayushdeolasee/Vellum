@@ -393,6 +393,23 @@ public struct PdfDictSource {
     }
 
     static func decodeTextString(_ raw: [UInt8]) -> String? {
+        decodeTextString(raw, identity: false)
+    }
+
+    /// CGPDF can interpret a PDF 2.0 UTF-8 BOM as three PDFDocEncoding
+    /// characters. Such a string can be displayed, but cannot witness an
+    /// identity shared between the Linux and Apple readers.
+    static func decodeIdentityString(_ raw: [UInt8]) -> String? {
+        decodeTextString(raw, identity: true)
+    }
+
+    static func annotationIdentity(_ raw: [UInt8]) -> String? {
+        guard raw.count <= 1024, let id = decodeIdentityString(raw), !id.isEmpty,
+              id.utf8.allSatisfy({ (32...126).contains($0) }) else { return nil }
+        return id
+    }
+
+    private static func decodeTextString(_ raw: [UInt8], identity: Bool) -> String? {
         var content: [UInt8] = []
         if raw.first == UInt8(ascii: "("), raw.last == UInt8(ascii: ")") {
             var i = 1
@@ -454,6 +471,7 @@ public struct PdfDictSource {
         }
 
         if content.starts(with: [0xef, 0xbb, 0xbf]) {
+            guard !identity else { return nil }
             return String(bytes: content.dropFirst(3), encoding: .utf8)
         }
         if content.starts(with: [0xfe, 0xff]) {
@@ -581,7 +599,10 @@ public struct ClassicPdfFile {
     /// dictionary, so a read-only proof cannot be passed to an increment.
     public static func infoForRecovery(in original: Data) throws -> PdfDictSource? {
         let file = try ClassicPdfFile(data: original, forEditing: false)
-        if let number = file.infoNumber { return file.objectSource(number) }
+        if let number = file.infoNumber {
+            guard let raw = file.rawObjectValue(number), raw.starts(with: "<<".utf8) else { throw PdfReadOnlyReason.malformed }
+            return PdfDictSource(raw)
+        }
         return file.trailer.inlineDictionary(forKey: "Info").map(PdfDictSource.init)
     }
 
@@ -847,7 +868,7 @@ extension ClassicPdfFile {
               case .dictionary(let dictionary) = structure.objects[info],
               case .string(let raw) = dictionary[key], raw.count <= 64 * 1024
         else { return nil }
-        return PdfDictSource.decodeTextString(Array(raw))
+        return key == "VellumDocId" ? PdfDictSource.decodeIdentityString(Array(raw)) : PdfDictSource.decodeTextString(Array(raw))
     }
 
     private static func infoText(forKey key: String, in data: Data, number: Int, at object: Int,
@@ -863,7 +884,7 @@ extension ClassicPdfFile {
               value.first == UInt8(ascii: "(") ||
                 (value.first == UInt8(ascii: "<") && !value.starts(with: "<<".utf8))
         else { return nil }
-        return PdfDictSource.decodeTextString(value)
+        return key == "VellumDocId" ? PdfDictSource.decodeIdentityString(value) : PdfDictSource.decodeTextString(value)
     }
 }
 

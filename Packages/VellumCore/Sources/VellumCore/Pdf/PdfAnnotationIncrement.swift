@@ -32,8 +32,10 @@ struct PdfAnnotationPage {
         return (PdfDictSource.parseReference(raw), PdfDictSource(resolved))
     }
 
-    func id(_ dictionary: PdfDictSource, at slot: Int) -> String {
-        dictionary.textString(forKey: "NM") ?? "pdf-direct-\(index)-\(slot)"
+    func id(_ dictionary: PdfDictSource, at slot: Int) throws -> String {
+        guard let raw = dictionary.rawValue(forKey: "NM") else { return "pdf-direct-\(index)-\(slot)" }
+        guard let id = PdfDictSource.annotationIdentity(raw) else { throw PdfReadOnlyReason.ambiguousAnnotation }
+        return id
     }
 
     mutating func saveArray(to increment: inout PdfIncrement) {
@@ -105,7 +107,7 @@ public enum PdfAnnotationIncrement {
     private static func editSlot(id: String, update: UpdateAnnotationInput?, page: inout PdfAnnotationPage,
                                  file: ClassicPdfFile, now: String, increment: inout PdfIncrement) throws -> Bool {
         for index in page.spans.indices {
-            guard let slot = page.slot(index, file: file), page.id(slot.dictionary, at: index) == id else { continue }
+            guard let slot = page.slot(index, file: file), try page.id(slot.dictionary, at: index) == id else { continue }
             var dict = slot.dictionary
             let subtype = dict.name(forKey: "Subtype")
             let vellumType = file.resolvedValue(forKey: "VellumType", in: dict)
@@ -121,7 +123,7 @@ public enum PdfAnnotationIncrement {
                 if let content = update.content {
                     dict.setTextString(forKey: "Contents", to: content)
                     // PDF viewers may prefer rich text over /Contents.
-                    if subtype == "FreeText" || subtype == "Text" { dict.removeEntry(forKey: "RC") }
+                    dict.removeEntry(forKey: "RC")
                 }
                 if let pinned = update.isPinned { dict.setInteger(forKey: "VellumPinned", to: pinned ? 1 : 0) }
                 if let position = update.positionData {
@@ -187,8 +189,14 @@ public enum PdfAnnotationIncrement {
 
     private static func setPosition(_ position: PositionData, highlight: Bool,
                                     geometry: PageGeometry, in dict: inout PdfDictSource) throws {
-        guard let anchor = position.rects.first, position.pageWidth.isFinite, position.pageWidth > 0,
-              position.pageHeight.isFinite, position.pageHeight > 0 else {
+        // PDFium renders coordinates as Floats. Refuse a finite Double that
+        // overflows or disappears there before formatting a decimal PDF token.
+        func usable(_ value: Double) -> Bool {
+            let rendered = Float(value)
+            return rendered.isFinite && (value == 0 || rendered != 0)
+        }
+        guard usable(position.pageWidth), usable(position.pageHeight) else { throw PdfReadOnlyReason.unsupportedGeometry }
+        guard let anchor = position.rects.first, position.pageWidth > 0, position.pageHeight > 0 else {
             throw PdfCoreError.invalidDocument("Invalid annotation position")
         }
         let rects = highlight ? position.rects : [.init(x: anchor.x, y: anchor.y, width: 18, height: 18)]
@@ -196,11 +204,12 @@ public enum PdfAnnotationIncrement {
         var right = -Double.infinity, top = -Double.infinity
         var quads: [Double] = []
         for rect in rects {
+            guard [rect.x, rect.y, rect.width, rect.height].allSatisfy(usable) else { throw PdfReadOnlyReason.unsupportedGeometry }
             guard rect.width >= 0, rect.height >= 0 else { throw PdfCoreError.invalidDocument("Negative annotation extent") }
             for y in [rect.y, rect.y + rect.height] {
                 for x in [rect.x, rect.x + rect.width] {
                     let point = geometry.uiToPdf(x, y, pageWidth: position.pageWidth, pageHeight: position.pageHeight)
-                    guard point.x.isFinite, point.y.isFinite else { throw PdfCoreError.invalidDocument("Non-finite annotation position") }
+                    guard usable(point.x), usable(point.y) else { throw PdfReadOnlyReason.unsupportedGeometry }
                     left = min(left, point.x)
                     right = max(right, point.x)
                     bottom = min(bottom, point.y)
