@@ -1,133 +1,21 @@
 import Foundation
+import VellumCore
 
-/// `<appDataDir>/positions/` — a SIBLING of `web/`, never inside it.
-enum PositionLayout {
+typealias PositionLayout = VellumCore.PositionLayout
+typealias PositionStorage = VellumCore.PositionStorage
+typealias PositionStorageError = VellumCore.PositionStorageError
+typealias FilePositionStorage = VellumCore.FilePositionStorage
+
+extension PositionLayout {
     nonisolated(unsafe) static var rootOverride: URL?
 
     static var root: URL {
         rootOverride ?? WebLibrary.appDataDir.appendingPathComponent("positions", isDirectory: true)
     }
-
-    static let schemaVersion = 1
-
-    /// The version lives in the file name as well as the body: a v2 build
-    /// writes `<device>.v2.json`, a v1 build simply doesn't recognise it and
-    /// leaves it alone, so a downgrade is non-destructive for free.
-    static func fileName(for device: DeviceID, version: Int = schemaVersion) -> String {
-        "\(device.rawValue).v\(version).json"
-    }
-
-    static func parseFileName(_ name: String) -> (device: DeviceID, version: Int)? {
-        guard name.hasSuffix(".json") else { return nil }
-        let stem = String(name.dropLast(".json".count))
-        guard let marker = stem.range(of: ".v", options: .backwards) else { return nil }
-        let deviceID = String(stem[stem.startIndex..<marker.lowerBound])
-        let versionText = String(stem[marker.upperBound...])
-        guard !deviceID.isEmpty,
-            !versionText.isEmpty,
-            versionText.allSatisfy({ ("0"..."9").contains($0) }),
-            let version = Int(versionText)
-        else { return nil }
-        return (DeviceID(deviceID), version)
-    }
 }
 
-/// The only thing between the store and bytes. A coordinated adapter can be
-/// supplied later without a line changing above this line.
-protocol PositionStorage: Sendable {
-    /// Every device record currently visible locally, including this device's.
-    /// A record that fails to decode is omitted, never thrown.
-    func loadAll() async -> [PositionDeviceRecord]
-    /// Replace this device's own record. MUST be atomic (tmp + rename).
-    func write(_ record: PositionDeviceRecord) async throws
-}
-
-enum PositionStorageError: Error, Equatable, Sendable {
-    case io(String)
-}
-
-/// Production storage. Constructed with a root it cannot escape — it appends
-/// only `<device_id>.v<N>.json` leaf names, so it is structurally incapable of
-/// addressing `web/records/`.
-struct FilePositionStorage: PositionStorage {
-    let root: URL
-
-    init(root: URL = PositionLayout.root) {
-        self.root = root
-    }
-
-    /// The single leaf name this adapter can ever write. Exposed so a test can
-    /// assert the resolved URL rather than trust the claim.
-    func fileURL(for device: DeviceID, version: Int = PositionLayout.schemaVersion) -> URL {
-        root.appendingPathComponent(PositionLayout.fileName(for: device, version: version))
-    }
-
-    var quarantineDir: URL {
-        root.appendingPathComponent("quarantine", isDirectory: true)
-    }
-
-    func loadAll() async -> [PositionDeviceRecord] {
-        let fileManager = FileManager.default
-        guard
-            let names = try? fileManager.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-        else { return [] }
-        var records: [PositionDeviceRecord] = []
-        for url in names.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            guard let parsed = PositionLayout.parseFileName(url.lastPathComponent) else { continue }
-            guard let data = try? Data(contentsOf: url) else { continue }
-            guard var record = try? PositionCoding.decoder.decode(PositionDeviceRecord.self, from: data)
-            else {
-                // The bytes are a device's reading history the user can't
-                // recreate; quarantine rather than delete.
-                quarantine(url)
-                continue
-            }
-            record.fileNameVersion = parsed.version
-            if parsed.version != record.schemaVersion { quarantine(url) }
-            records.append(record)
-        }
-        return records
-    }
-
-    func write(_ record: PositionDeviceRecord) async throws {
-        let fileManager = FileManager.default
-        do {
-            try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        } catch {
-            throw PositionStorageError.io(
-                "Failed to create positions dir: \(error.localizedDescription)")
-        }
-        let path = fileURL(for: record.deviceID, version: record.schemaVersion)
-        let json: Data
-        do {
-            json = try PositionCoding.encoder.encode(record)
-        } catch {
-            throw PositionStorageError.io(
-                "Failed to serialize position record: \(error.localizedDescription)")
-        }
-        let tmp = root.appendingPathComponent(
-            ".\(path.lastPathComponent).tmp-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.lowercased())")
-        do {
-            try json.write(to: tmp)
-        } catch {
-            try? fileManager.removeItem(at: tmp)
-            throw PositionStorageError.io(
-                "Failed to write position record: \(error.localizedDescription)")
-        }
-        guard rename(tmp.path, path.path) == 0 else {
-            try? fileManager.removeItem(at: tmp)
-            throw PositionStorageError.io("Failed to commit position record: rename failed")
-        }
-    }
-
-    private func quarantine(_ url: URL) {
-        let fileManager = FileManager.default
-        try? fileManager.createDirectory(at: quarantineDir, withIntermediateDirectories: true)
-        let destination = quarantineDir.appendingPathComponent(url.lastPathComponent)
-        try? fileManager.removeItem(at: destination)
-        try? fileManager.moveItem(at: url, to: destination)
-    }
+extension FilePositionStorage {
+    init() { self.init(root: PositionLayout.root) }
 }
 
 /// Routes position records through the app's active storage context. Local and
@@ -155,8 +43,8 @@ struct CoordinatedPositionStorage: PositionStorage {
             case .direct(let layout):
                 try await Self.directStorage(for: layout).write(record)
             case .coordinated(let container, let layout):
-                let url = layout.positionsDir.appendingPathComponent(
-                    PositionLayout.fileName(for: record.deviceID, version: record.schemaVersion))
+                let url = try PositionLayout.fileURL(
+                    in: layout.positionsDir, for: record.deviceID, version: record.schemaVersion)
                 let bytes = try PositionCoding.encoder.encode(record)
                 try await container.replace(url, with: bytes)
             }
@@ -178,11 +66,12 @@ struct CoordinatedPositionStorage: PositionStorage {
                     try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: data)
                 }
                 record.fileNameVersion = parsed.version
-                if parsed.version != record.schemaVersion {
+                if parsed.version != record.schemaVersion && record.schemaVersion <= PositionLayout.schemaVersion {
                     try await quarantine(item.url, in: root, container: container)
                 }
                 records.append(record)
             } catch {
+                guard parsed.version <= PositionLayout.schemaVersion else { continue }
                 try? await quarantine(item.url, in: root, container: container)
             }
         }

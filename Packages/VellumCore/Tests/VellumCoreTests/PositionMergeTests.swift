@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import Vellum
+import VellumCore
 
 // The merge is the whole cross-device story: every device writes only its own
 // file and the "one true answer" is computed at read time. These tests pin the
@@ -182,6 +182,57 @@ struct PositionMergeTests {
             FileManager.default.fileExists(
                 atPath: storage.quarantineDir.appendingPathComponent(name).path))
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
+    }
+
+    @Test("Read-only display skips corrupt and mismatched files without modifying the directory")
+    func readOnlyPeerDisplay() async throws {
+        let root = PositionFixtures.scratchDirectory("position-reader")
+        defer { PositionFixtures.remove(root) }
+        let date = PositionFixtures.date("2026-08-02T09:00:00Z")
+        let record = PositionFixtures.record(.mac, writtenAt: date, documents: [key: .init(openedAt: date)])
+        let bytes = try PositionCoding.encoder.encode(record)
+        let mismatch = PositionFixtures.record(.pad, writtenAt: date, documents: [other: .init(openedAt: date)])
+        let fixtures = [
+            "peer.v1.json": bytes,
+            "other.v2.json": try PositionCoding.encoder.encode(mismatch),
+            "broken.v1.json": Data([0xff]),
+        ]
+        for (name, data) in fixtures {
+            try data.write(to: root.appendingPathComponent(name))
+        }
+
+        let merged = await PositionReader.merged(in: root)
+        #expect(merged.count == 1)
+        #expect(merged[key]?.openedAt?.device == PositionFixtures.mac.stub)
+        #expect(try Set(FileManager.default.contentsOfDirectory(atPath: root.path)) == Set(fixtures.keys))
+        for (name, data) in fixtures {
+            #expect(try Data(contentsOf: root.appendingPathComponent(name)) == data)
+        }
+    }
+
+    @Test("Unreadable future-format files survive writable enumeration")
+    func futureBytesStayInPlace() async throws {
+        let root = PositionFixtures.scratchDirectory("future-position")
+        defer { PositionFixtures.remove(root) }
+        let future = root.appendingPathComponent("peer.v2.json")
+        let bytes = Data([0xff])
+        try bytes.write(to: future)
+        #expect(await FilePositionStorage(root: root).loadAll().isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["peer.v2.json"])
+        #expect(try Data(contentsOf: future) == bytes)
+    }
+
+    @Test("An invalid device ID fails before creating a directory or writing a record")
+    func unsafeDeviceIDsAreRejected() async throws {
+        let root = PositionFixtures.scratchDirectory("unsafe-position")
+        defer { PositionFixtures.remove(root) }
+        let storage = FilePositionStorage(root: root.appendingPathComponent("positions"))
+        for id in ["", "../peer", "sub/peer", "peer\0suffix", ".hidden"] {
+            var record = PositionFixtures.record(.mac, writtenAt: .now, documents: [:])
+            record.deviceID = DeviceID(id)
+            await #expect(throws: PositionStorageError.self) { try await storage.write(record) }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
 
     @Test("Recents order comes from the merged newest opened_at, never one device's file")

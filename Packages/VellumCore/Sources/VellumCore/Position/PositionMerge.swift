@@ -8,8 +8,8 @@ import Foundation
 /// compare equal — that makes the order strict and total, which is exactly what
 /// makes `max` (and therefore this whole merge) independent of the order the
 /// files happened to be read in.
-enum PositionMerge {
-    static func merge(_ records: [PositionDeviceRecord]) -> [DocumentKey: MergedDocumentPosition] {
+public enum PositionMerge {
+    public static func merge(_ records: [PositionDeviceRecord]) -> [DocumentKey: MergedDocumentPosition] {
         var out: [DocumentKey: MergedDocumentPosition] = [:]
         for record in records where isUsable(record) {
             let device = record.deviceStub
@@ -48,7 +48,7 @@ enum PositionMerge {
         return out
     }
 
-    static func recents(
+    public static func recents(
         from merged: [DocumentKey: MergedDocumentPosition], limit: Int
     ) -> [ResumeEntry] {
         guard limit > 0 else { return [] }
@@ -60,7 +60,7 @@ enum PositionMerge {
         return Array(ordered.prefix(limit))
     }
 
-    static func entry(from merged: MergedDocumentPosition) -> ResumeEntry? {
+    public static func entry(from merged: MergedDocumentPosition) -> ResumeEntry? {
         guard let openedAt = merged.effectiveOpenedAt else { return nil }
         return ResumeEntry(
             key: merged.key,
@@ -74,7 +74,7 @@ enum PositionMerge {
     /// A record whose body version is newer than this build understands, or
     /// whose body disagrees with the version in its file name, is ignored — and
     /// never rewritten, so a newer build's data survives a downgrade.
-    static func isUsable(_ record: PositionDeviceRecord) -> Bool {
+    public static func isUsable(_ record: PositionDeviceRecord) -> Bool {
         guard record.schemaVersion >= 1, record.schemaVersion <= PositionLayout.schemaVersion else {
             return false
         }
