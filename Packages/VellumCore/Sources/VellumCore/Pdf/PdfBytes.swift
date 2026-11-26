@@ -33,7 +33,7 @@ enum PdfBytes {
     static func firstRange(of needle: [UInt8], in haystack: [UInt8], from start: Int = 0, to end: Int? = nil) -> Range<Int>? {
         let end = end ?? haystack.count
         guard !needle.isEmpty, end - start >= needle.count else { return nil }
-        for i in start...(end - needle.count) where Array(haystack[i..<i + needle.count]) == needle {
+        for i in start...(end - needle.count) where haystack[i..<i + needle.count].elementsEqual(needle) {
             return i..<i + needle.count
         }
         return nil
@@ -43,7 +43,7 @@ enum PdfBytes {
         let end = end ?? haystack.count
         guard !needle.isEmpty, end >= needle.count else { return nil }
         for i in stride(from: end - needle.count, through: 0, by: -1)
-        where Array(haystack[i..<i + needle.count]) == needle {
+        where haystack[i..<i + needle.count].elementsEqual(needle) {
             return i..<i + needle.count
         }
         return nil
@@ -172,165 +172,161 @@ public enum PdfXrefRepair {
 
 // MARK: - Dictionary source manipulation
 
-/// A raw PDF dictionary source ("<< ... >>") with a masked shadow copy in which
-/// string contents are blanked, so key/value scanning never trips over
-/// delimiter characters inside strings. All edits keep the source valid PDF.
+/// Locate complete PDF values without decoding or reserializing their contents.
+/// Every consumer uses the same whitespace, comment and delimiter rules.
+private enum PdfSyntax {
+    static func skipTrivia(_ bytes: [UInt8], from start: Int, to end: Int) -> Int {
+        var i = start
+        while i < end {
+            if PdfBytes.isWhitespace(bytes[i]) {
+                i += 1
+            } else if bytes[i] == UInt8(ascii: "%") {
+                while i < end, bytes[i] != 10, bytes[i] != 13 { i += 1 }
+            } else {
+                break
+            }
+        }
+        return i
+    }
+
+    static func wordEnd(_ bytes: [UInt8], from start: Int, to end: Int) -> Int {
+        var i = start
+        while i < end, !PdfBytes.isWhitespace(bytes[i]), !PdfBytes.isDelimiter(bytes[i]) { i += 1 }
+        return i
+    }
+
+    /// PDF names can spell the same byte literally or as # followed by two hex digits.
+    static func nameBytes(_ raw: ArraySlice<UInt8>) -> [UInt8] {
+        var result: [UInt8] = []
+        var i = raw.startIndex
+        while i < raw.endIndex {
+            if raw[i] == UInt8(ascii: "#"), i + 2 < raw.endIndex,
+               let high = hexDigit(raw[i + 1]), let low = hexDigit(raw[i + 2]) {
+                result.append(high * 16 + low)
+                i += 3
+            } else {
+                result.append(raw[i])
+                i += 1
+            }
+        }
+        return result
+    }
+
+    private static func hexDigit(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case 48...57: return byte - 48
+        case 65...70: return byte - 65 + 10
+        case 97...102: return byte - 97 + 10
+        default: return nil
+        }
+    }
+
+    static func keyword(_ word: StaticString, in bytes: [UInt8], at i: Int) -> Bool {
+        let count = word.utf8CodeUnitCount
+        guard bytes.count - i >= count else { return false }
+        let after = i + count
+        return (after == bytes.count || PdfBytes.isWhitespace(bytes[after]) || PdfBytes.isDelimiter(bytes[after]))
+            && word.withUTF8Buffer { bytes[i..<after].elementsEqual($0) }
+    }
+
+    /// Called directly after an unsigned first token. Comments count as
+    /// separators in indirect references, just as they do between values.
+    static func referenceEnd(_ bytes: [UInt8], after first: Int, to end: Int) -> Int? {
+        let generation = skipTrivia(bytes, from: first, to: end)
+        var i = generation
+        while i < end, PdfBytes.isDigit(bytes[i]) { i += 1 }
+        guard i > generation else { return nil }
+        let marker = skipTrivia(bytes, from: i, to: end)
+        guard marker > i, marker < end, bytes[marker] == UInt8(ascii: "R") else { return nil }
+        let after = marker + 1
+        guard after == end || PdfBytes.isWhitespace(bytes[after]) || PdfBytes.isDelimiter(bytes[after]) else { return nil }
+        return after
+    }
+
+    /// Scan composites iteratively. A string or comment may contain any of
+    /// their delimiters; only tokens outside those values close a composite.
+    static func valueSpan(in bytes: [UInt8], from start: Int, to end: Int) -> Range<Int>? {
+        let first = skipTrivia(bytes, from: start, to: end)
+        var i = first
+        var closers: [UInt8] = []
+        repeat {
+            i = skipTrivia(bytes, from: i, to: end)
+            guard i < end else { return nil }
+            let token = i
+            let byte = bytes[i]
+            i += 1
+            switch byte {
+            case UInt8(ascii: "["):
+                closers.append(UInt8(ascii: "]"))
+            case UInt8(ascii: "<") where i < end && bytes[i] == UInt8(ascii: "<"):
+                i += 1
+                closers.append(UInt8(ascii: ">"))
+            case UInt8(ascii: "]"), UInt8(ascii: ">"):
+                guard closers.popLast() == byte else { return nil }
+                if byte == UInt8(ascii: ">") {
+                    guard i < end, bytes[i] == byte else { return nil }
+                    i += 1
+                }
+            case UInt8(ascii: "("):
+                var nesting = 1
+                while nesting > 0 {
+                    guard i < end else { return nil }
+                    let character = bytes[i]
+                    i += 1
+                    switch character {
+                    case UInt8(ascii: "\\"): if i < end { i += 1 }
+                    case UInt8(ascii: "("): nesting += 1
+                    case UInt8(ascii: ")"): nesting -= 1
+                    default: break
+                    }
+                }
+            case UInt8(ascii: "<"):
+                while i < end, bytes[i] != UInt8(ascii: ">") { i += 1 }
+                guard i < end else { return nil }
+                i += 1
+            case UInt8(ascii: "/"):
+                i = wordEnd(bytes, from: i, to: end)
+            default:
+                guard !PdfBytes.isDelimiter(byte) else { return nil }
+                i = wordEnd(bytes, from: i, to: end)
+                if closers.isEmpty, bytes[token..<i].allSatisfy(PdfBytes.isDigit),
+                   let refEnd = referenceEnd(bytes, after: i, to: end) {
+                    i = refEnd
+                }
+            }
+        } while !closers.isEmpty
+        return first..<i
+    }
+}
+
+/// A dictionary retains its original bytes except for explicitly edited entries.
 public struct PdfDictSource {
-    private(set) var bytes: [UInt8]
-    private var masked: [UInt8]
+    private var bytes: [UInt8]
 
     init(_ bytes: [UInt8]) {
         self.bytes = bytes
-        self.masked = PdfDictSource.mask(bytes)
     }
 
     public var sourceBytes: [UInt8] { bytes }
 
-    /// Replace literal-string and hex-string contents with 'X' (same length).
-    private static func mask(_ bytes: [UInt8]) -> [UInt8] {
-        var masked = bytes
-        var i = 0
-        while i < masked.count {
-            let byte = masked[i]
-            if byte == UInt8(ascii: "%") {
-                while i < masked.count, masked[i] != 10, masked[i] != 13 {
-                    masked[i] = 32
-                    i += 1
-                }
-            } else if byte == UInt8(ascii: "(") {
-                // Literal string: honor escapes and nested parentheses.
-                var depth = 1
-                var j = i + 1
-                while j < masked.count, depth > 0 {
-                    let b = masked[j]
-                    if b == UInt8(ascii: "\\") {
-                        if j + 1 < masked.count { masked[j] = UInt8(ascii: "X"); masked[j + 1] = UInt8(ascii: "X") }
-                        j += 2
-                        continue
-                    }
-                    if b == UInt8(ascii: "(") { depth += 1 }
-                    if b == UInt8(ascii: ")") {
-                        depth -= 1
-                        if depth == 0 { break }
-                    }
-                    masked[j] = UInt8(ascii: "X")
-                    j += 1
-                }
-                i = j + 1
-            } else if byte == UInt8(ascii: "<"), i + 1 < masked.count, masked[i + 1] != UInt8(ascii: "<") {
-                // Hex string.
-                var j = i + 1
-                while j < masked.count, masked[j] != UInt8(ascii: ">") {
-                    masked[j] = UInt8(ascii: "X")
-                    j += 1
-                }
-                i = j + 1
-            } else if byte == UInt8(ascii: "<"), i + 1 < masked.count {
-                i += 2
-            } else {
-                i += 1
-            }
-        }
-        return masked
-    }
-
-    // MARK: Scanning
-
-    /// Walk key/value pairs so names in a nested resource or a name-valued
-    /// entry cannot shadow an actual dictionary key.
     private func keyTokenRange(_ key: String) -> Range<Int>? {
         let token = Array("/\(key)".utf8)
         var i = 2
-        while i < masked.count {
-            while i < masked.count, PdfBytes.isWhitespace(masked[i]) { i += 1 }
-            guard i < masked.count, masked[i] == UInt8(ascii: "/") else { return nil }
-            let start = i
-            i += 1
-            while i < masked.count, !PdfBytes.isWhitespace(masked[i]), !PdfBytes.isDelimiter(masked[i]) { i += 1 }
-            let keyRange = start..<i
-            if masked[keyRange].elementsEqual(token) { return keyRange }
-            guard let value = valueSpan(afterKeyToken: keyRange), value.upperBound > i else { return nil }
+        while i < bytes.count {
+            i = PdfSyntax.skipTrivia(bytes, from: i, to: bytes.count)
+            guard i < bytes.count, bytes[i] == UInt8(ascii: "/") else { return nil }
+            let end = PdfSyntax.wordEnd(bytes, from: i + 1, to: bytes.count)
+            let range = i..<end
+            if bytes[range].elementsEqual(token) { return range }
+            if bytes[range].contains(UInt8(ascii: "#")), PdfSyntax.nameBytes(bytes[range]) == token { return range }
+            guard let value = valueSpan(afterKeyToken: range) else { return nil }
             i = value.upperBound
         }
         return nil
     }
 
-    /// Span of the value token following "/Key" (references span "N G R").
-    private func valueSpan(afterKeyToken keyRange: Range<Int>) -> Range<Int>? {
-        var i = keyRange.upperBound
-        while i < masked.count, PdfBytes.isWhitespace(masked[i]) { i += 1 }
-        guard i < masked.count else { return nil }
-        let start = i
-        let byte = masked[i]
-
-        func scanBalanced(open: UInt8, close: UInt8) -> Range<Int>? {
-            var depth = 0
-            var j = start
-            while j < masked.count {
-                if masked[j] == open { depth += 1 }
-                if masked[j] == close {
-                    depth -= 1
-                    if depth == 0 { return start..<j + 1 }
-                }
-                j += 1
-            }
-            return nil
-        }
-
-        switch byte {
-        case UInt8(ascii: "/"):
-            var j = i + 1
-            while j < masked.count, !PdfBytes.isWhitespace(masked[j]), !PdfBytes.isDelimiter(masked[j]) { j += 1 }
-            return start..<j
-        case UInt8(ascii: "("):
-            // Masked strings contain no parentheses, so a simple scan suffices.
-            var j = i + 1
-            while j < masked.count, masked[j] != UInt8(ascii: ")") { j += 1 }
-            return j < masked.count ? start..<j + 1 : nil
-        case UInt8(ascii: "["):
-            return scanBalanced(open: UInt8(ascii: "["), close: UInt8(ascii: "]"))
-        case UInt8(ascii: "<"):
-            if i + 1 < masked.count, masked[i + 1] == UInt8(ascii: "<") {
-                // Nested dictionary: track << >> pairs.
-                var depth = 0
-                var j = i
-                while j + 1 < masked.count {
-                    if masked[j] == UInt8(ascii: "<"), masked[j + 1] == UInt8(ascii: "<") { depth += 1; j += 2; continue }
-                    if masked[j] == UInt8(ascii: ">"), masked[j + 1] == UInt8(ascii: ">") {
-                        depth -= 1
-                        j += 2
-                        if depth == 0 { return start..<j }
-                        continue
-                    }
-                    j += 1
-                }
-                return nil
-            }
-            var j = i + 1
-            while j < masked.count, masked[j] != UInt8(ascii: ">") { j += 1 }
-            return j < masked.count ? start..<j + 1 : nil
-        default:
-            // Number, boolean, null — and possibly an indirect reference.
-            var j = i
-            while j < masked.count, !PdfBytes.isWhitespace(masked[j]), !PdfBytes.isDelimiter(masked[j]) { j += 1 }
-            let tokenEnd = j
-            // Lookahead for "gen R" to capture references as one span.
-            var k = tokenEnd
-            while k < masked.count, PdfBytes.isWhitespace(masked[k]) { k += 1 }
-            let genStart = k
-            while k < masked.count, PdfBytes.isDigit(masked[k]) { k += 1 }
-            if k > genStart {
-                var m = k
-                while m < masked.count, PdfBytes.isWhitespace(masked[m]) { m += 1 }
-                if m < masked.count, masked[m] == UInt8(ascii: "R") {
-                    let afterR = m + 1
-                    if afterR >= masked.count || PdfBytes.isWhitespace(masked[afterR]) || PdfBytes.isDelimiter(masked[afterR]) {
-                        return start..<afterR
-                    }
-                }
-            }
-            return start..<tokenEnd
-        }
+    private func valueSpan(afterKeyToken key: Range<Int>) -> Range<Int>? {
+        PdfSyntax.valueSpan(in: bytes, from: key.upperBound, to: bytes.count)
     }
 
     public func hasKey(_ key: String) -> Bool {
@@ -369,12 +365,7 @@ public struct PdfDictSource {
     static func parseReference(_ raw: [UInt8]) -> Int? {
         var i = 0
         guard let number = PdfBytes.unsigned(in: raw, at: &i) else { return nil }
-        while i < raw.count, PdfBytes.isWhitespace(raw[i]) { i += 1 }
-        let genStart = i
-        while i < raw.count, PdfBytes.isDigit(raw[i]) { i += 1 }
-        guard i > genStart else { return nil }
-        while i < raw.count, PdfBytes.isWhitespace(raw[i]) { i += 1 }
-        guard i < raw.count, raw[i] == UInt8(ascii: "R") else { return nil }
+        guard PdfSyntax.referenceEnd(raw, after: i, to: raw.count) == raw.count else { return nil }
         return number
     }
 
@@ -388,7 +379,7 @@ public struct PdfDictSource {
 
     public func name(forKey key: String) -> String? {
         guard let raw = rawValue(forKey: key), raw.first == UInt8(ascii: "/") else { return nil }
-        return String(decoding: raw.dropFirst(), as: UTF8.self)
+        return String(decoding: PdfSyntax.nameBytes(raw.dropFirst()), as: UTF8.self)
     }
 
     /// Decoded text-string value (literal with escapes, or hex; UTF-16BE BOM aware).
@@ -471,7 +462,6 @@ public struct PdfDictSource {
             insertion.append(contentsOf: raw)
             bytes.insert(contentsOf: insertion, at: 2)
         }
-        masked = PdfDictSource.mask(bytes)
     }
 
     public mutating func setReference(forKey key: String, to objectNumber: Int) {
@@ -489,7 +479,6 @@ public struct PdfDictSource {
     public mutating func removeEntry(forKey key: String) {
         guard let keyRange = keyTokenRange(key), let span = valueSpan(afterKeyToken: keyRange) else { return }
         bytes.removeSubrange(keyRange.lowerBound..<span.upperBound)
-        masked = PdfDictSource.mask(bytes)
     }
 }
 
@@ -507,20 +496,11 @@ public enum PdfArraySource {
         var spans: [Range<Int>] = []
         var i = 1
         let end = bytes.count - 1
+        i = PdfSyntax.skipTrivia(bytes, from: i, to: end)
         while i < end {
-            if PdfBytes.isWhitespace(bytes[i]) {
-                i += 1
-                continue
-            }
-            if bytes[i] == UInt8(ascii: "%") {
-                while i < end, bytes[i] != 10, bytes[i] != 13 { i += 1 }
-                continue
-            }
-            guard let elementEnd = elementEnd(bytes, from: i, to: end), elementEnd > i else {
-                return nil
-            }
-            spans.append(i..<elementEnd)
-            i = elementEnd
+            guard let span = PdfSyntax.valueSpan(in: bytes, from: i, to: end) else { return nil }
+            spans.append(span)
+            i = PdfSyntax.skipTrivia(bytes, from: span.upperBound, to: end)
         }
         return spans
     }
@@ -542,94 +522,6 @@ public enum PdfArraySource {
         guard let spans = elementSpans(inArray: bytes) else { return nil }
         return spans.compactMap { PdfDictSource.parseReference(Array(bytes[$0])) }
     }
-
-    /// End index (exclusive) of the element starting at `start`.
-    private static func elementEnd(_ bytes: [UInt8], from start: Int, to end: Int) -> Int? {
-        var i = start
-        switch bytes[i] {
-        case UInt8(ascii: "/"):
-            i += 1
-            while i < end, !PdfBytes.isWhitespace(bytes[i]), !PdfBytes.isDelimiter(bytes[i]) { i += 1 }
-            return i
-        case UInt8(ascii: "("):
-            var depth = 1
-            i += 1
-            while i < end, depth > 0 {
-                if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
-                if bytes[i] == UInt8(ascii: "(") { depth += 1 }
-                if bytes[i] == UInt8(ascii: ")") { depth -= 1 }
-                i += 1
-            }
-            return depth == 0 ? i : nil
-        case UInt8(ascii: "["):
-            var depth = 0
-            while i < end {
-                let byte = bytes[i]
-                if byte == UInt8(ascii: "(") {
-                    var stringDepth = 1
-                    i += 1
-                    while i < end, stringDepth > 0 {
-                        if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
-                        if bytes[i] == UInt8(ascii: "(") { stringDepth += 1 }
-                        if bytes[i] == UInt8(ascii: ")") { stringDepth -= 1 }
-                        i += 1
-                    }
-                    continue
-                }
-                if byte == UInt8(ascii: "[") { depth += 1 }
-                if byte == UInt8(ascii: "]") {
-                    depth -= 1
-                    if depth == 0 { return i + 1 }
-                }
-                i += 1
-            }
-            return nil
-        case UInt8(ascii: "<") where i + 1 < end && bytes[i + 1] == UInt8(ascii: "<"):
-            var depth = 0
-            while i + 1 < end {
-                if bytes[i] == UInt8(ascii: "<"), bytes[i + 1] == UInt8(ascii: "<") {
-                    depth += 1
-                    i += 2
-                    continue
-                }
-                if bytes[i] == UInt8(ascii: ">"), bytes[i + 1] == UInt8(ascii: ">") {
-                    depth -= 1
-                    i += 2
-                    if depth == 0 { return i }
-                    continue
-                }
-                i += 1
-            }
-            return nil
-        case UInt8(ascii: "<"):
-            i += 1
-            while i < end, bytes[i] != UInt8(ascii: ">") { i += 1 }
-            return i < end ? i + 1 : nil
-        default:
-            // Number, boolean, null — possibly the head of an "N G R" reference.
-            while i < end, !PdfBytes.isWhitespace(bytes[i]), !PdfBytes.isDelimiter(bytes[i]) { i += 1 }
-            let tokenEnd = i
-            var allDigits = tokenEnd > start
-            for j in start..<tokenEnd where !PdfBytes.isDigit(bytes[j]) {
-                allDigits = false
-                break
-            }
-            guard allDigits else { return tokenEnd }
-            var k = tokenEnd
-            while k < end, PdfBytes.isWhitespace(bytes[k]) { k += 1 }
-            let genStart = k
-            while k < end, PdfBytes.isDigit(bytes[k]) { k += 1 }
-            guard k > genStart else { return tokenEnd }
-            var m = k
-            while m < end, PdfBytes.isWhitespace(bytes[m]) { m += 1 }
-            guard m < end, bytes[m] == UInt8(ascii: "R") else { return tokenEnd }
-            let afterR = m + 1
-            if afterR >= end || PdfBytes.isWhitespace(bytes[afterR]) || PdfBytes.isDelimiter(bytes[afterR]) {
-                return afterR
-            }
-            return tokenEnd
-        }
-    }
 }
 
 // MARK: - Classic cross-reference file model
@@ -644,7 +536,7 @@ public struct ClassicPdfFile {
     private(set) var trailer: PdfDictSource
     let startXref: Int
 
-    var size: Int { trailer.integer(forKey: "Size") ?? 0 }
+    let size: Int
     public var rootNumber: Int? { trailer.reference(forKey: "Root") }
     public var infoNumber: Int? { trailer.reference(forKey: "Info") }
 
@@ -663,74 +555,102 @@ public struct ClassicPdfFile {
         startXref = offset
 
         let latest = try Self.xrefSection(in: bytes, at: offset)
-        var offsets = latest.offsets
+        var entries = latest.entries
         var seenOffsets: Set<Int> = [offset]
-        var previous = latest.trailer.integer(forKey: "Prev")
-        while let previousOffset = previous, seenOffsets.insert(previousOffset).inserted {
-            let section = try Self.xrefSection(in: bytes, at: previousOffset)
-            // Newest section wins for objects replaced by an increment.
-            for (number, objectOffset) in section.offsets where offsets[number] == nil {
-                offsets[number] = objectOffset
+        var sectionTrailer = latest.trailer
+        while sectionTrailer.hasKey("Prev") {
+            guard let previous = sectionTrailer.integer(forKey: "Prev"), seenOffsets.insert(previous).inserted else {
+                throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid cross-reference offset")
             }
-            previous = section.trailer.integer(forKey: "Prev")
+            let section = try Self.xrefSection(in: bytes, at: previous)
+            // A newer free entry also supersedes every older version.
+            entries.merge(section.entries) { current, _ in current }
+            guard let previousSize = section.trailer.integer(forKey: "Size"),
+                  let currentSize = sectionTrailer.integer(forKey: "Size"), previousSize > 0,
+                  currentSize >= previousSize else {
+                throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid trailer size")
+            }
+            sectionTrailer = section.trailer
         }
-        objectOffsets = offsets
+        guard let size = latest.trailer.integer(forKey: "Size"),
+              size > (entries.keys.max() ?? 0), size <= Int(UInt32.max) else {
+            throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid trailer size")
+        }
+        self.size = size
+        objectOffsets = entries.compactMapValues { entry in
+            if case .inUse(let offset) = entry { return offset }
+            return nil
+        }
         trailer = latest.trailer
+    }
+
+    private enum XrefEntry {
+        case inUse(Int)
+        case free
     }
 
     /// Parse one classic xref section. Incremental Vellum writes chain these
     /// through `/Prev`; callers merge newest-to-oldest so replaced objects win.
     private static func xrefSection(
         in bytes: [UInt8], at offset: Int
-    ) throws -> (offsets: [Int: Int], trailer: PdfDictSource) {
+    ) throws -> (entries: [Int: XrefEntry], trailer: PdfDictSource) {
         var position = offset
-        guard bytes.indices.contains(position),
-              PdfBytes.firstRange(of: Array("xref".utf8), in: bytes, from: position, to: min(position + 8, bytes.count))?.lowerBound == position else {
+        guard bytes.indices.contains(position), PdfSyntax.keyword("xref", in: bytes, at: position) else {
             throw PdfCoreError.invalidDocument("Failed to rewrite PDF: unsupported cross-reference format")
         }
-        position += 4
-        while position < bytes.count, PdfBytes.isWhitespace(bytes[position]) { position += 1 }
+        position = PdfSyntax.skipTrivia(bytes, from: position + 4, to: bytes.count)
 
-        var offsets: [Int: Int] = [:]
+        var entries: [Int: XrefEntry] = [:]
+        let invalidEntry = PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid cross-reference offset")
         while position < bytes.count, PdfBytes.isDigit(bytes[position]) {
-            guard let first = PdfBytes.unsigned(in: bytes, at: &position) else {
-                throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid cross-reference offset")
-            }
-            while position < bytes.count, bytes[position] == UInt8(ascii: " ") { position += 1 }
+            guard let first = PdfBytes.unsigned(in: bytes, at: &position) else { throw invalidEntry }
+            position = PdfSyntax.skipTrivia(bytes, from: position, to: bytes.count)
             guard let count = PdfBytes.unsigned(in: bytes, at: &position), first <= Int.max - count else {
-                throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid cross-reference offset")
+                throw invalidEntry
             }
-            // Skip to the start of the fixed-width entry lines.
-            while position < bytes.count, PdfBytes.isWhitespace(bytes[position]) { position += 1 }
-            for entry in 0..<count {
-                let entryStart = position
-                guard entryStart + 18 <= bytes.count else { break }
-                let line = String(decoding: bytes[entryStart..<entryStart + 18], as: UTF8.self)
-                let parts = line.split(separator: " ")
-                if parts.count >= 3, parts[2].hasPrefix("n"), let entryOffset = Int(parts[0]) {
-                    offsets[first + entry] = entryOffset
+            position = PdfSyntax.skipTrivia(bytes, from: position, to: bytes.count)
+            for number in first..<(first + count) {
+                let start = position
+                guard let offset = PdfBytes.unsigned(in: bytes, at: &position), position - start == 10,
+                      position < bytes.count, bytes[position] == 32 else { throw invalidEntry }
+                position += 1
+                let generation = position
+                guard PdfBytes.unsigned(in: bytes, at: &position) != nil, position - generation == 5,
+                      position + 1 < bytes.count, bytes[position] == 32 else { throw invalidEntry }
+                position += 1
+                switch bytes[position] {
+                case UInt8(ascii: "n"): entries[number] = .inUse(offset)
+                case UInt8(ascii: "f"): entries[number] = .free
+                default: throw invalidEntry
                 }
-                position = entryStart + 20
+                position += 1
+                guard position < bytes.count, PdfBytes.isWhitespace(bytes[position]) else { throw invalidEntry }
+                position = PdfSyntax.skipTrivia(bytes, from: position, to: bytes.count)
             }
-            while position < bytes.count, PdfBytes.isWhitespace(bytes[position]) { position += 1 }
         }
-        guard let trailerRange = PdfBytes.firstRange(of: Array("trailer".utf8), in: bytes, from: position)
-        else {
+        guard PdfSyntax.keyword("trailer", in: bytes, at: position) else {
             throw PdfCoreError.invalidDocument("Failed to rewrite PDF: missing trailer")
         }
-        guard let trailerDict = balancedDictionary(in: bytes, from: trailerRange.upperBound) else {
+        guard let span = PdfSyntax.valueSpan(in: bytes, from: position + 7, to: bytes.count),
+              bytes[span].starts(with: [60, 60]) else {
             throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid trailer")
         }
-        return (offsets, PdfDictSource(trailerDict))
+        return (entries, PdfDictSource(Array(bytes[span])))
     }
 
-    /// Dictionary source of an indirect object, or nil when the object is not
-    /// a plain dictionary at a known offset.
+    private func objectValueSpan(_ number: Int) -> Range<Int>? {
+        guard var i = objectOffsets[number], bytes.indices.contains(i),
+              PdfBytes.unsigned(in: bytes, at: &i) == number else { return nil }
+        i = PdfSyntax.skipTrivia(bytes, from: i, to: bytes.count)
+        guard PdfBytes.unsigned(in: bytes, at: &i) != nil else { return nil }
+        i = PdfSyntax.skipTrivia(bytes, from: i, to: bytes.count)
+        guard PdfSyntax.keyword("obj", in: bytes, at: i) else { return nil }
+        return PdfSyntax.valueSpan(in: bytes, from: i + 3, to: bytes.count)
+    }
+
     public func objectSource(_ number: Int) -> PdfDictSource? {
-        guard let offset = objectOffsets[number], bytes.indices.contains(offset) else { return nil }
-        guard let objRange = PdfBytes.firstRange(of: Array("obj".utf8), in: bytes, from: offset, to: min(offset + 64, bytes.count)) else { return nil }
-        guard let source = ClassicPdfFile.balancedDictionary(in: bytes, from: objRange.upperBound) else { return nil }
-        return PdfDictSource(source)
+        guard let span = objectValueSpan(number), bytes[span].starts(with: [60, 60]) else { return nil }
+        return PdfDictSource(Array(bytes[span]))
     }
 
     func resolvedValue(forKey key: String, in dictionary: PdfDictSource) -> [UInt8]? {
@@ -741,7 +661,7 @@ public struct ClassicPdfFile {
         var result = value
         var visited = Set<Int>()
         while let number = PdfDictSource.parseReference(result) {
-            guard visited.insert(number).inserted, let bytes = rawObjectValue(number) else { return nil }
+            guard visited.count < 64, visited.insert(number).inserted, let bytes = rawObjectValue(number) else { return nil }
             result = bytes
         }
         return result
@@ -751,64 +671,10 @@ public struct ClassicPdfFile {
     /// PDFKit's `/Annots` array object (`[ 12 0 R ... ]`), which is not a
     /// dictionary and therefore cannot be returned by `objectSource`.
     public func rawObjectValue(_ number: Int) -> [UInt8]? {
-        guard let offset = objectOffsets[number], bytes.indices.contains(offset),
-              let objRange = PdfBytes.firstRange(
-                  of: Array("obj".utf8), in: bytes,
-                  from: offset, to: min(offset + 64, bytes.count)),
-              let endRange = PdfBytes.firstRange(
-                  of: Array("endobj".utf8), in: bytes,
-                  from: objRange.upperBound)
-        else { return nil }
-        var start = objRange.upperBound
-        while start < endRange.lowerBound, PdfBytes.isWhitespace(bytes[start]) { start += 1 }
-        var end = endRange.lowerBound
-        while end > start, PdfBytes.isWhitespace(bytes[end - 1]) { end -= 1 }
-        return Array(bytes[start..<end])
-    }
-
-    /// Extract a balanced "<< ... >>" starting at the first "<<" after `start`,
-    /// skipping string contents while balancing.
-    private static func balancedDictionary(in bytes: [UInt8], from start: Int) -> [UInt8]? {
-        var i = start
-        while i < bytes.count, PdfBytes.isWhitespace(bytes[i]) { i += 1 }
-        guard i + 1 < bytes.count, bytes[i] == UInt8(ascii: "<"), bytes[i + 1] == UInt8(ascii: "<") else { return nil }
-        let dictStart = i
-        var depth = 0
-        while i < bytes.count {
-            let byte = bytes[i]
-            if byte == UInt8(ascii: "(") {
-                // Skip literal string with escapes.
-                var stringDepth = 1
-                i += 1
-                while i < bytes.count, stringDepth > 0 {
-                    if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
-                    if bytes[i] == UInt8(ascii: "(") { stringDepth += 1 }
-                    if bytes[i] == UInt8(ascii: ")") { stringDepth -= 1 }
-                    i += 1
-                }
-                continue
-            }
-            if byte == UInt8(ascii: "<"), i + 1 < bytes.count, bytes[i + 1] == UInt8(ascii: "<") {
-                depth += 1
-                i += 2
-                continue
-            }
-            if byte == UInt8(ascii: "<") {
-                // Hex string.
-                i += 1
-                while i < bytes.count, bytes[i] != UInt8(ascii: ">") { i += 1 }
-                i += 1
-                continue
-            }
-            if byte == UInt8(ascii: ">"), i + 1 < bytes.count, bytes[i + 1] == UInt8(ascii: ">") {
-                depth -= 1
-                i += 2
-                if depth == 0 { return Array(bytes[dictStart..<i]) }
-                continue
-            }
-            i += 1
-        }
-        return nil
+        guard let span = objectValueSpan(number) else { return nil }
+        let end = PdfSyntax.skipTrivia(bytes, from: span.upperBound, to: bytes.count)
+        guard PdfSyntax.keyword("endobj", in: bytes, at: end) else { return nil }
+        return Array(bytes[span])
     }
 }
 
@@ -877,6 +743,8 @@ public struct PdfIncrement {
         // Carry the trailer forward, including /ID and an inline /Info when
         // a bookmark update has no reason to promote it.
         var trailer = file.trailer
+        // A hybrid xref stream belongs to its own revision, reached via /Prev.
+        trailer.removeEntry(forKey: "XRefStm")
         trailer.setInteger(forKey: "Size", to: nextObjectNumber)
         trailer.setInteger(forKey: "Prev", to: file.startXref)
         if let infoNumber { trailer.setReference(forKey: "Info", to: infoNumber) }

@@ -12,12 +12,13 @@ public struct PageGeometry: Sendable {
     public let userUnit: Double
 
     public init(left: Double, bottom: Double, width: Double, height: Double, rotation: Int, userUnit: Double) {
-        self.left = left
-        self.bottom = bottom
-        self.width = width
-        self.height = height
+        self.left = left.isFinite ? left : 0
+        self.bottom = bottom.isFinite ? bottom : 0
+        self.width = width.isFinite ? width : 612
+        self.height = height.isFinite ? height : 792
         self.rotation = ((rotation % 360) + 360) % 360
-        self.userUnit = userUnit > 0 ? userUnit : 1
+        let canScale = (self.width * userUnit).isFinite && (self.height * userUnit).isFinite
+        self.userUnit = userUnit.isFinite && userUnit > 0 && canScale ? userUnit : 1
     }
 
     public var right: Double { left + width }
@@ -66,10 +67,26 @@ public struct PageGeometry: Sendable {
 }
 
 extension PageGeometry {
+    /// ISO 32000 numbers have an optional sign, decimal digits and at most
+    /// one decimal point. Swift also accepts exponents, hex, NaN and infinity.
+    private static func pdfNumber(_ bytes: [UInt8]) -> Double? {
+        var index = 0
+        if bytes.first == UInt8(ascii: "+") || bytes.first == UInt8(ascii: "-") { index += 1 }
+        var sawDigit = false
+        var sawPoint = false
+        for byte in bytes[index...] {
+            if PdfBytes.isDigit(byte) { sawDigit = true }
+            else if byte == UInt8(ascii: "."), !sawPoint { sawPoint = true }
+            else { return nil }
+        }
+        guard sawDigit, let value = Double(String(decoding: bytes, as: UTF8.self)), value.isFinite else { return nil }
+        return value
+    }
+
     /// Resolve the same inherited page attributes as the CGPDF adapter. A crop
     /// box on an ancestor takes precedence over a media box on the page itself.
     public init(pageNumber: Int, in file: ClassicPdfFile) throws {
-        guard let root = file.rootNumber, let catalog = file.objectSource(root),
+        guard pageNumber > 0, let root = file.rootNumber, let catalog = file.objectSource(root),
               let number = PdfOutlineIncrement.pageObjectNumber(in: file, catalog: catalog, pageNumber: pageNumber)
         else { throw PdfCoreError.invalidDocument("Page \(pageNumber) does not exist") }
 
@@ -97,7 +114,7 @@ extension PageGeometry {
         }
         func coordinate(_ index: Int, fallback: Double) -> Double {
             guard let bytes = file.resolvedValue(Array(box[elements[index]])) else { return fallback }
-            return Double(String(decoding: bytes, as: UTF8.self)) ?? fallback
+            return Self.pdfNumber(bytes) ?? fallback
         }
 
         let left = coordinate(0, fallback: 0)
@@ -105,8 +122,8 @@ extension PageGeometry {
         let right = coordinate(2, fallback: 612)
         let top = coordinate(3, fallback: 792)
         let rotation = inherited("Rotate").flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
-        let unit = inherited("UserUnit").flatMap { Double(String(decoding: $0, as: UTF8.self)) } ?? 1
-        self.init(left: left, bottom: bottom, width: abs(right - left), height: abs(top - bottom),
+        let unit = inherited("UserUnit").flatMap(Self.pdfNumber) ?? 1
+        self.init(left: min(left, right), bottom: min(bottom, top), width: abs(right - left), height: abs(top - bottom),
                   rotation: rotation, userUnit: unit)
     }
 }
