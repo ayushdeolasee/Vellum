@@ -47,3 +47,10 @@ two PencilKit strokes. Each host then updates the note on a temporary copy of
 the rotated Mac fixture via Vellum's document session. The retained XCTest
 attachment is `apple-annotation-reply.pdf`. The Mac export is
 `mac-annotation-reply.pdf`. `PdfAnnotationIncrementTests` checks it on Linux.
+
+Annotation saves append revisions. Editing or deleting a note changes what
+readers show, while its earlier text and rich content remain recoverable in
+the file. This writer never compacts, rewrites, or securely erases that history.
+The classic inspection limit is 64 revisions including the original. A
+one-revision source can accept up to 63 increments within the other proof
+limits. Further edits report the inspection limit and preserve the last save.
