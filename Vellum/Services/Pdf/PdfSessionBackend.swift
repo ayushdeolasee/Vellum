@@ -1,6 +1,13 @@
 import Foundation
+import VellumCore
 import PDFKit
 import CoreGraphics
+
+private extension ClassicPdfFile {
+    init(appleData: Data) throws {
+        self = try SessionServiceError.translatingPdfErrors { try ClassicPdfFile(data: appleData) }
+    }
+}
 
 // PDF document sessions — port of src-tauri/src/pdf_session.rs plus the
 // command surface of pdf_annotations.rs (open/validate, get/create/update/
@@ -44,6 +51,7 @@ final class PdfSessionBackend {
             throw SessionServiceError.invalidDocument("Unsupported file type: .\(ext)")
         }
 
+        let sharedPDF = DocumentAccessResolver.openingSharedPDF
         let (canonical, info) = try await offMainRead { () -> (String, DocumentInfo) in
             let canonical = try PdfDocumentLoader.canonicalize(path)
             var isDirectory: ObjCBool = false
@@ -52,16 +60,25 @@ final class PdfSessionBackend {
                 throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
             }
 
-            let document = try PdfDocumentLoader.loadRaw(path: canonical)
-            let (title, pageCount, lastPage, docId) = PdfMetadata.documentInfo(
+            let bytes = sharedPDF ? try PdfDocumentLoader.readFile(canonical) : nil
+            let document: CGPDFDocument
+            if let bytes {
+                guard let raw = PdfDocumentLoader.cgDocument(from: bytes) else {
+                    throw SessionServiceError.invalidDocument("The shared PDF could not be read.")
+                }
+                document = raw
+            } else {
+                document = try PdfDocumentLoader.loadRaw(path: canonical)
+            }
+            let (title, pageCount, lastPage, embedded) = PdfMetadata.documentInfo(
                 document: document, path: canonical)
             // Session-stable cache key: the docId if the file ALREADY carries
             // one, else the path hash. A docId stamped later this session must
             // NOT change it — the lookup and persister keyed the whole session
             // by this value.
+            let docId = bytes.map { SharedPDFIdentity.storageKey(in: $0, readerID: embedded) } ?? embedded
             let cacheKey = (docId?.isEmpty == false) ? docId! : PageTextCache.pathKey(canonical)
             PdfSessionCacheKeys.register(path: canonical, key: cacheKey)
-            if let docId, !docId.isEmpty { PdfDocIdRegistry.recordStamp(docId, forPath: canonical) }
             return (canonical, DocumentInfo(
                 kind: .pdf,
                 pdfPath: canonical,
@@ -71,7 +88,7 @@ final class PdfSessionBackend {
                 docId: docId))
         }
 
-        return PdfDocumentSession(path: canonical, info: info)
+        return PdfDocumentSession(path: canonical, info: info, sharedPDF: sharedPDF)
     }
 }
 
@@ -227,7 +244,10 @@ final class PdfDocumentSession: DocumentSession {
     /// commit macOS gets from `PdfDocumentIO.commitStamp`.
     private var resolvedDocId: String?
 
-    init(path: String, info: DocumentInfo) {
+    private let sharedPDF: Bool
+
+    init(path: String, info: DocumentInfo, sharedPDF: Bool = false) {
+        self.sharedPDF = sharedPDF
         self.path = path
         self.info = info
     }
@@ -258,7 +278,9 @@ final class PdfDocumentSession: DocumentSession {
     /// bookmarks to outline creation. Saves the file; returns the full record.
     func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
         let path = self.path
+        let expectedID = sharedPDF ? info.docId : nil
         return try await PdfFileGate.shared.perform {
+            try Self.checkSharedEdit(path: path, expected: expectedID)
             return try Self.performCreate(path: path, input: input)
         }
     }
@@ -267,7 +289,9 @@ final class PdfDocumentSession: DocumentSession {
     /// always refresh. Returns false when the id is unknown.
     func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
         let path = self.path
+        let expectedID = sharedPDF ? info.docId : nil
         return try await PdfFileGate.shared.perform {
+            try Self.checkSharedEdit(path: path, expected: expectedID)
             return try Self.performUpdate(path: path, input: input)
         }
     }
@@ -276,7 +300,9 @@ final class PdfDocumentSession: DocumentSession {
     /// false when the id is unknown.
     func deleteAnnotation(id: String) async throws -> Bool {
         let path = self.path
+        let expectedID = sharedPDF ? info.docId : nil
         return try await PdfFileGate.shared.perform {
+            try Self.checkSharedEdit(path: path, expected: expectedID)
             return try Self.performDelete(path: path, id: id)
         }
     }
@@ -285,8 +311,19 @@ final class PdfDocumentSession: DocumentSession {
     /// Info dictionary and rewrites the file.
     func setMetadata(key: String, value: String) async throws {
         let path = self.path
+        let expectedID = sharedPDF ? info.docId : nil
         try await PdfFileGate.shared.perform {
+            try Self.checkSharedEdit(path: path, expected: expectedID)
             return try Self.performSetMetadata(path: path, key: key, value: value)
+        }
+    }
+
+    nonisolated private static func checkSharedEdit(path: String, expected: String?) throws {
+        guard let expected else { return }
+        let original = try PdfDocumentLoader.readFile(path)
+        guard SharedPDFIdentity.stamp(in: original, readerID: SharedPDFImport.readID(original)) == expected,
+              PdfEditEligibility.classify(original) == .editable else {
+            throw SessionServiceError.io("This shared PDF is read-only. Its notes and conversations can still be edited.")
         }
     }
 
@@ -307,7 +344,6 @@ final class PdfDocumentSession: DocumentSession {
             return PdfMetadata.documentId(raw)
         }
         if let existing = probed {
-            PdfDocIdRegistry.recordStamp(existing, forPath: path)
             resolvedDocId = existing
             return existing
         }
@@ -357,6 +393,7 @@ final class PdfDocumentSession: DocumentSession {
     /// bookmarks to outline creation. Saves the file; returns the full record.
     nonisolated static func performCreate(path: String, input: CreateAnnotationInput) throws -> Annotation {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
+        let sourceId = PdfMetadata.documentId(raw)
         let existingAnnotations = Self.annotationMetadataRecords(in: raw)
         let existingBookmarks = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
         let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
@@ -373,7 +410,7 @@ final class PdfDocumentSession: DocumentSession {
                let patched = try? PdfBookmarks.createBookmarkIncrement(
                    normalizedData: originalData, pageNumber: input.pageNumber, id: id,
                    content: bookmarkTitle, now: now) {
-                try Self.writeAndRefreshCache(patched, path: path)
+                try Self.writeAndRefreshCache(patched, path: path, preserving: sourceId)
                 return Annotation(
                     id: id, type: .bookmark, pageNumber: input.pageNumber,
                     color: nil, content: bookmarkTitle, positionData: nil,
@@ -383,7 +420,7 @@ final class PdfDocumentSession: DocumentSession {
             let patched = try PdfBookmarks.createBookmarkIncrement(
                 normalizedData: normalized, pageNumber: input.pageNumber, id: id,
                 content: bookmarkTitle, now: now)
-            try saveThroughPdfKit(patched, path: path)
+            try saveThroughPdfKit(patched, path: path, preserving: sourceId)
             return Annotation(
                 id: id,
                 type: .bookmark,
@@ -429,7 +466,7 @@ final class PdfDocumentSession: DocumentSession {
         } else {
             PdfBytePatch.apply(patches, to: &data)
         }
-        try Self.writeAndRefreshCache(data, path: path)
+        try Self.writeAndRefreshCache(data, path: path, preserving: sourceId)
         return created
     }
 
@@ -439,6 +476,7 @@ final class PdfDocumentSession: DocumentSession {
     /// /VellumUpdatedAt always refresh.
     nonisolated static func performUpdate(path: String, input: UpdateAnnotationInput) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
+        let sourceId = PdfMetadata.documentId(raw)
         var records = Self.annotationMetadataRecords(in: raw)
         let bookmarks = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
         let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
@@ -494,7 +532,7 @@ final class PdfDocumentSession: DocumentSession {
                     data = try Self.restoreInfoDictionary(from: originalData, into: data)
                 }
             }
-            try Self.writeAndRefreshCache(data, path: path)
+            try Self.writeAndRefreshCache(data, path: path, preserving: sourceId)
             return true
         }
 
@@ -507,20 +545,20 @@ final class PdfDocumentSession: DocumentSession {
 
             if let content = input.content {
                 let pageNumber = bookmarks.first { $0.id == input.id }?.pageNumber ?? 1
-                let defaultTitle = PdfBookmarks.defaultTitle(pageNumber: pageNumber)
+                let defaultTitle = PdfOutlineIncrement.defaultTitle(pageNumber: pageNumber)
                 let now = PdfDates.rfc3339Now()
                 if let originalData,
                    let patched = try? PdfBookmarks.updateBookmarkIncrement(
                        normalizedData: originalData, id: input.id, content: content,
                        defaultTitle: defaultTitle, now: now) {
-                    try Self.writeAndRefreshCache(patched, path: path)
+                    try Self.writeAndRefreshCache(patched, path: path, preserving: sourceId)
                 } else {
                     let normalized = try serialize(document)
                     guard let patched = try PdfBookmarks.updateBookmarkIncrement(
                         normalizedData: normalized, id: input.id, content: content,
                         defaultTitle: defaultTitle, now: now)
                     else { return false }
-                    try saveThroughPdfKit(patched, path: path)
+                    try saveThroughPdfKit(patched, path: path, preserving: sourceId)
                 }
                 retitled = true
             }
@@ -541,9 +579,9 @@ final class PdfDocumentSession: DocumentSession {
                     normalizedData: base, id: input.id, isPinned: isPinned, now: now)
                 else { return false }
                 if pdfKitDropsCustomKeys || retitled {
-                    try Self.writeAndRefreshCache(patched, path: path)
+                    try Self.writeAndRefreshCache(patched, path: path, preserving: sourceId)
                 } else {
-                    try saveThroughPdfKit(patched, path: path)
+                    try saveThroughPdfKit(patched, path: path, preserving: sourceId)
                 }
             }
 
@@ -557,20 +595,21 @@ final class PdfDocumentSession: DocumentSession {
     /// false when the id is unknown.
     nonisolated static func performDelete(path: String, id: String) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
+        let sourceId = PdfMetadata.documentId(raw)
         let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
 
         if PdfBookmarks.containsBookmark(document: raw, id: id) {
             if let originalData,
                let patched = try PdfBookmarks.deleteBookmarkIncrement(
                    normalizedData: originalData, id: id) {
-                try Self.writeAndRefreshCache(patched, path: path)
+                try Self.writeAndRefreshCache(patched, path: path, preserving: sourceId)
                 return true
             }
             let normalized = try serialize(document)
             guard let patched = try PdfBookmarks.deleteBookmarkIncrement(normalizedData: normalized, id: id) else {
                 return false
             }
-            try saveThroughPdfKit(patched, path: path)
+            try saveThroughPdfKit(patched, path: path, preserving: sourceId)
             return true
         }
 
@@ -595,7 +634,7 @@ final class PdfDocumentSession: DocumentSession {
             else {
                 return false
             }
-            try saveThroughPdfKit(patched, path: path)
+            try saveThroughPdfKit(patched, path: path, preserving: sourceId)
             return true
         }
 
@@ -614,7 +653,7 @@ final class PdfDocumentSession: DocumentSession {
                 data = try Self.restoreInfoDictionary(from: originalData, into: data)
             }
         }
-        try Self.writeAndRefreshCache(data, path: path)
+        try Self.writeAndRefreshCache(data, path: path, preserving: sourceId)
         return true
     }
 
@@ -626,13 +665,17 @@ final class PdfDocumentSession: DocumentSession {
            let original = try? Self.readBytes(path: path),
            let patched = try? PdfMetadata.setMetadataIncrement(
                normalizedData: original, key: key, value: value) {
-            try Self.writeAndRefreshCache(patched, path: path)
+            let sourceId = PdfDocumentLoader.cgDocument(from: original).flatMap(PdfMetadata.documentId)
+            try Self.writeAndRefreshCache(patched, path: path, preserving: key == "doc_id" ? nil : sourceId)
             return
         }
-        let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
+        let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         let normalized = try serialize(document)
         let patched = try PdfMetadata.setMetadataIncrement(normalizedData: normalized, key: key, value: value)
-        try saveThroughPdfKit(patched, path: path)
+        let sourceId = key == "doc_id"
+            ? PdfDocumentLoader.cgDocument(from: patched).flatMap(PdfMetadata.documentId)
+            : PdfMetadata.documentId(raw)
+        try saveThroughPdfKit(patched, path: path, preserving: sourceId)
     }
 
     /// Never throws — a stamping failure degrades to a stable fallback identity
@@ -649,19 +692,17 @@ final class PdfDocumentSession: DocumentSession {
     nonisolated static func performEnsureDocumentId(path: String, cacheKey: String) -> String {
         if let raw = try? PdfDocumentLoader.loadRaw(path: path),
            let existing = PdfMetadata.documentId(raw) {
-            PdfDocIdRegistry.recordStamp(existing, forPath: path)
             PdfDocIdRegistry.clear(forPath: path)
             return existing
         }
         do {
             let original = try Self.readBytes(path: path)
-            let plan = Self.stampDocIdIfNeeded(original, path: path)
-            guard let pending = plan.pendingStamp else {
+            let plan = try Self.stampDocIdIfNeeded(original, path: path)
+            guard let pending = plan.docId else {
                 throw SessionServiceError.io("Failed to stamp document id")
             }
             try PdfAtomicWriter.save(plan.data, toPath: path)
             // COMMIT: only now is the id real.
-            PdfDocIdRegistry.recordStamp(pending, forPath: path)
             PdfDocIdRegistry.clear(forPath: path)
             Task { await PageTextCache.shared.refreshHash(key: cacheKey, data: plan.data) }
             return pending
@@ -735,10 +776,10 @@ final class PdfDocumentSession: DocumentSession {
         }
         guard let slot else { return nil }
 
-        let file = try ClassicPdfFile(data: normalizedData)
+        let file = try ClassicPdfFile(appleData: normalizedData)
         guard let catalogNumber = file.rootNumber,
               let catalog = file.objectSource(catalogNumber),
-              let pageObjectNumber = PdfBookmarks.pageObjectNumber(
+              let pageObjectNumber = PdfOutlineIncrement.pageObjectNumber(
                 in: file, catalog: catalog, pageNumber: pageNumber),
               var pageSource = file.objectSource(pageObjectNumber),
               let annots = pageSource.inlineArray(forKey: "Annots"),
@@ -760,32 +801,32 @@ final class PdfDocumentSession: DocumentSession {
 
     private struct StampPlan {
         var data: Data
-        var pendingStamp: String?
+        var docId: String?
     }
 
-    /// Lazy /VellumDocId stamp, folded into a write that was happening anyway.
-    /// BEST-EFFORT AND NON-THROWING: on macOS this sits on the IO actor and may
-    /// throw, but here it is inside the annotation/ink/metadata write path, and
-    /// a document whose xref shape defeats `ClassicPdfFile` must still save its
-    /// annotations. A failure returns the ORIGINAL bytes with no pending stamp,
-    /// leaving the registry entry so the next write reuses the same uuid.
-    nonisolated private static func stampDocIdIfNeeded(_ data: Data, path: String) -> StampPlan {
-        if PdfDocIdRegistry.knownStamp(forPath: path) != nil {
-            return StampPlan(data: data, pendingStamp: nil)
-        }
+    /// Check the bytes about to replace the file. PDFKit can omit a stamped
+    /// Info key when serializing an edit, even after a successful open.
+    nonisolated private static func stampDocIdIfNeeded(
+        _ data: Data, path: String, preserving sourceId: String? = nil
+    ) throws -> StampPlan {
         if let raw = PdfDocumentLoader.cgDocument(from: data),
-           let existing = PdfMetadata.documentId(raw) {
-            // Already on disk in these bytes — safe to record now (persisted).
-            PdfDocIdRegistry.recordStamp(existing, forPath: path)
-            PdfDocIdRegistry.clear(forPath: path)
-            return StampPlan(data: data, pendingStamp: nil)
+           let existing = PdfMetadata.documentId(raw), sourceId == nil || existing == sourceId {
+            return StampPlan(data: data, docId: existing)
         }
-        let uuid = PdfDocIdRegistry.pendingOrAssign(forPath: path)
-        guard let stamped = try? PdfMetadata.setMetadataIncrement(
-            normalizedData: data, entries: [(key: "doc_id", value: uuid)]) else {
-            return StampPlan(data: data, pendingStamp: nil)
+
+        let id = sourceId ?? PdfDocIdRegistry.pendingOrAssign(forPath: path)
+        do {
+            let stamped = try PdfMetadata.setMetadataIncrement(normalizedData: data, key: "doc_id", value: id)
+            guard let raw = PdfDocumentLoader.cgDocument(from: stamped), PdfMetadata.documentId(raw) == id else {
+                throw SessionServiceError.io("Failed to persist PDF document identity")
+            }
+            return StampPlan(data: stamped, docId: id)
+        } catch {
+            // First-time stamping is best effort. Losing an existing id would
+            // orphan its sidecars, so leave the original file intact instead.
+            if sourceId != nil { throw error }
+            return StampPlan(data: data, docId: nil)
         }
-        return StampPlan(data: stamped, pendingStamp: uuid)
     }
 
     /// Atomically write already-serialized PDF data and re-key the persistent
@@ -802,13 +843,14 @@ final class PdfDocumentSession: DocumentSession {
     /// `performUpdate` / `performDelete` have already run the iPadOS-26
     /// `restoreInfoDictionary` step by this point, so the stamp increment is
     /// appended LAST and survives. Do not move it earlier.
-    nonisolated private static func writeAndRefreshCache(_ data: Data, path: String) throws {
-        let plan = stampDocIdIfNeeded(data, path: path)
+    nonisolated private static func writeAndRefreshCache(
+        _ data: Data, path: String, preserving sourceId: String?
+    ) throws {
+        let plan = try stampDocIdIfNeeded(data, path: path, preserving: sourceId)
         try PdfAtomicWriter.save(plan.data, toPath: path)
         // Two-phase commit: the stamp becomes "real" only after the atomic
         // rename lands, so a failed write can never leave a phantom docId.
-        if let pending = plan.pendingStamp {
-            PdfDocIdRegistry.recordStamp(pending, forPath: path)
+        if plan.docId != nil {
             PdfDocIdRegistry.clear(forPath: path)
         }
         // Session-stable key: the one resolved at open, NOT a re-derivation from
@@ -820,19 +862,21 @@ final class PdfDocumentSession: DocumentSession {
 
     /// Reload increment-patched data through PDFKit and write the resulting
     /// clean full rewrite (single xref, no /Prev) atomically.
-    nonisolated private static func saveThroughPdfKit(_ patchedData: Data, path: String) throws {
+    nonisolated private static func saveThroughPdfKit(
+        _ patchedData: Data, path: String, preserving sourceId: String?
+    ) throws {
         if pdfKitDropsCustomKeys {
             // iPadOS 26's PDFKit serializer drops custom annotation and Info
             // keys. The increment is already a complete, valid PDF; preserving
             // it is both safer and the only way to retain Vellum metadata.
-            try Self.writeAndRefreshCache(patchedData, path: path)
+            try Self.writeAndRefreshCache(patchedData, path: path, preserving: sourceId)
             return
         }
         guard let document = PDFDocument(data: patchedData) else {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit rejected updated document")
         }
         let data = try serialize(document)
-        try Self.writeAndRefreshCache(data, path: path)
+        try Self.writeAndRefreshCache(data, path: path, preserving: sourceId)
     }
 
     /// Persist a full PDFKit rewrite while retaining metadata that iPadOS 26's
@@ -845,11 +889,11 @@ final class PdfDocumentSession: DocumentSession {
         path: String
     ) throws {
         var data = normalizedData
+        guard let raw = PdfDocumentLoader.cgDocument(from: originalData) else {
+            throw SessionServiceError.invalidDocument("Failed to read PDF metadata before rewrite")
+        }
+        let sourceId = PdfMetadata.documentId(raw)
         if pdfKitDropsCustomKeys {
-            guard let raw = PdfDocumentLoader.cgDocument(from: originalData) else {
-                throw SessionServiceError.invalidDocument(
-                    "Failed to read PDF metadata before rewrite")
-            }
             data = try Self.rehydrateAnnotationMetadata(
                 normalizedData: data,
                 records: Self.annotationMetadataRecords(in: raw))
@@ -858,7 +902,7 @@ final class PdfDocumentSession: DocumentSession {
                 bookmarks: PdfBookmarks.readBookmarks(document: raw, pageNumber: nil))
             data = try Self.restoreInfoDictionary(from: originalData, into: data)
         }
-        try Self.writeAndRefreshCache(data, path: path)
+        try Self.writeAndRefreshCache(data, path: path, preserving: sourceId)
     }
 
     private struct AnnotationMetadataRecord {
@@ -875,7 +919,7 @@ final class PdfDocumentSession: DocumentSession {
         normalizedData: Data,
         records: [AnnotationMetadataRecord]
     ) throws -> Data {
-        let file = try ClassicPdfFile(data: normalizedData)
+        let file = try ClassicPdfFile(appleData: normalizedData)
         guard let catalogNumber = file.rootNumber,
               let catalog = file.objectSource(catalogNumber) else {
             throw SessionServiceError.invalidDocument("Failed to restore annotation metadata")
@@ -889,7 +933,7 @@ final class PdfDocumentSession: DocumentSession {
                         && ($0.annotation.type == .highlight || $0.annotation.type == .note)
                 }
                 guard !pageRecords.isEmpty else { continue }
-                guard let pageObjectNumber = PdfBookmarks.pageObjectNumber(
+                guard let pageObjectNumber = PdfOutlineIncrement.pageObjectNumber(
                           in: file, catalog: catalog, pageNumber: pageNumber),
                       let page = file.objectSource(pageObjectNumber),
                       let annotsNumber = page.reference(forKey: "Annots"),
@@ -992,7 +1036,7 @@ final class PdfDocumentSession: DocumentSession {
         bookmarks: [Annotation]
     ) throws -> Data {
         guard !bookmarks.isEmpty else { return normalizedData }
-        let file = try ClassicPdfFile(data: normalizedData)
+        let file = try ClassicPdfFile(appleData: normalizedData)
         guard let catalogNumber = file.rootNumber,
               let catalog = file.objectSource(catalogNumber),
               let rootNumber = catalog.reference(forKey: "Outlines"),
@@ -1038,7 +1082,7 @@ final class PdfDocumentSession: DocumentSession {
                 source.removeEntry(forKey: "VellumContent")
                 source.setTextString(
                     forKey: "Title",
-                    to: PdfBookmarks.defaultTitle(pageNumber: bookmark.pageNumber))
+                    to: PdfOutlineIncrement.defaultTitle(pageNumber: bookmark.pageNumber))
             }
             source.setInteger(forKey: "VellumPinned", to: bookmark.pinned ? 1 : 0)
             increment.setObject(number, source: source.sourceBytes)
@@ -1053,12 +1097,12 @@ final class PdfDocumentSession: DocumentSession {
         from originalData: Data,
         into normalizedData: Data
     ) throws -> Data {
-        let original = try ClassicPdfFile(data: originalData)
+        let original = try ClassicPdfFile(appleData: originalData)
         guard let originalInfoNumber = original.infoNumber,
               let originalInfo = original.objectSource(originalInfoNumber)
         else { return normalizedData }
 
-        let normalized = try ClassicPdfFile(data: normalizedData)
+        let normalized = try ClassicPdfFile(appleData: normalizedData)
         var increment = PdfIncrement(file: normalized)
         let targetNumber: Int
         if let existing = normalized.infoNumber {

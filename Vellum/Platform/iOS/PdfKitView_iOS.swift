@@ -2,6 +2,7 @@
 import PDFKit
 import SwiftUI
 import UIKit
+import VellumCore
 
 // UIViewRepresentable around PDFKit's PDFView for iPad: continuous vertical
 // layout, native pinch-zoom clamped 0.25–4.0, well background, and scroll/zoom/
@@ -241,9 +242,9 @@ struct PdfKitView_iOS: UIViewRepresentable {
         view.autoScales = false
         view.displaysPageBreaks = true
         view.pageBreakMargins = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
-        view.absoluteScaleRange = AppStore.minZoom...AppStore.maxZoom
-        view.minScaleFactor = CGFloat(AppStore.minZoom)
-        view.maxScaleFactor = CGFloat(AppStore.maxZoom)
+        let zoom = AppStore.freePdfZoom
+        view.minScaleFactor = CGFloat(zoom.minimumScale)
+        view.maxScaleFactor = CGFloat(zoom.maximumScale)
         // Set before the document: the first layout pass is what computes the
         // fit-width scale, and it needs to know it is fitting — and whether it
         // is even allowed to touch the scale — by then.
@@ -264,7 +265,7 @@ struct PdfKitView_iOS: UIViewRepresentable {
             VellumShortcutRouter.perform(action, workspace: workspace)
         }
         view.document = document
-        view.scaleFactor = CGFloat(min(AppStore.maxZoom, max(AppStore.minZoom, app.zoom)))
+        view.scaleFactor = CGFloat(zoom.openingScale(persisted: app.zoom))
         controller.pdfView = view
         context.coordinator.attach(to: view)
         controller.documentAttached()

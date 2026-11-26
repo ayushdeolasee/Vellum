@@ -2,7 +2,6 @@ import XCTest
 import PDFKit
 import CoreGraphics
 import CoreText
-import CryptoKit
 @testable import Vellum
 
 // DocumentID layer (Services/DocumentIdentity.swift, /VellumDocId stamping in
@@ -118,13 +117,29 @@ final class DocumentIdentityTests: XCTestCase {
         XCTAssertEqual(again.info.docId, id, "doc id is stable across further edits")
     }
 
+    /// Exercise a serializer that drops the Info stamp even on runtimes where
+    /// PDFKit normally preserves it. Both byte buffers describe the same PDF.
+    func testRewriteRestoresStampMissingFromSerializedBytes() async throws {
+        let session = try await openSession(makeTestPdf(name: "lossy-rewrite"))
+        let path = session.path
+        let url = URL(fileURLWithPath: path)
+        let unstamped = try Data(contentsOf: url)
+        let id = try await session.ensureDocumentId()
+        let stamped = try Data(contentsOf: url)
+        XCTAssertEqual(PdfMetadata.documentId(rawDocument(path)), id)
+
+        try await PdfFileGate.shared.perform {
+            try PdfDocumentSession.persistPdfKitRewrite(unstamped, preservingMetadataFrom: stamped, path: path)
+        }
+        XCTAssertEqual(PdfMetadata.documentId(rawDocument(path)), id)
+    }
+
     /// ensureDocumentId returns the same id every call and rewrites the file
     /// exactly once (the stamp), including across a fresh session.
     ///
     /// iPad: the second call short-circuits on the session's cached
-    /// `resolvedDocId`, and the fresh session's on `info.docId` read at open (with
-    /// `PdfDocIdRegistry.knownStamp` behind both). The mtime/size comparison is
-    /// what pins that none of those paths rewrites the file.
+    /// `resolvedDocId`, and the fresh session's on `info.docId` read at open.
+    /// The byte comparison checks that none of those paths rewrites the file.
     func testEnsureDocumentIdIdempotentAndWritesOnce() async throws {
         let path = makeTestPdf(name: "ensure-idem")
         let session = try await openSession(path)
@@ -257,8 +272,9 @@ final class DocumentIdentityTests: XCTestCase {
     /// byteHash is the plain lowercase-hex sha256 of the bytes (not the partial
     /// content-hash validator).
     func testByteHashIsFullSha256() {
-        let data = Data("vellum".utf8)
-        let expected = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let data = Data([0, 10, 255, 128])
+        let expected = "07116a8c00bb25c3b23b246f1d41aebd33345b48b671936f4b8dc9d11ad3f7e1"
         XCTAssertEqual(DocumentIdentity.byteHash(data), expected)
+        XCTAssertEqual(WebArchive.sha256Hex(data), "sha256:" + expected)
     }
 }

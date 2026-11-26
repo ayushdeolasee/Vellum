@@ -1,0 +1,85 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 /MediaBox [0 0 612 500] /CropBox [20.25 40.5 580.75 475.125] >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 5 0 R >>
+endobj
+5 0 obj
+<< /Length 355 >>
+stream
+/CIDInit /ProcSet findresource begin
+12 dict begin begincmap
+/CIDSystemInfo << /Registry (Test) /Ordering (Unicode) /Supplement 0 >> def
+/CMapName /P2-Test def /CMapType 2 def
+1 begincodespacerange <00> <FF> endcodespacerange
+3 beginbfchar
+<42> <D83DDE42>
+<43> <00650301>
+<44> <FB01>
+endbfchar
+endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 3 0 R /Unicode 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 232 >>
+stream
+BT /F1 18 Tf 40 325 Td (ated word) Tj ET
+BT /F1 18 Tf 40 430 Td (The quick brown fox jumps over the lazy dog) Tj ET
+BT /F1 14 Tf 40 360 Td (Wrapping selection and a hyphen-) Tj ET
+BT /F1 14 Tf 40 384 Td (A first line of text.) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 3 0 R /Unicode 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 84 >>
+stream
+BT /Unicode 14 Tf 40 430 Td (A B C D after) Tj ET
+BT /F1 14 Tf 40 406 Td (End) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 3 0 R /Unicode 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 361 >>
+stream
+BT /F1 14 Tf 40 487 Td (Outside crop) Tj ET
+BT /F1 14 Tf 350 416 Td (Right first with space) Tj ET
+BT /F1 14 Tf 40 394 Td (Left second) Tj ET
+BT /F1 18 Tf 40 446 Td (Long spanning title stretching over the gutter and both columns) Tj ET
+BT /F1 14 Tf 350 394 Td (Right second) Tj ET
+BT /F1 14 Tf 40 416 Td (Left first) Tj ET
+BT /F1 14 Tf 40 280 Td (Footer) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000189 00000 n 
+0000000286 00000 n 
+0000000400 00000 n 
+0000000806 00000 n 
+0000000923 00000 n 
+0000001206 00000 n 
+0000001323 00000 n 
+0000001457 00000 n 
+0000001576 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+1989
+%%EOF

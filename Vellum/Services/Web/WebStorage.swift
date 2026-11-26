@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // Where the web library lives on disk (issue #29 follow-up): the user picks a
 // storage location once — iCloud Drive (everything syncs: offline copies AND
@@ -21,7 +22,7 @@ import Foundation
 // User-facing layout under the chosen root ("pretty" modes):
 //   Web Pages/<Title>.vellumweb    one self-contained archive per page
 //   .vellum/index.json             page-key → filename map
-//   .vellum/records/<key>.json     records (iCloud mode only)
+//   .vellum/records/<key>.json     records (iCloud and shared-folder layouts)
 // Derived caches (plain snapshots, unpacked archive dirs) always stay in
 // Application Support — they're rebuildable and would be sync noise.
 
@@ -31,12 +32,21 @@ enum WebStorageMode: String, CaseIterable, Sendable {
     case local
     case icloud
     case custom
+    case syncedFolder
+}
+
+enum StorageBackendKind: Equatable, Sendable {
+    case direct
+    case iCloud
+    case syncedFolder
 }
 
 enum WebStorageSettings {
     static let modeKey = "web.storage.mode"
     static let customPathKey = "web.storage.customPath"
     static let customBookmarkKey = "web.storage.customBookmark"
+    static let syncedFolderPathKey = "vellum.storage.syncedFolderPath"
+    static let syncedFolderBookmarkKey = "vellum.storage.syncedFolderBookmark"
     static let autoSaveKey = "web.storage.autoSavePages"
     static let pendingRelocationKey = "web.storage.pendingRelocationFrom"
 
@@ -59,7 +69,9 @@ enum WebStorageSettings {
         switch chosenMode {
         case .icloud: return icloudVellumRoot != nil ? .icloud : .local
         case .custom: return customRoot != nil ? .custom : .local
-        default: return .local
+        // Legacy synchronous callers cannot use the shared-folder container.
+        // Keep them local until S5b wires the real backend and retires those paths.
+        case .syncedFolder, .local, nil: return .local
         }
     }
 
@@ -90,6 +102,60 @@ enum WebStorageSettings {
     /// Persist the security-scoped bookmark for a user-picked custom folder.
     static func setCustomBookmark(_ data: Data) {
         AppDefaults.current.set(data, forKey: customBookmarkKey)
+    }
+
+    private static let syncedFolderSelectionLock = NSLock()
+
+    static func selectSyncedFolder(path: String, bookmark: Data) {
+        syncedFolderSelectionLock.withLock {
+            let defaults = AppDefaults.current
+            defaults.set(path, forKey: syncedFolderPathKey)
+            defaults.set(bookmark, forKey: syncedFolderBookmarkKey)
+            setMode(.syncedFolder)
+        }
+    }
+
+    private static var syncedFolderSelection: (path: String?, bookmark: Data?) {
+        syncedFolderSelectionLock.withLock {
+            let defaults = AppDefaults.current
+            return (defaults.string(forKey: syncedFolderPathKey), defaults.data(forKey: syncedFolderBookmarkKey))
+        }
+    }
+
+    static var syncedFolderRoot: URL? {
+        resolveSyncedFolderRoot(selection: syncedFolderSelection)
+    }
+
+    /// Capture the preferences domain before detaching. Tests bind it task-locally.
+    static func resolveSyncedFolderRoot() async -> URL? {
+        let selection = syncedFolderSelection
+        return await Task.detached(priority: .utility) {
+            resolveSyncedFolderRoot(selection: selection)
+        }.value
+    }
+
+    private static func resolveSyncedFolderRoot(selection: (path: String?, bookmark: Data?)) -> URL? {
+        #if os(macOS)
+        let root: URL
+        if let bookmark = selection.bookmark,
+           let url = resolveBookmark(bookmark, allowUI: false, refresh: nil) {
+            root = url
+        } else if let path = selection.path, !path.isEmpty {
+            root = URL(fileURLWithPath: path, isDirectory: true)
+        } else {
+            return nil
+        }
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              fileManager.isReadableFile(atPath: root.path),
+              fileManager.isWritableFile(atPath: root.path),
+              fileManager.isExecutableFile(atPath: root.path) else { return nil }
+        return root
+        #else
+        return nil
+        #endif
     }
 
     // MARK: iCloud ubiquity container (resolved off-main, cached)
@@ -152,10 +218,10 @@ enum WebStorageSettings {
 
     // MARK: Custom folder (security-scoped bookmark)
 
-    /// Resolved custom URLs on which we hold an active security scope, so we
+    /// Resolved folder URLs on which we hold an active security scope, so we
     /// only `startAccessingSecurityScopedResource` once per URL.
-    private nonisolated(unsafe) static var accessedCustomURLs: Set<URL> = []
-    private static let customLock = NSLock()
+    private nonisolated(unsafe) static var accessedFolderURLs: Set<URL> = []
+    private static let folderScopeLock = NSLock()
 
     static var customRoot: URL? {
         if let customRootOverride { return customRootOverride }
@@ -179,24 +245,22 @@ enum WebStorageSettings {
     /// session while custom mode is selected). Returns nil when the bookmark is
     /// unresolvable (folder deleted / permission revoked) so the mode degrades.
     fileprivate static func resolveBookmark(
-        _ data: Data, refresh: (Data) -> Void = setCustomBookmark
+        _ data: Data, allowUI: Bool = true, refresh: ((Data) -> Void)? = setCustomBookmark
     ) -> URL? {
-        guard let resolved = SecurityScopedBookmark.resolve(data) else { return nil }
+        guard let resolved = SecurityScopedBookmark.resolve(data, allowUI: allowUI) else { return nil }
         let url = resolved.url
-        customLock.lock()
-        let alreadyAccessing = accessedCustomURLs.contains(url)
-        customLock.unlock()
-        if !alreadyAccessing {
-            guard url.startAccessingSecurityScopedResource() else { return nil }
-            customLock.lock()
-            accessedCustomURLs.insert(url)
-            customLock.unlock()
+        let hasScope = folderScopeLock.withLock {
+            if accessedFolderURLs.contains(url) { return true }
+            guard url.startAccessingSecurityScopedResource() else { return false }
+            accessedFolderURLs.insert(url)
+            return true
         }
+        guard hasScope else { return nil }
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
               isDir.boolValue else { return nil }
         // Refresh a stale bookmark so a moved/renamed folder keeps resolving.
-        if resolved.isStale, let fresh = SecurityScopedBookmark.make(for: url) {
+        if let refresh, resolved.isStale, let fresh = SecurityScopedBookmark.make(for: url) {
             refresh(fresh)
         }
         return url
@@ -208,6 +272,7 @@ enum WebStorageSettings {
         switch mode {
         case .icloud: return icloudVellumRoot
         case .custom: return customRoot
+        case .syncedFolder: return syncedFolderRoot
         case .local: return nil
         }
     }
@@ -247,9 +312,9 @@ struct WebStorageLayout: Equatable, Sendable {
     /// `.vellum/index.json` next to the archives (pretty modes only).
     var indexPath: URL?
 
-    /// True only for the fixed iCloud layout. A custom pretty folder still
-    /// keeps records/documents local and must never construct a coordinator.
-    var requiresCoordination: Bool {
+    let backend: StorageBackendKind
+
+    var storesMetadataInRoot: Bool {
         guard let internalDir = indexPath?.deletingLastPathComponent() else { return false }
         return recordsDir.deletingLastPathComponent().standardizedFileURL
                 == internalDir.standardizedFileURL
@@ -257,15 +322,21 @@ struct WebStorageLayout: Equatable, Sendable {
                 == internalDir.standardizedFileURL
     }
 
-    /// Reading positions follow class-B data: fixed iCloud syncs them under
-    /// `.vellum/positions`; local and custom modes keep the existing app-data
-    /// sibling of `documents/`.
+    var requiresICloudCoordination: Bool { backend == .iCloud }
+
+    /// The backend this layout requires. Runtime availability is owned by the coordinator.
+    var usesSyncedContainer: Bool { backend != .direct }
+
+    /// Positions live alongside the document metadata in every layout.
     var positionsDir: URL {
-        if requiresCoordination, let internalDir = indexPath?.deletingLastPathComponent() {
-            return internalDir.appendingPathComponent("positions", isDirectory: true)
-        }
-        return documentsDir.deletingLastPathComponent()
-            .appendingPathComponent("positions", isDirectory: true)
+        documentsDir.deletingLastPathComponent().appendingPathComponent("positions", isDirectory: true)
+    }
+
+    var rootDir: URL { pretty ? archivesDir.deletingLastPathComponent() : recordsDir }
+
+    var pdfsDir: URL? {
+        guard backend == .syncedFolder else { return nil }
+        return rootDir.appendingPathComponent("PDFs", isDirectory: true)
     }
 
     /// The documents/ home for a local (app-container) layout. Derived from
@@ -280,33 +351,43 @@ struct WebStorageLayout: Equatable, Sendable {
         WebStorageLayout(
             recordsDir: storeDir, archivesDir: storeDir,
             documentsDir: localDocumentsDir(storeDir: storeDir),
-            pretty: false, indexPath: nil)
+            pretty: false, indexPath: nil, backend: .direct)
     }
 
-    static func pretty(root: URL, recordsInRoot: Bool, localStoreDir: URL) -> WebStorageLayout {
+    static func iCloud(root: URL) -> WebStorageLayout {
+        pretty(root: root, localStoreDir: nil, backend: .iCloud)
+    }
+
+    static func custom(root: URL, storeDir: URL) -> WebStorageLayout {
+        pretty(root: root, localStoreDir: storeDir, backend: .direct)
+    }
+
+    static func syncedFolder(root: URL) -> WebStorageLayout {
+        pretty(root: root, localStoreDir: nil, backend: .syncedFolder)
+    }
+
+    private static func pretty(root: URL, localStoreDir: URL?, backend: StorageBackendKind) -> WebStorageLayout {
         let internalDir = root.appendingPathComponent(".vellum", isDirectory: true)
         return WebStorageLayout(
-            recordsDir: recordsInRoot
-                ? internalDir.appendingPathComponent("records", isDirectory: true)
-                : localStoreDir,
+            recordsDir: localStoreDir ?? internalDir.appendingPathComponent("records", isDirectory: true),
             archivesDir: root.appendingPathComponent("Web Pages", isDirectory: true),
-            // Documents follow records: synced under the root in iCloud mode
-            // (recordsInRoot), local in custom mode.
-            documentsDir: recordsInRoot
-                ? internalDir.appendingPathComponent("documents", isDirectory: true)
-                : localDocumentsDir(storeDir: localStoreDir),
+            documentsDir: localStoreDir.map(localDocumentsDir(storeDir:))
+                ?? internalDir.appendingPathComponent("documents", isDirectory: true),
             pretty: true,
-            indexPath: internalDir.appendingPathComponent("index.json"))
+            indexPath: internalDir.appendingPathComponent("index.json"), backend: backend)
     }
 
     static func resolve(mode: WebStorageMode, storeDir: URL) -> WebStorageLayout {
         switch mode {
         case .icloud:
             guard let root = WebStorageSettings.icloudVellumRoot else { return .local(storeDir: storeDir) }
-            return .pretty(root: root, recordsInRoot: true, localStoreDir: storeDir)
+            return .iCloud(root: root)
         case .custom:
             guard let root = WebStorageSettings.customRoot else { return .local(storeDir: storeDir) }
-            return .pretty(root: root, recordsInRoot: false, localStoreDir: storeDir)
+            return .custom(root: root, storeDir: storeDir)
+        case .syncedFolder:
+            guard let root = WebStorageSettings.syncedFolderRoot else { return .local(storeDir: storeDir) }
+            return .syncedFolder(root: root)
         case .local:
             return .local(storeDir: storeDir)
         }
@@ -321,15 +402,7 @@ struct WebStorageLayout: Equatable, Sendable {
 /// on the next archive write — the index is a convenience, not a source of
 /// truth, so losing it (e.g. an iCloud conflict) is never data loss.
 enum WebArchiveIndex {
-    struct Contents: Codable {
-        var version: Int
-        var entries: [String: String]
-
-        init() {
-            version = 1
-            entries = [:]
-        }
-    }
+    typealias Contents = WebArchiveIndexContents
 
     private static let lock = NSLock()
 
@@ -392,40 +465,8 @@ enum WebArchiveIndex {
         save(contents, at: path)
     }
 
-    /// Filesystem-safe display name: strip path separators and control chars,
-    /// collapse whitespace, trim leading dots (hidden files), cap the length.
-    /// Falls back to the URL's host+path when the title is empty.
     static func sanitizedBaseName(title: String?, url: String) -> String {
-        var source = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if source.isEmpty {
-            // Lenient Foundation URL parsing can yield a path but no host —
-            // never emit a dangling "host — " / "— tail" fragment.
-            let parsed = URL(string: url)
-            let host = parsed?.host ?? ""
-            let tail = parsed?.path.split(separator: "/").last.map(String.init) ?? ""
-            switch (host.isEmpty, tail.isEmpty) {
-            case (false, false): source = "\(host) — \(tail)"
-            case (false, true): source = host
-            case (true, _): source = tail
-            }
-        }
-        if source.isEmpty { source = "Web Page" }
-        var cleaned = ""
-        for scalar in source.unicodeScalars {
-            if scalar == "/" || scalar == ":" || scalar == "\\" {
-                cleaned.append("-")
-            } else if scalar.properties.generalCategory == .control {
-                continue
-            } else {
-                cleaned.unicodeScalars.append(scalar)
-            }
-        }
-        cleaned = cleaned.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        while cleaned.hasPrefix(".") { cleaned.removeFirst() }
-        if cleaned.count > 80 {
-            cleaned = String(cleaned.prefix(80)).trimmingCharacters(in: .whitespaces)
-        }
-        return cleaned.isEmpty ? "Web Page" : cleaned
+        WebArchiveNaming.sanitizedBaseName(title: title, url: url)
     }
 }
 
@@ -615,6 +656,7 @@ enum WebStorageMigrator {
     /// Launch-time pass: resume any interrupted relocation, then fold whatever
     /// still sits in the legacy local store into the active layout.
     static func sweepAtLaunchDirectForTests() {
+        guard WebStorageSettings.chosenMode != .syncedFolder else { return }
         let marker = pendingMarker
         let active = WebLibrary.activeLayout
         if let marker, let snapshot = pendingRelocationSource(for: marker),
@@ -632,6 +674,8 @@ enum WebStorageMigrator {
     /// Production launch sweep. Each leg borrows its direct/coordinated file
     /// stores from the coordinator while normal storage traffic is stopped.
     static func sweepAtLaunch(coordinator: StorageCoordinator) async {
+        // Shared-folder setup never participates in legacy library relocation.
+        guard WebStorageSettings.chosenMode != .syncedFolder else { return }
         let marker = pendingMarker
         let active = WebLibrary.activeLayout
         if let marker, let snapshot = pendingRelocationSource(for: marker) {
@@ -655,7 +699,7 @@ enum WebStorageMigrator {
 
         #if os(macOS)
         if WebStorageSettings.chosenMode == .icloud,
-           active.requiresCoordination,
+           active.requiresICloudCoordination,
            let legacyRoot = WebStorageSettings.legacyMacICloudVellumRoot {
             _ = await migrateLegacyICloudRoot(
                 legacyRoot,
@@ -691,10 +735,7 @@ enum WebStorageMigrator {
         profile: RuntimeProfile = .current
     ) async -> Bool {
         guard profile.allowsProductionServices else { return false }
-        let source = WebStorageLayout.pretty(
-            root: legacyRoot,
-            recordsInRoot: true,
-            localStoreDir: WebLibrary.storeDir)
+        let source = WebStorageLayout.iCloud(root: legacyRoot)
         guard source != destination else { return true }
         return await coordinator.performExclusiveStorageImport(
             to: destination
@@ -740,10 +781,12 @@ enum WebStorageMigrator {
                 root = URL(fileURLWithPath: path, isDirectory: true)
             }
             guard FileManager.default.fileExists(atPath: root.path) else { return nil }
-            layout = .pretty(root: root, recordsInRoot: false, localStoreDir: WebLibrary.storeDir)
+            layout = .custom(root: root, storeDir: WebLibrary.storeDir)
         case .icloud:
             guard let root = WebStorageSettings.icloudVellumRoot else { return nil }
-            layout = .pretty(root: root, recordsInRoot: true, localStoreDir: WebLibrary.storeDir)
+            layout = .iCloud(root: root)
+        case .syncedFolder:
+            return nil
         case .local:
             layout = .local(storeDir: WebLibrary.storeDir)
         }
@@ -1096,13 +1139,17 @@ enum WebStorageMigrator {
         if isInk {
             guard let incoming = try? JSONDecoder().decode(WebInkRecord.self, from: source),
                   let current = try? JSONDecoder().decode(WebInkRecord.self, from: destination) else { return nil }
-            let newer = WebArchive.newerThan(incoming.updatedAt, current.updatedAt)
-            return (newer ? source : destination, newer)
+            let merged = WebInkStore.relocationSnapshot(current: current, incoming: incoming)
+            if merged == current { return (destination, false) }
+            if merged == incoming { return (source, true) }
+            guard let data = try? WebLibrary.jsonEncoderPretty.encode(merged) else { return nil }
+            return (data, true)
         }
         guard let incoming = try? JSONDecoder().decode(WebPageRecord.self, from: source),
               var current = try? JSONDecoder().decode(WebPageRecord.self, from: destination)
         else { return nil }
         let original = current
+        current.unknownFields.fillMissing(from: incoming.unknownFields)
         WebArchive.mergeAnnotations(&current.annotations, incoming: incoming.annotations)
         current.saved = current.saved || incoming.saved
         current.savedAt = current.savedAt ?? incoming.savedAt
@@ -1146,6 +1193,13 @@ enum WebStorageMigrator {
         do {
             sourceIndex = try await loadIndex(for: source, store: sourceStore)
             destinationIndex = try await loadIndex(for: destination, store: destinationStore)
+            if destination.pretty {
+                let original = destinationIndex.unknownFields
+                destinationIndex.unknownFields.fillMissing(from: sourceIndex.unknownFields)
+                if destinationIndex.unknownFields != original {
+                    try await saveIndex(destinationIndex, for: destination, store: destinationStore)
+                }
+            }
         } catch {
             return false
         }

@@ -77,13 +77,36 @@ enum WebStorageRelocator {
         }
     }
 
+    /// Save an explicit folder selection without making a migration journal.
+    static func selectSyncedFolder(_ selection: FolderSelection, coordinator: StorageCoordinator) {
+        guard WebStorageMigrator.pendingMarker == nil else { return }
+        WebStorageSettings.selectSyncedFolder(path: selection.path, bookmark: selection.bookmarkData)
+        reconfigureWithoutRelocation(coordinator)
+    }
+
+    private static func reconfigureWithoutRelocation(_ coordinator: StorageCoordinator) {
+        enqueue {
+            await coordinator.reconfigure()
+            await MainActor.run {
+                NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
+                NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+            }
+        }
+    }
+
     static func apply(
         mode: WebStorageMode,
         customPath: String? = nil,
         customBookmark: Data? = nil,
         coordinator: StorageCoordinator
     ) {
+        guard mode != .syncedFolder else { return }
         let previous = WebStorageSettings.chosenMode ?? .local
+        if previous == .syncedFolder {
+            WebStorageSettings.setMode(mode, customPath: customPath, customBookmark: customBookmark)
+            reconfigureWithoutRelocation(coordinator)
+            return
+        }
         let previousCustomPath = AppDefaults.current.string(forKey: WebStorageSettings.customPathKey)
         let source = WebStorageLayout.resolve(mode: previous, storeDir: WebLibrary.storeDir)
         let sourceReachable = previous == .local || WebStorageSettings.root(for: previous) != nil
@@ -175,20 +198,28 @@ enum WebStorageRelocator {
         await sweepAtLaunch(coordinator: coordinator)
     }
 
-    struct CustomFolderSelection: Sendable {
+    struct FolderSelection: Sendable {
         let path: String
         let bookmarkData: Data
     }
 
     /// Keep the chosen folder accessible after relaunch, including in App Sandbox.
-    static func pickCustomFolder() async -> CustomFolderSelection? {
+    static func pickCustomFolder() async -> FolderSelection? {
+        await pickFolder(message: "Vellum will keep offline copies of your web pages in this folder.")
+    }
+
+    static func pickSyncedFolder() async -> FolderSelection? {
+        await pickFolder(message: "Choose where Vellum should keep the shared library.")
+    }
+
+    private static func pickFolder(message: String) async -> FolderSelection? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
-        panel.message = "Vellum will keep offline copies of your web pages in this folder."
+        panel.message = message
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -201,7 +232,7 @@ enum WebStorageRelocator {
             alert.runModal()
             return nil
         }
-        return CustomFolderSelection(path: url.path, bookmarkData: bookmark)
+        return FolderSelection(path: url.path, bookmarkData: bookmark)
     }
 }
 

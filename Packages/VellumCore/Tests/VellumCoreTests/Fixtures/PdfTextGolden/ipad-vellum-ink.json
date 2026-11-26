@@ -1,0 +1,29 @@
+{
+  "fixture" : "ipad-vellum-ink.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 240,
+        "width" : 320,
+        "x" : 0,
+        "y" : 0
+      },
+      "displayHeight" : 240,
+      "displayWidth" : 320,
+      "drags" : [
+
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 0,
+      "pdfkitText" : "",
+      "probes" : [
+        {
+          "query" : "missing quote"
+        }
+      ],
+      "rotation" : 0
+    }
+  ],
+  "pdfSHA256" : "497cf2a416f4bb7a774b09494bc81218608e948d803194aad2309a1e1dd02fbc",
+  "version" : 1
+}

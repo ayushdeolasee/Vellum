@@ -59,7 +59,7 @@ actor HomeSearchEngine {
             libraryProvider = LibraryDocumentsSearchProvider()
         }
         return [
-            RecentDocumentsSearchProvider(),
+            RecentDocumentsSearchProvider(coordinator: storage.coordinator),
             SavedWebpagesSearchProvider(load: { try await storage.listSaved() }),
             libraryProvider,
         ]

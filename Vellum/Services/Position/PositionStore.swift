@@ -31,6 +31,7 @@ actor PositionStore {
     private let timer: PositionTimer
     private let policy: CoalescePolicy
 
+    private var recordFields: [String: PositionJSON] = [:]
     private var documents: [DocumentKey: PositionDeviceRecord.DocumentEntry] = [:]
     private var lastStamps: [String: Date] = [:]
     private var hydrated = false
@@ -92,6 +93,7 @@ actor PositionStore {
                 at: stamp(key, "open_state"),
                 value: OpenState(isOpen: false, tabOrdinal: entry.openState?.value.tabOrdinal))
         }
+        entry.inheritUnknownFields(from: documents[key])
         documents[key] = entry
         markDirty()
     }
@@ -111,6 +113,18 @@ actor PositionStore {
             let succeeded = await finishWrite(task)
             guard succeeded else { return }
         }
+    }
+
+    /// A journaled library operation is about to replace complete device records.
+    /// Rehydrate on next use so a later scroll cannot republish pre-migration keys.
+    func prepareForExternalRekey() async throws {
+        await flush()
+        await hydration?.value
+        guard !dirty, inFlightWrite == nil else { throw PositionStorageError.io("Pending reading positions could not be saved.") }
+        hydrated = false
+        documents.removeAll()
+        recordFields.removeAll()
+        lastStamps.removeAll()
     }
 
     // MARK: - Reads
@@ -258,7 +272,7 @@ actor PositionStore {
             deviceName: device.name,
             devicePlatform: device.platform,
             writtenAt: writtenAt,
-            documents: documents)
+            documents: documents, unknownFields: recordFields)
     }
 
     /// Stamps are this device's wall clock, but never go backwards for a given
@@ -306,6 +320,7 @@ actor PositionStore {
         guard let own = stored.first(where: { $0.deviceID == device.id }),
             PositionMerge.isUsable(own)
         else { return }
+        recordFields = own.unknownFields
         var base = own.documents
         for (key, pending) in documents {
             base[key] = overlay(base: base[key], pending: pending)
@@ -322,8 +337,8 @@ actor PositionStore {
         guard let base else { return pending }
         var merged = base
         if let position = pending.readingPosition {
-            merged.readingPosition = Stamped(
-                at: forward(position.at, past: base.readingPosition?.at), value: position.value)
+            merged.readingPosition = position
+            merged.readingPosition?.at = forward(position.at, past: base.readingPosition?.at)
         }
         if let openedAt = pending.openedAt {
             merged.openedAt = max(openedAt, base.openedAt ?? openedAt)
@@ -332,13 +347,15 @@ actor PositionStore {
             merged.closedAt = max(closedAt, base.closedAt ?? closedAt)
         }
         if let title = pending.title {
-            merged.title = Stamped(at: forward(title.at, past: base.title?.at), value: title.value)
+            merged.title = title
+            merged.title?.at = forward(title.at, past: base.title?.at)
         }
         if let openState = pending.openState {
-            merged.openState = Stamped(
-                at: forward(openState.at, past: base.openState?.at), value: openState.value)
+            merged.openState = openState
+            merged.openState?.at = forward(openState.at, past: base.openState?.at)
         }
-        merged.unknownFields = base.unknownFields.merging(pending.unknownFields) { _, new in new }
+        merged.unknownFields = pending.unknownFields
+        merged.inheritUnknownFields(from: base)
         return merged
     }
 
@@ -365,5 +382,21 @@ actor PositionStore {
             position: entry.position,
             lastOpenedOn: entry.lastOpenedOn,
             openElsewhere: entry.openElsewhere.filter { $0.id != device.id })
+    }
+}
+
+private extension PositionDeviceRecord.DocumentEntry {
+    mutating func inheritUnknownFields(from previous: Self?) {
+        guard let previous else { return }
+        unknownFields.fillMissing(from: previous.unknownFields)
+        if let old = previous.title { title?.unknownFields.fillMissing(from: old.unknownFields) }
+        if let old = previous.readingPosition {
+            readingPosition?.unknownFields.fillMissing(from: old.unknownFields)
+            readingPosition?.value.unknownFields.fillMissing(from: old.value.unknownFields)
+        }
+        if let old = previous.openState {
+            openState?.unknownFields.fillMissing(from: old.unknownFields)
+            openState?.value.unknownFields.fillMissing(from: old.value.unknownFields)
+        }
     }
 }

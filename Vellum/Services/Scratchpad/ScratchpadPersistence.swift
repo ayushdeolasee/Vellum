@@ -88,10 +88,13 @@ actor ScratchpadWriteCoordinator {
 
     func withExclusiveAccess<T: Sendable>(
         forKeys keys: [String],
+        invalidatingQueuedWrites: Bool = true,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         let keys = Array(Set(keys)).sorted()
-        for key in keys { generations[key, default: 0] &+= 1 }
+        if invalidatingQueuedWrites {
+            for key in keys { generations[key, default: 0] &+= 1 }
+        }
         let pending = keys.compactMap { tails[$0] }
         let result = Task<T, Error> {
             for task in pending { await task.value }
@@ -146,6 +149,13 @@ enum ScratchpadPersistence {
             forKey: key, coordinator: coordinator))
     }
 
+    private static func keepsUnreferencedAttachments(
+        coordinator: StorageCoordinator
+    ) async -> Bool {
+        let status = await coordinator.currentStatus()
+        return status.chosenMode == .syncedFolder || status.effectiveMode == .syncedFolder
+    }
+
     static func save(
         forKey key: String,
         document: DocumentInfo,
@@ -185,7 +195,6 @@ enum ScratchpadPersistence {
                     extensions[attachment.id.lowercased()] =
                         (attachment.name as NSString).pathExtension
                 }
-                let referenced = ScratchpadAttachmentStore.referencedIds(in: committed)
                 let relative = schemeToRelative(committed) {
                     extensions[$0.lowercased()]
                 }
@@ -197,25 +206,27 @@ enum ScratchpadPersistence {
                         forKey: key, text: relative, coordinator: coordinator)
                 }
 
-                // Publish the new note first. Attachment cleanup is deliberately
-                // best-effort afterward: an orphan is recoverable; a broken ref is not.
-                let names = try await DocumentDataStore.listAttachmentNames(
-                    forKey: key, coordinator: coordinator)
-                for name in names {
-                    let id = (name as NSString).deletingPathExtension.lowercased()
-                    // A staged image can be flushed before the WebView delivers
-                    // its markdown change (for example, on immediate background).
-                    // Keep attachments written by this save for one cycle; the
-                    // next clean save either sees the reference or collects it.
-                    if !referenced.contains(id), !dirtyAttachmentNames.contains(name) {
-                        await DocumentDataStore.removeAttachment(
-                            forKey: key, name: name, coordinator: coordinator)
+                // An offline peer can still reference these bytes before any
+                // conflict copy exists on this device.
+                let keepsUnreferenced = await keepsUnreferencedAttachments(coordinator: coordinator)
+                if !keepsUnreferenced {
+                    let referenced = ScratchpadAttachmentStore.referencedIds(in: committed)
+                    let names = try await DocumentDataStore.listAttachmentNames(
+                        forKey: key, coordinator: coordinator)
+                    for name in names {
+                        let id = (name as NSString).deletingPathExtension.lowercased()
+                        // Keep new bytes until the editor delivers their reference.
+                        if !referenced.contains(id), !dirtyAttachmentNames.contains(name) {
+                            await DocumentDataStore.removeAttachment(
+                                forKey: key, name: name, coordinator: coordinator)
+                        }
+                    }
+                    if relative.isEmpty {
+                        await DocumentDataStore.pruneEmptyDocumentDir(
+                            forKey: key, coordinator: coordinator)
                     }
                 }
-                if relative.isEmpty {
-                    await DocumentDataStore.pruneEmptyDocumentDir(
-                        forKey: key, coordinator: coordinator)
-                } else {
+                if !relative.isEmpty {
                     try await DocumentDataStore.touch(
                         document: document, force: true, coordinator: coordinator)
                 }
@@ -377,7 +388,8 @@ enum ScratchpadPersistence {
                 var updated = entries
                 updated.remove(at: index)
                 writeEntries(updated)
-                if updated.isEmpty {
+                if updated.isEmpty,
+                   !(await keepsUnreferencedAttachments(coordinator: coordinator)) {
                     try? FileManager.default.removeItem(at: ScratchpadAttachmentStore.directory)
                 }
                 return .migrated
@@ -656,6 +668,7 @@ enum ScratchpadAttachmentStore {
         referencedIds: Set<String>, referencedAsOf: Date? = nil
     ) {
         let stillPending = settlePending(observing: referencedIds)
+        guard WebStorageSettings.chosenMode != .syncedFolder else { return }
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [
                 .creationDateKey, .contentModificationDateKey,
@@ -667,6 +680,15 @@ enum ScratchpadAttachmentStore {
             if let referencedAsOf, isNewerThan(referencedAsOf, url: url) { continue }
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    @concurrent
+    static func collectGarbage(forTexts texts: [String], referencedAsOf: Date) async {
+        var referenced = Set<String>()
+        for text in texts {
+            referenced.formUnion(referencedIds(in: text))
+        }
+        collectGarbage(referencedIds: referenced, referencedAsOf: referencedAsOf)
     }
 
     /// True when the file was created or last written at or after `date` — i.e.

@@ -472,7 +472,7 @@ struct StorageSettingsTab: View {
         switch storageMode {
         case .icloud: return WebStorageSettings.icloudVellumRoot?.path
         case .custom: return AppDefaults.current.string(forKey: WebStorageSettings.customPathKey)
-        case .local: return nil
+        case .local, .syncedFolder: return nil
         }
     }
 
@@ -509,6 +509,8 @@ struct StorageSettingsTab: View {
             set: { newMode in
                 guard newMode != storageMode else { return }
                 switch newMode {
+                case .syncedFolder:
+                    return
                 case .custom:
                     chooseCustomFolder()
                 case .icloud:
@@ -551,7 +553,8 @@ struct StorageSettingsTab: View {
     }
 
     private func refreshSettings() {
-        storageMode = WebStorageSettings.chosenMode ?? .local
+        let chosenMode = WebStorageSettings.chosenMode
+        storageMode = chosenMode == .syncedFolder ? .local : chosenMode ?? .local
         autoSavePages = WebStorageSettings.autoSavePages
         retentionMonths = StorageHousekeeping.retentionMonths
     }
@@ -862,7 +865,7 @@ struct StorageSettingsTab: View {
             switch mode {
             case .icloud: "iCloud Drive"
             case .custom: "the selected folder"
-            case .local: ShellIdiom_iOS.current.thisDevice
+            case .local, .syncedFolder: ShellIdiom_iOS.current.thisDevice
             }
         }
     }

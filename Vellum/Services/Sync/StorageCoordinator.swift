@@ -1,9 +1,10 @@
 import Foundation
+import OSLog
+import VellumCore
 
-/// App-level owner of coordinated storage. Local and custom-folder modes stay
-/// on the existing direct filesystem path; only iCloud installs a
-/// `SyncedContainer`, starts the conflict consumer, and accepts coordinated
-/// operations.
+/// App-level owner of storage lifecycles. Local and custom folders use direct
+/// stores. iCloud and any installed folder backend use a `SyncedContainer`
+/// for operations and conflict delivery.
 ///
 /// C3 intentionally does not migrate the broad synchronous `WebLibrary` call
 /// surface through this gate. Until C4 wires those adapters and production iCloud
@@ -22,6 +23,9 @@ actor StorageCoordinator {
         case noStorageChoice
         case iCloudUnavailable
         case customFolderUnavailable
+        case syncedFolderUnavailable
+        case syncedFolderSyncDisabled
+        case syncedFolderBackendUnavailable
         case coordinatorStopped
     }
 
@@ -37,6 +41,7 @@ actor StorageCoordinator {
     enum OperationError: Error, Sendable, Equatable {
         case unavailable
         case suspended
+        case storageChanged
     }
 
     struct Status: Sendable, Equatable {
@@ -44,6 +49,7 @@ actor StorageCoordinator {
         var effectiveMode: WebStorageMode
         var lifecycle: Lifecycle
         var availability: Availability
+        var activeSharedFolderRoot: URL?
         var acceptsCoordinatedOperations: Bool
         var pendingConflicts: Int
         var inFlightConflicts: Int
@@ -171,6 +177,8 @@ actor StorageCoordinator {
 
     private let rootResolver: @Sendable () async -> URL?
     private let containerFactory: @Sendable () async -> (any SyncedContainer)?
+    private let syncedFolderRootResolver: @Sendable () async -> URL?
+    private let folderContainerFactory: StorageAccess.FolderContainerFactory
     private let conflictArchiveRegistry: ConflictArchiveRegistry
 
     private var chosenMode: WebStorageMode?
@@ -226,6 +234,13 @@ actor StorageCoordinator {
         containerFactory: @escaping @Sendable () async -> (any SyncedContainer)? = {
             await Task.detached(priority: .utility) { ICloudSyncedContainer() }.value
         },
+        syncedFolderRootResolver: @escaping @Sendable () async -> URL? = {
+            await WebStorageSettings.resolveSyncedFolderRoot()
+        },
+        folderContainerFactory: @escaping StorageAccess.FolderContainerFactory =
+            StorageCoordinator.sharedFolderActivation { layout in
+                await SharedFolderContainerFactory.make(root: layout.rootDir)
+            },
         conflictArchiveRegistry: ConflictArchiveRegistry = .live
     ) {
         self.storeDir = storeDir
@@ -233,8 +248,28 @@ actor StorageCoordinator {
         self.effectiveModeProvider = effectiveModeProvider
         self.rootResolver = rootResolver
         self.containerFactory = containerFactory
+        self.syncedFolderRootResolver = syncedFolderRootResolver
+        self.folderContainerFactory = folderContainerFactory
         self.conflictArchiveRegistry = conflictArchiveRegistry
         self.layout = .local(storeDir: storeDir)
+    }
+
+    static func sharedFolderActivation(
+        _ makeContainer: @escaping StorageAccess.FolderContainerFactory
+    ) -> StorageAccess.FolderContainerFactory {
+        { layout in
+            guard layout.backend == .syncedFolder else { return nil }
+            do {
+                _ = try await Task.detached(priority: .utility) {
+                    try StignoreManager.ensure(at: layout.rootDir)
+                }.value
+            } catch {
+                Logger(subsystem: Bundle.main.bundleIdentifier ?? "Vellum", category: "Storage")
+                    .error("Could not prepare shared-folder ignore rules: \(error.localizedDescription, privacy: .private)")
+                return nil
+            }
+            return await makeContainer(layout)
+        }
     }
 
     func currentStatus() -> Status {
@@ -460,6 +495,19 @@ actor StorageCoordinator {
         }
     }
 
+    func performExclusiveSharedPDFOperation(root: URL, operation: @escaping @Sendable () async -> Result<Void, Error>)
+        async -> Result<Void, Error> {
+        await performExclusiveStorageOperation {
+            guard await self.isActiveSharedFolder(root) else { return .failure(LibraryFileError.unavailable) }
+            return await operation()
+        }
+    }
+
+    private func isActiveSharedFolder(_ root: URL) -> Bool {
+        layout.backend == .syncedFolder && access.container != nil
+            && layout.rootDir.standardizedFileURL.resolvingSymlinksInPath().path == root.path
+    }
+
     /// Lend both sides of a relocation while normal storage admission and
     /// conflict delivery are closed. Either side may be the coordinated iCloud
     /// layout; local/custom sides receive the direct adapter. A nil context
@@ -542,6 +590,19 @@ actor StorageCoordinator {
     func withStorageContext<T: Sendable>(
         _ operation: @Sendable (StorageContext) async throws -> T
     ) async throws -> T {
+        try await withStorageContext(expectedGeneration: nil) { context, _ in
+            try await operation(context)
+        }
+    }
+
+    /// A maintenance action must still address the storage it was listed from.
+    func withStorageContext<T: Sendable>(
+        expectedGeneration: Int?,
+        _ operation: @Sendable (StorageContext, Int) async throws -> T
+    ) async throws -> T {
+        if let expectedGeneration, expectedGeneration != storageGeneration {
+            throw OperationError.storageChanged
+        }
         try beginOperation(requiresContainer: false)
         let context: StorageContext
         if let container = access.container {
@@ -550,7 +611,7 @@ actor StorageCoordinator {
             context = .direct(layout: layout)
         }
         do {
-            let value = try await operation(context)
+            let value = try await operation(context, storageGeneration)
             finishOperation()
             return value
         } catch {
@@ -637,8 +698,7 @@ actor StorageCoordinator {
                         layout: .local(storeDir: storeDir),
                         availability: .degradedToLocal(.iCloudUnavailable))
                 }
-                let layout = WebStorageLayout.pretty(
-                    root: root, recordsInRoot: true, localStoreDir: storeDir)
+                let layout = WebStorageLayout.iCloud(root: root)
                 return ResolvedConfiguration(
                     chosenMode: chosenMode,
                     effectiveMode: .icloud,
@@ -661,6 +721,24 @@ actor StorageCoordinator {
                     layout: .local(storeDir: storeDir),
                     availability: .degradedToLocal(.iCloudUnavailable))
             }
+        case .syncedFolder:
+            guard RuntimeProfile.current.syncEnabled else {
+                return syncedFolderFallback(reason: .syncedFolderSyncDisabled)
+            }
+            guard let root = await syncedFolderRootResolver() else {
+                return syncedFolderFallback(reason: .syncedFolderUnavailable)
+            }
+            let layout = WebStorageLayout.syncedFolder(root: root)
+            let access = await StorageAccess.resolveSyncedFolder(layout: layout, factory: folderContainerFactory)
+            guard access.container != nil else {
+                return syncedFolderFallback(reason: .syncedFolderBackendUnavailable)
+            }
+            return ResolvedConfiguration(
+                chosenMode: .syncedFolder,
+                effectiveMode: .syncedFolder,
+                access: access,
+                layout: layout,
+                availability: .coordinated)
         case .custom:
             let access = StorageAccess.resolve(
                 mode: .custom, storeDir: storeDir, icloudRoot: nil) { nil }
@@ -692,10 +770,24 @@ actor StorageCoordinator {
         }
     }
 
+    private func syncedFolderFallback(reason: DegradedReason) -> ResolvedConfiguration {
+        ResolvedConfiguration(
+            chosenMode: .syncedFolder,
+            effectiveMode: .local,
+            access: .direct(root: storeDir),
+            layout: .local(storeDir: storeDir),
+            availability: .degradedToLocal(reason))
+    }
+
     private func foregroundImpl() async {
         if lifecycle == .idle || lifecycle == .stopped {
             await startImpl()
             return
+        }
+        if modeProvider() == .syncedFolder {
+            let previousGeneration = storageGeneration
+            await reconfigureImpl()
+            if storageGeneration != previousGeneration { return }
         }
         guard let container = access.container else {
             acceptsCoordinatedOperations = false
@@ -853,14 +945,19 @@ actor StorageCoordinator {
     private func storageContext(
         for requestedLayout: WebStorageLayout
     ) async -> (context: StorageContext?, transientContainers: [any SyncedContainer]) {
-        guard requestedLayout.requiresCoordination else {
+        guard requestedLayout.usesSyncedContainer else {
             return (.direct(layout: requestedLayout), [])
         }
         guard RuntimeProfile.current.syncEnabled else { return (nil, []) }
         if requestedLayout == layout, let container = access.container {
             return (.coordinated(container: container, layout: requestedLayout), [])
         }
-        guard let container = await containerFactory() else { return (nil, []) }
+        let container = if requestedLayout.requiresICloudCoordination {
+            await containerFactory()
+        } else {
+            await folderContainerFactory(requestedLayout)
+        }
+        guard let container else { return (nil, []) }
         return (
             .coordinated(container: container, layout: requestedLayout),
             [container])
@@ -1018,7 +1115,7 @@ actor StorageCoordinator {
     private func enqueueConflict(_ event: ConflictEvent, generation: Int) {
         guard generation == storageGeneration else { return }
         let key = ConflictKey(event)
-        guard !resolvedConflictKeys.contains(key),
+        guard layout.backend == .syncedFolder || !resolvedConflictKeys.contains(key),
               pendingConflicts[key] == nil,
               inFlightConflict != key
         else { return }
@@ -1042,14 +1139,16 @@ actor StorageCoordinator {
         case .icloud:
             let root = await rootResolver()
             let nextEffectiveMode: WebStorageMode = root == nil ? .local : .icloud
-            let nextRecordsRoot = root.map {
-                WebStorageLayout.pretty(
-                    root: $0, recordsInRoot: true, localStoreDir: storeDir).recordsDir
-            }
+            let nextRecordsRoot = root.map { WebStorageLayout.iCloud(root: $0).recordsDir }
             guard effectiveMode == nextEffectiveMode,
                   access.root == nextRecordsRoot
             else { return false }
             return root == nil ? access.container == nil : access.container != nil
+        case .syncedFolder:
+            guard effectiveMode == .syncedFolder, let root = await syncedFolderRootResolver() else {
+                return false
+            }
+            return layout == .syncedFolder(root: root)
         case .custom:
             let nextAccess = StorageAccess.resolve(
                 mode: .custom, storeDir: storeDir, icloudRoot: nil) { nil }
@@ -1165,20 +1264,24 @@ actor StorageCoordinator {
         inFlightConflict = nil
         switch resolution {
         case .success(.deferred):
+            lastError = "Conflict resolution deferred for \(event.url.lastPathComponent)"
+            // A folder snapshot can become obsolete while resolving. Its next
+            // scan retries the live versions, including identical re-creations.
+            if layout.backend == .syncedFolder { return true }
             pendingConflicts[key] = event
             pendingOrder.append(key)
-            lastError = "Conflict resolution deferred for \(event.url.lastPathComponent)"
             notifyQuiescenceIfNeeded()
             return false
         case .success:
-            resolvedConflictKeys.insert(key)
+            if layout.backend != .syncedFolder { resolvedConflictKeys.insert(key) }
             lastError = nil
             notifyQuiescenceIfNeeded()
             return true
         case .failure(let error):
+            lastError = describe(error)
+            if layout.backend == .syncedFolder { return true }
             pendingConflicts[key] = event
             pendingOrder.append(key)
-            lastError = describe(error)
             notifyQuiescenceIfNeeded()
             return false
         }
@@ -1289,6 +1392,8 @@ actor StorageCoordinator {
             effectiveMode: effectiveMode,
             lifecycle: lifecycle,
             availability: availability,
+            activeSharedFolderRoot: effectiveMode == .syncedFolder && availability == .coordinated
+                ? layout.rootDir : nil,
             acceptsCoordinatedOperations: acceptsCoordinatedOperations,
             pendingConflicts: pendingConflicts.count,
             inFlightConflicts: inFlightConflict == nil ? 0 : 1,
@@ -1319,7 +1424,7 @@ actor StorageCoordinator {
     // MARK: - Conflict archive rediscovery
 
     private func rediscoverArchivedConflicts() async {
-        guard layout.requiresCoordination,
+        guard layout.usesSyncedContainer,
               let container = access.container
         else { return }
         let candidates = conflictArchiveRegistry.load().filter {
@@ -1389,8 +1494,9 @@ actor StorageCoordinator {
            originalURL == indexPath.standardizedFileURL {
             return true
         }
-        return [layout.recordsDir, layout.archivesDir, layout.documentsDir, layout.positionsDir]
-            .contains { isDescendant(originalURL, of: $0) }
+        let roots = [layout.recordsDir, layout.archivesDir, layout.documentsDir, layout.positionsDir]
+            + [layout.pdfsDir].compactMap { $0 }
+        return roots.contains { isDescendant(originalURL, of: $0) }
     }
 }
 

@@ -389,7 +389,10 @@ enum AiPersistence {
         // union everything else, chronological order, then apply storage caps.
         var byID: [String: AiMessage] = [:]
         for message in remote where byID[message.id] == nil { byID[message.id] = message }
-        for message in pendingLocal { byID[message.id] = message }
+        for var message in pendingLocal {
+            if let previous = byID[message.id] { message.inheritUnknownFields(from: previous) }
+            byID[message.id] = message
+        }
         let merged = limitedMessages(byID.values.sorted { $0.createdAt < $1.createdAt })
         cache[key] = merged
         if merged != remote {

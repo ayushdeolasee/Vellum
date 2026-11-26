@@ -1,9 +1,9 @@
-#if os(iOS)
-import SwiftUI
-
 /// User-facing storage promises in one place. Per-document Scratchpad notes and
 /// images follow the same coordinated class-B location as conversations.
 enum StorageLocationCopy {
+    private static let sharedFolderDescription =
+        "Vellum uses this folder for shared library storage. A folder sync service can copy it between devices."
+
     static func introduction(on deviceName: String) -> String {
         "Vellum stores offline web pages, highlights, Scratchpad notes, AI conversations, and reading positions. iCloud Drive can sync those across your devices."
     }
@@ -21,6 +21,8 @@ enum StorageLocationCopy {
             return "iCloud sync isn't available in this build or for this iCloud account. Choose local storage for now; Vellum will keep everything private on \(thisDevice) and won't write to iCloud."
         case .custom:
             return "Offline copies live in the folder you choose. Highlights, AI conversations, reading positions, and live scratchpad notes stay in Vellum's private storage on \(thisDevice) and don't sync."
+        case .syncedFolder:
+            return sharedFolderDescription
         case .local:
             return "Everything stays in Vellum's private app folder on \(thisDevice). Nothing syncs."
         }
@@ -38,6 +40,8 @@ enum StorageLocationCopy {
                 return "iCloud sync isn't available in this build or for this iCloud account. Vellum is using private local storage on \(thisDevice); nothing is syncing or being written to iCloud."
             case .custom:
                 return "The chosen folder can't be found. Vellum is using private local storage on \(thisDevice) until you choose a folder again."
+            case .syncedFolder:
+                return sharedFolderUnavailable(on: deviceName)
             case .local:
                 return "Everything stays in Vellum's private app folder on \(thisDevice). Nothing syncs."
             }
@@ -48,10 +52,36 @@ enum StorageLocationCopy {
             deviceName: deviceName)
     }
 
+    static func sharedFolderFooter(status: StorageCoordinator.Status?, deviceName: String) -> String {
+        guard let status, status.chosenMode == .syncedFolder else {
+            return "Checking the selected shared folder…"
+        }
+        if status.activeSharedFolderRoot != nil {
+            return sharedFolderDescription
+        }
+        switch status.availability {
+        case .degradedToLocal(.syncedFolderSyncDisabled):
+            return "Sync is disabled for this session. Vellum is using private local storage on this \(deviceName)."
+        case .degradedToLocal:
+            return sharedFolderUnavailable(on: deviceName)
+        case .unavailable:
+            return "Storage is temporarily unavailable."
+        case .direct, .coordinated:
+            return "Checking the selected shared folder…"
+        }
+    }
+
+    private static func sharedFolderUnavailable(on deviceName: String) -> String {
+        "The selected shared folder is unavailable. Vellum is using private local storage on this \(deviceName)."
+    }
+
     static func relocationConfirmation(on deviceName: String) -> String {
         "Vellum will move offline pages, highlights, Scratchpad notes and images, reading positions, and AI conversations in the background. Keep Vellum open until the move finishes. If the destination becomes unavailable, Vellum keeps using its safe local copy and resumes when that location returns."
     }
 }
+
+#if os(iOS)
+import SwiftUI
 
 /// Compact-width storage management uses sheets so long recovery lists do not
 /// dominate the Settings form. The rule is pure for deterministic phone/iPad

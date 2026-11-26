@@ -1,0 +1,190 @@
+{
+  "fixture": "rotated-all-angles.pdf",
+  "pdfSHA256": "9f141574be25c4b266bff0cfe8d78b1fec228ad7446a6d46599cfb0a1b1e1dab",
+  "pages": [
+    {
+      "page": 1,
+      "rotation": 0,
+      "drags": [
+        {
+          "edge": "end",
+          "initialQuery": "Rotation",
+          "name": "extend end on rotated page",
+          "result": {
+            "page_height": 708,
+            "page_width": 552,
+            "rects": [
+              {
+                "height": 14,
+                "width": 95.71800000000002,
+                "x": 48,
+                "y": 33.2197265625
+              }
+            ],
+            "selected_text": "Rotation 0 degr"
+          },
+          "x": 147.61,
+          "y": 40.2197265625
+        },
+        {
+          "edge": "start",
+          "initialQuery": "degrees",
+          "name": "extend start on rotated page",
+          "result": {
+            "page_height": 708,
+            "page_width": 552,
+            "rects": [
+              {
+                "height": 14,
+                "width": 96.50200000000004,
+                "x": 69.78399999999999,
+                "y": 33.2197265625
+              }
+            ],
+            "selected_text": "ation 0 degrees"
+          },
+          "x": 67.838,
+          "y": 40.2197265625
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "rotation": 90,
+      "drags": [
+        {
+          "edge": "end",
+          "initialQuery": "Rotation",
+          "name": "extend end on rotated page",
+          "result": {
+            "page_height": 552,
+            "page_width": 708,
+            "rects": [
+              {
+                "height": 73.93400000000001,
+                "width": 14,
+                "x": 660.7802734375,
+                "y": 77.568
+              }
+            ],
+            "selected_text": "tion 90 degr"
+          },
+          "x": 667.7802734375,
+          "y": 155.394
+        },
+        {
+          "edge": "start",
+          "initialQuery": "degrees",
+          "name": "extend start on rotated page",
+          "result": {
+            "page_height": 552,
+            "page_width": 708,
+            "rects": [
+              {
+                "height": 77.05600000000004,
+                "width": 14,
+                "x": 660.7802734375,
+                "y": 69.78399999999999
+              }
+            ],
+            "selected_text": "ation 90 deg"
+          },
+          "x": 667.7802734375,
+          "y": 67.838
+        }
+      ]
+    },
+    {
+      "page": 3,
+      "rotation": 180,
+      "drags": [
+        {
+          "edge": "end",
+          "initialQuery": "Rotation",
+          "name": "extend end on rotated page",
+          "result": {
+            "page_height": 708,
+            "page_width": 552,
+            "rects": [
+              {
+                "height": 14,
+                "width": 59.150000000000034,
+                "x": 392.714,
+                "y": 660.7802734375
+              }
+            ],
+            "selected_text": " 180 degr"
+          },
+          "x": 388.822,
+          "y": 667.7802734375
+        },
+        {
+          "edge": "start",
+          "initialQuery": "degrees",
+          "name": "extend start on rotated page",
+          "result": {
+            "page_height": 708,
+            "page_width": 552,
+            "rects": [
+              {
+                "height": 14,
+                "width": 61.488,
+                "x": 420.728,
+                "y": 660.7802734375
+              }
+            ],
+            "selected_text": "ation 180 "
+          },
+          "x": 484.16200000000003,
+          "y": 667.7802734375
+        }
+      ]
+    },
+    {
+      "page": 4,
+      "rotation": 270,
+      "drags": [
+        {
+          "edge": "end",
+          "initialQuery": "Rotation",
+          "name": "extend end on rotated page",
+          "result": {
+            "page_height": 552,
+            "page_width": 708,
+            "rects": [
+              {
+                "height": 81.71800000000002,
+                "width": 14,
+                "x": 33.2197265625,
+                "y": 392.714
+              }
+            ],
+            "selected_text": "tion 270 degr"
+          },
+          "x": 40.2197265625,
+          "y": 388.822
+        },
+        {
+          "edge": "start",
+          "initialQuery": "degrees",
+          "name": "extend start on rotated page",
+          "result": {
+            "page_height": 552,
+            "page_width": 708,
+            "rects": [
+              {
+                "height": 84.84000000000003,
+                "width": 14,
+                "x": 33.2197265625,
+                "y": 397.376
+              }
+            ],
+            "selected_text": "ation 270 deg"
+          },
+          "x": 40.2197265625,
+          "y": 484.16200000000003
+        }
+      ]
+    }
+  ]
+}

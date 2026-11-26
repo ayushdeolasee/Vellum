@@ -1,167 +1,18 @@
 import Foundation
+import VellumCore
 
-// Core data models — mirror src/types/index.ts and the Rust models exactly.
-// JSON field names stay snake_case for compatibility with data written by the
-// Tauri app (embedded PDF annotations, .vellumweb archives, recent-files JSON).
+typealias PdfZoomMode = VellumCore.PdfZoomMode
+typealias PdfZoomPolicy = VellumCore.PdfZoomPolicy
 
-enum AnnotationType: String, Codable, Sendable {
-    case highlight
-    case note
-    case bookmark
-}
-
-struct AnnotationRect: Codable, Equatable, Sendable {
-    var x: Double
-    var y: Double
-    var width: Double
-    var height: Double
-}
-
-struct PositionData: Codable, Equatable, Sendable {
-    var rects: [AnnotationRect]
-    var pageWidth: Double
-    var pageHeight: Double
-    var selectedText: String?
-    var startOffset: Int?
-    var endOffset: Int?
-    /// Text-quote anchor context for webpage annotations (normalized text,
-    /// ~32 chars each side). Absent for PDF annotations.
-    var prefix: String?
-    var suffix: String?
-    /// How far below the viewport top (CSS px) the anchor text sat when a
-    /// webpage point bookmark was captured. Absent for PDFs and selections.
-    var viewportOffset: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case rects
-        case pageWidth = "page_width"
-        case pageHeight = "page_height"
-        case selectedText = "selected_text"
-        case startOffset = "start_offset"
-        case endOffset = "end_offset"
-        case prefix
-        case suffix
-        case viewportOffset = "viewport_offset"
-    }
-}
-
-struct Annotation: Codable, Equatable, Identifiable, Sendable {
-    var id: String
-    var type: AnnotationType
-    var pageNumber: Int
-    var color: String?
-    var content: String?
-    var positionData: PositionData?
-    var createdAt: String
-    var updatedAt: String
-    /// Pinned annotations float to the top of the sidebar list. Optional so
-    /// records written before pinning existed decode cleanly (missing → false).
-    var isPinned: Bool? = nil
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case type
-        case pageNumber = "page_number"
-        case color
-        case content
-        case positionData = "position_data"
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
-        case isPinned = "is_pinned"
-    }
-
-    /// True when the user has pinned this annotation.
-    var pinned: Bool { isPinned == true }
-
-    /// Sidebar / backend list order: pinned first, then page, then created_at.
-    /// `enumerated` keeps relative order stable when the sort keys tie.
-    static func sortedForDisplay(_ annotations: [Annotation]) -> [Annotation] {
-        annotations.enumerated()
-            .sorted { left, right in
-                if left.element.pinned != right.element.pinned {
-                    return left.element.pinned && !right.element.pinned
-                }
-                if left.element.pageNumber != right.element.pageNumber {
-                    return left.element.pageNumber < right.element.pageNumber
-                }
-                if left.element.createdAt != right.element.createdAt {
-                    return left.element.createdAt < right.element.createdAt
-                }
-                return left.offset < right.offset
-            }
-            .map(\.element)
-    }
-}
-
-struct CreateAnnotationInput: Sendable {
-    var type: AnnotationType
-    var pageNumber: Int
-    var color: String?
-    var content: String?
-    var positionData: PositionData?
-    /// Optional caller-supplied identity so the UI can render an annotation
-    /// optimistically (before the disk write finishes) and the persisted record
-    /// carries the same id/timestamp. Nil lets the backend generate them.
-    var id: String?
-    var createdAt: String?
-}
-
-struct UpdateAnnotationInput: Sendable {
-    var id: String
-    var color: String?
-    var content: String?
-    var positionData: PositionData?
-    /// Web highlight resizes can cross a virtual page break; PDF annotations
-    /// never move pages, so the PDF backend ignores this.
-    var pageNumber: Int? = nil
-    /// When set, pin or unpin the annotation in the sidebar list.
-    var isPinned: Bool? = nil
-}
-
-enum DocumentKind: String, Codable, Sendable {
-    case pdf
-    case web
-}
-
-struct DocumentInfo: Codable, Equatable, Sendable {
-    /// "pdf" for files on disk, "web" for proxied webpages.
-    var kind: DocumentKind
-    /// Generic document URI: a filesystem path for PDFs, a normalized URL for
-    /// webpages. The name is kept for compatibility with stored data keyed on it.
-    var pdfPath: String
-    var title: String?
-    var pageCount: Int?
-    var lastPage: Int?
-    /// Stable cross-session document identity. PDFs: the /VellumDocId UUID
-    /// stamped into the Info dictionary, nil until a mutation (or
-    /// ensureDocumentId) lazily stamps it. Web docs: the sha256 URL hash, set at
-    /// open. Class-B/C stores resolve their storage key from this via
-    /// DocumentIdentity.
-    var docId: String? = nil
-    /// Security-scoped bookmark for `pdfPath` (PDFs only), minted the moment the
-    /// document is opened while read access is guaranteed. On iOS this is
-    /// MANDATORY, not defense-in-depth: the app is sandboxed, a
-    /// UIDocumentPicker URL's access does not survive relaunch, and the app
-    /// container's UUID changes across reinstalls — so a saved raw path can stop
-    /// resolving even for a file that is still there. Optional so data written
-    /// before this field existed (and web docs, which never carry one) decodes
-    /// cleanly; readers must fall back to `pdfPath` when nil.
-    var bookmarkData: Data? = nil
-    /// Web titles chosen by the user take precedence over later DOM titles.
-    /// Carried with the document when its tab moves between panes.
-    var titleIsUserDefined: Bool? = nil
-
-    enum CodingKeys: String, CodingKey {
-        case kind
-        case pdfPath = "pdf_path"
-        case title
-        case pageCount = "page_count"
-        case lastPage = "last_page"
-        case docId = "doc_id"
-        case bookmarkData = "bookmark_data"
-        case titleIsUserDefined = "title_is_user_defined"
-    }
-}
+typealias AnnotationType = VellumCore.AnnotationType
+typealias AnnotationRect = VellumCore.AnnotationRect
+typealias PositionData = VellumCore.PositionData
+typealias Annotation = VellumCore.Annotation
+typealias CreateAnnotationInput = VellumCore.CreateAnnotationInput
+typealias UpdateAnnotationInput = VellumCore.UpdateAnnotationInput
+typealias DocumentKind = VellumCore.DocumentKind
+typealias DocumentInfo = VellumCore.DocumentInfo
+typealias RecentDocument = VellumCore.RecentDocument
 
 struct VellumwebExportSummary: Codable, Equatable, Sendable {
     var path: String
@@ -277,49 +128,3 @@ let HIGHLIGHT_COLORS: [HighlightColor] = [
     HighlightColor(name: "Pink", value: "#fbcfe8", dark: "#9d174d80"),
     HighlightColor(name: "Purple", value: "#ddd6fe", dark: "#5b21b680"),
 ]
-
-struct RecentDocument: Codable, Equatable, Sendable {
-    /// File path for PDFs, normalized URL for webpages.
-    var pdfPath: String
-    var kind: DocumentKind
-    var title: String?
-    var pageCount: Int?
-    var openedAt: String
-    /// Stable document identity (DocumentInfo.docId): the /VellumDocId for
-    /// stamped PDFs, the sha256 URL hash for web docs, nil otherwise. Used to
-    /// re-resolve a moved PDF via its meta.json last_known_path when its
-    /// recorded path no longer exists.
-    var docId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case pdfPath = "pdf_path"
-        case kind
-        case title
-        case pageCount = "page_count"
-        case openedAt = "opened_at"
-        case docId = "doc_id"
-    }
-
-    init(
-        pdfPath: String, kind: DocumentKind, title: String?, pageCount: Int?,
-        openedAt: String, docId: String? = nil
-    ) {
-        self.pdfPath = pdfPath
-        self.kind = kind
-        self.title = title
-        self.pageCount = pageCount
-        self.openedAt = openedAt
-        self.docId = docId
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        pdfPath = try container.decode(String.self, forKey: .pdfPath)
-        // Entries written before webpage support have no kind; treat them as PDFs.
-        kind = try container.decodeIfPresent(DocumentKind.self, forKey: .kind) ?? .pdf
-        title = try container.decodeIfPresent(String.self, forKey: .title)
-        pageCount = try container.decodeIfPresent(Int.self, forKey: .pageCount)
-        openedAt = try container.decode(String.self, forKey: .openedAt)
-        docId = try container.decodeIfPresent(String.self, forKey: .docId)
-    }
-}

@@ -23,12 +23,17 @@ final class WebProxyUrlTests: XCTestCase {
         try assertRoundTrip("https://example.com/")
     }
 
-    func testPlainHTTPIsRejectedOnIOS() {
+    func testPlainHTTPPolicy() throws {
+        #if os(iOS)
         XCTAssertThrowsError(try WebUrl.normalize("http://example.com")) { error in
             XCTAssertEqual(
                 error.localizedDescription,
                 "Plain HTTP webpages aren't supported. Use an HTTPS address.")
         }
+        #else
+        XCTAssertEqual(try WebUrl.normalize("http://example.com"), "http://example.com/")
+        try assertRoundTrip("http://example.test:8080/a b?q=a%26b")
+        #endif
     }
 
     func testRoundTripEncodingEdges() throws {

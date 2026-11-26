@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // `.vellum` — the "share with notes" container (plans/storage-design.html §5,
 // tier 2). One ZIP holding the document plus its class-B sidecar so a share
@@ -31,7 +32,7 @@ enum VellumBundle {
     static let maxAttachments = 1000
 
     // Pre-parse memory guards (design §5 / STAGE F2 #6). MiniZip loads the whole
-    // file into memory and copies it to a `[UInt8]` before any per-entry cap
+    // file into memory before any per-entry cap
     // applies, so a crafted archive is bounded THREE ways before a single entry
     // payload is touched: the on-disk file size, the central-directory entry
     // count, and the SUM of every entry's declared uncompressed size.
@@ -134,14 +135,9 @@ enum VellumBundle {
 
     // MARK: - Zip-slip guard
 
-    /// Only bare file names are allowed inside a subdir (mirrors
-    /// WebArchive.safeAssetName): no traversal, no separators, no leading dot.
+    /// Attachments and documents use the same bare-filename rule as web assets.
     static func safeName(_ name: String) -> String? {
-        if name.isEmpty || name.contains("..") || name.contains("/")
-            || name.contains("\\") || name.hasPrefix(".") {
-            return nil
-        }
-        return name
+        ArchiveCodec.safeAssetName(name)
     }
 
     /// A physical zip entry name that could escape the extraction root. Rejected
@@ -167,7 +163,7 @@ enum VellumBundle {
                 path: path, bytes: attachment.data.count,
                 sha256: WebArchive.sha256Hex(attachment.data)))
             attachmentEntries.append(MiniZip.Entry(
-                name: path, data: attachment.data, stored: WebArchive.isPrecompressed(safe)))
+                name: path, data: attachment.data, stored: ArchiveCodec.isPrecompressed(safe)))
         }
 
         let scratchData: Data? = content.scratchpad.flatMap { $0.isEmpty ? nil : Data($0.utf8) }
@@ -251,8 +247,12 @@ enum VellumBundle {
     /// a version above what this build understands is rejected with the same
     /// "please update Vellum" phrasing .vellumweb uses.
     static func read(at path: URL) throws -> Imported {
+        try WebArchive.translatingArchiveErrors { try readBundle(at: path) }
+    }
+
+    private static func readBundle(at path: URL) throws -> Imported {
         // Pre-parse guard #1 (file size): refuse before MiniZip reads the whole
-        // file into memory + copies it to `[UInt8]`. A stat, not a read.
+        // file into memory. A stat, not a read.
         if let size = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.size] as? Int,
            size > maxArchiveBytes {
             throw SessionServiceError.invalidDocument("Bundle is too large to open")
@@ -489,6 +489,20 @@ enum VellumBundle {
 
     /// Union the imported conversation with any local one by message id, sort by
     /// created_at, then apply the per-document caps (AiPersistence contract).
+    private static func mergedMessages(local: [AiMessage], incoming: [AiMessage]) -> [AiMessage] {
+        var indices: [String: Int] = [:]
+        var merged: [AiMessage] = []
+        for message in local + incoming {
+            if let index = indices[message.id] {
+                merged[index].inheritUnknownFields(from: message)
+            } else {
+                indices[message.id] = merged.count
+                merged.append(message)
+            }
+        }
+        return AiPersistence.limitedMessages(merged.sorted { $0.createdAt < $1.createdAt })
+    }
+
     private static func mergeConversations(_ incomingData: Data, forKey key: String) throws {
         // Both sides go through the same lossy decode the live loader uses, so
         // one unreadable message costs that message rather than a conversation
@@ -515,13 +529,7 @@ enum VellumBundle {
         guard !incoming.isEmpty || !local.isEmpty else { return }
 
         // Local kept on an id collision (first occurrence wins).
-        var seen = Set<String>()
-        var merged: [AiMessage] = []
-        for message in local + incoming where seen.insert(message.id).inserted {
-            merged.append(message)
-        }
-        merged.sort { $0.createdAt < $1.createdAt }
-        let capped = AiPersistence.limitedMessages(merged)
+        let capped = mergedMessages(local: local, incoming: incoming)
         guard !capped.isEmpty else { return }
         let data = try JSONEncoder().encode(capped)
         try DocumentDataStore.saveConversationsData(forKey: key, data: data)
@@ -548,13 +556,7 @@ enum VellumBundle {
         }
         guard !incoming.isEmpty || !local.isEmpty else { return }
 
-        var seen = Set<String>()
-        var merged: [AiMessage] = []
-        for message in local + incoming where seen.insert(message.id).inserted {
-            merged.append(message)
-        }
-        merged.sort { $0.createdAt < $1.createdAt }
-        let capped = AiPersistence.limitedMessages(merged)
+        let capped = mergedMessages(local: local, incoming: incoming)
         guard !capped.isEmpty else { return }
         try await DocumentDataStore.saveConversationsData(
             forKey: key, data: JSONEncoder().encode(capped), coordinator: coordinator)

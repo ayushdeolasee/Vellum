@@ -46,13 +46,14 @@ enum SecurityScopedBookmark {
     /// Resolve a previously stored bookmark back to a URL. Returns nil if the
     /// bookmark can't be resolved at all (deleted file, unreachable volume,
     /// corrupted data) — callers fall back to the last known raw path.
-    static func resolve(_ data: Data) -> Resolved? {
+    static func resolve(_ data: Data, allowUI: Bool = true) -> Resolved? {
         var isStale = false
         #if os(macOS)
-        let options: URL.BookmarkResolutionOptions = [.withSecurityScope]
+        var options: URL.BookmarkResolutionOptions = [.withSecurityScope]
         #else
-        let options: URL.BookmarkResolutionOptions = []
+        var options: URL.BookmarkResolutionOptions = []
         #endif
+        if !allowUI { options.formUnion([.withoutUI, .withoutMounting]) }
         guard let url = try? URL(
             resolvingBookmarkData: data,
             options: options,

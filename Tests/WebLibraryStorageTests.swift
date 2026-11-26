@@ -149,10 +149,7 @@ final class WebLibraryStorageTests: XCTestCase {
             conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
         await coordinator.start()
         coordinators.append(coordinator)
-        let layout = WebStorageLayout.pretty(
-            root: cloudRoot,
-            recordsInRoot: true,
-            localStoreDir: WebLibrary.storeDir)
+        let layout = WebStorageLayout.iCloud(root: cloudRoot)
         return (WebLibraryStorage(coordinator: coordinator), coordinator, container, layout)
     }
 
@@ -546,7 +543,11 @@ final class WebLibraryStorageTests: XCTestCase {
             layout.archivesDir.appendingPathComponent("Same Title.vellumweb"),
             data: Data("occupied".utf8))
 
+        let indexURL = try XCTUnwrap(layout.indexPath)
+        container.seed(indexURL, data: Data(#"{"version":1,"entries":{},"future":null}"#.utf8))
         let name = try await storage.reserveManagedArchiveName(forKey: key)
+        let index = try JSONDecoder().decode(WebArchiveIndex.Contents.self, from: XCTUnwrap(container.peek(indexURL)))
+        XCTAssertEqual(index.unknownFields["future"], .null)
 
         XCTAssertEqual(name, "Same Title 2.vellumweb")
         XCTAssertGreaterThanOrEqual(container.metadataQueryCount, 1)
@@ -575,6 +576,35 @@ final class WebLibraryStorageTests: XCTestCase {
         let stored = try XCTUnwrap(container.peek(archiveURL))
         XCTAssertEqual(written.bytes, stored.count)
         XCTAssertGreaterThan(stored.count, 0)
+    }
+
+    func testSharedFolderCaptureAndLookupRepairAStaleIndex() async throws {
+        let root = tempDir.appendingPathComponent("shared", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let coordinator = StorageCoordinator(
+            storeDir: tempDir, modeProvider: { .syncedFolder }, rootResolver: { nil },
+            syncedFolderRootResolver: { root }, conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        await coordinator.start()
+        coordinators.append(coordinator)
+        let storage = WebLibraryStorage(coordinator: coordinator)
+        let urls = ["https://example.com/one", "https://example.com/two"].sorted {
+            WebLibrary.pageKey($0) > WebLibrary.pageKey($1)
+        }
+        for url in urls {
+            let (manifest, html, assets, pages, annotations) = try archiveFixture(url: url)
+            _ = try await storage.writeManagedArchive(forKey: WebLibrary.pageKey(url), manifest: manifest,
+                snapshotHtml: html, assets: assets, pagesJson: pages, annotations: annotations)
+        }
+        let high = WebLibrary.pageKey(urls[0])
+        var stale = WebArchiveIndex.Contents()
+        stale.entries[high] = "Archive.vellumweb"
+        let idx = root.appendingPathComponent(".vellum/index.json")
+        try JSONEncoder().encode(stale).write(to: idx, options: .atomic)
+        for url in urls {
+            let bytes = try await storage.readManagedArchive(forKey: WebLibrary.pageKey(url))
+            XCTAssertEqual(try WebArchive.readManifest(data: XCTUnwrap(bytes)).url, url)
+        }
+        XCTAssertEqual(WebArchiveIndex.load(at: idx).entries[high], "Archive (\(high.prefix(6))).vellumweb")
     }
 
     func testConcurrentCoordinatedMutationsDoNotLoseAnnotations() async throws {

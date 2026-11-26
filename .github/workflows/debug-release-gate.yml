@@ -30,11 +30,50 @@ jobs:
           -derivedDataPath "$RUNNER_TEMP/mac-derived-data"
           -resultBundlePath "$RUNNER_TEMP/mac-tests.xcresult"
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test
+      - name: VellumCore package tests
+        if: ${{ !cancelled() }}
+        run: swift test --package-path Packages/VellumCore --disable-automatic-resolution
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mac-debug-results
           path: ${{ runner.temp }}/mac-tests.xcresult
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned Linux image with disposable keyring support
+        run: |
+          docker build --platform linux/arm64 -t vellum-linux-dev - < Linux/Dockerfile
+          docker build --platform linux/arm64 -t vellum-linux-test - <<'DOCKERFILE'
+          FROM vellum-linux-dev
+          USER root
+          RUN apt-get update && apt-get install -y --no-install-recommends gnome-keyring libglib2.0-bin \
+              && rm -rf /var/lib/apt/lists/*
+          USER reader
+          DOCKERFILE
+      - name: Resolve checked-in Swift package pins
+        id: resolve
+        run: |
+          git archive HEAD Linux Packages/VellumCore |
+            docker run --rm -i --mount type=volume,source=vellum-ci,destination=/work vellum-linux-test \
+              bash -euc '
+                tar --no-same-owner -xf -
+                swift package --package-path Packages/VellumCore --disable-automatic-resolution resolve
+                swift package --package-path Linux --disable-automatic-resolution resolve
+              '
+      - name: VellumCore package tests offline
+        run: |
+          docker run --rm --network none --mount type=volume,source=vellum-ci,destination=/work vellum-linux-test \
+            swift test --package-path Packages/VellumCore --disable-automatic-resolution -Xswiftc -strict-concurrency=minimal
+      - name: LinuxReader and LinuxServices tests offline
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: |
+          docker run --rm --network none --mount type=volume,source=vellum-ci,destination=/work vellum-linux-test \
+            Linux/scripts/with-test-keyring.sh swift test --package-path Linux --disable-automatic-resolution
   mobile-debug:
     runs-on: macos-26
     timeout-minutes: 45

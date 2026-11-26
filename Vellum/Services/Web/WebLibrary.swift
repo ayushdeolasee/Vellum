@@ -1,5 +1,5 @@
-import CryptoKit
 import Foundation
+import VellumCore
 
 // Webpage sidecar records + the saved-pages library — port of the storage half
 // of src-tauri/src/web_page.rs. Uses the exact same on-disk layout under the
@@ -7,65 +7,7 @@ import Foundation
 // sha256-hex keys, same snake_case JSON — so libraries written by the Tauri
 // app keep working.
 
-/// Sidecar record persisted per webpage (`<appData>/web/<key>.json`).
-/// All fields default on decode except `url` (mirrors `#[serde(default)]`).
-struct WebPageRecord: Codable, Equatable, Sendable {
-    var url: String
-    var title: String?
-    var titleIsUserDefined: Bool
-    var pageCount: Int?
-    var lastPage: Int?
-    var saved: Bool
-    var savedAt: String?
-    var openedAt: String?
-    /// "live-first" (default when nil) or "snapshot-only" (pinned snapshot,
-    /// set when importing a .vellumweb archive that requests it).
-    var loadingPolicy: String?
-    var annotations: [Annotation]
-
-    enum CodingKeys: String, CodingKey {
-        case url
-        case title
-        case titleIsUserDefined = "title_is_user_defined"
-        case pageCount = "page_count"
-        case lastPage = "last_page"
-        case saved
-        case savedAt = "saved_at"
-        case openedAt = "opened_at"
-        case loadingPolicy = "loading_policy"
-        case annotations
-    }
-
-    init(url: String) {
-        self.url = url
-        title = nil
-        titleIsUserDefined = false
-        pageCount = nil
-        lastPage = nil
-        saved = false
-        savedAt = nil
-        openedAt = nil
-        loadingPolicy = nil
-        annotations = []
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        url = try container.decode(String.self, forKey: .url)
-        title = try container.decodeIfPresent(String.self, forKey: .title)
-        // Older records stored manual and automatic titles in the same field.
-        // Preserve an existing name until the user explicitly clears it.
-        titleIsUserDefined = try container.decodeIfPresent(Bool.self, forKey: .titleIsUserDefined)
-            ?? (title != nil)
-        pageCount = try container.decodeIfPresent(Int.self, forKey: .pageCount)
-        lastPage = try container.decodeIfPresent(Int.self, forKey: .lastPage)
-        saved = try container.decodeIfPresent(Bool.self, forKey: .saved) ?? false
-        savedAt = try container.decodeIfPresent(String.self, forKey: .savedAt)
-        openedAt = try container.decodeIfPresent(String.self, forKey: .openedAt)
-        loadingPolicy = try container.decodeIfPresent(String.self, forKey: .loadingPolicy)
-        annotations = try container.decodeIfPresent([Annotation].self, forKey: .annotations) ?? []
-    }
-}
+typealias WebPageRecord = VellumCore.WebPageRecord
 
 enum WebLibrary {
     // MARK: - Storage paths
@@ -211,8 +153,7 @@ enum WebLibrary {
 
     /// Stable storage key for a normalized URL: lowercase hex sha256.
     static func pageKey(_ normalizedUrl: String) -> String {
-        let digest = SHA256.hash(data: Data(normalizedUrl.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        DocumentIdentity.sha256Hex(normalizedUrl)
     }
 
     // MARK: - Record persistence
@@ -336,6 +277,7 @@ enum WebLibrary {
                 // Unreadable source: don't delete it — leave it for inspection.
                 return false
             }
+            dest.unknownFields.fillMissing(from: src.unknownFields)
             WebArchive.mergeAnnotations(&dest.annotations, incoming: src.annotations)
             dest.saved = dest.saved || src.saved
             dest.savedAt = dest.savedAt ?? src.savedAt
@@ -360,16 +302,8 @@ enum WebLibrary {
     /// Matches chrono `Utc::now().to_rfc3339()` closely enough to sort and
     /// parse interchangeably ("+00:00" offset, fractional seconds).
     static func rfc3339Now() -> String {
-        rfc3339Formatter.string(from: Date())
+        PositionTimestamp.string(from: Date())
     }
-
-    private static let rfc3339Formatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'+00:00'"
-        return formatter
-    }()
 
     // MARK: - Saved-pages library
 
@@ -413,6 +347,7 @@ enum WebLibrary {
         }
         var out = Set<String>()
         for name in names {
+            guard !SyncArtifact.matches(name) else { continue }
             // Ink sidecars (`<key>.ink.json`) also end in `.json` but are NOT
             // page records — they relocate through `WebInkStore.inkFileNames` /
             // `adoptInkFile` and must never be treated as (or decoded as) a
@@ -656,25 +591,5 @@ enum WebLibrary {
         return total
     }
 
-    /// Lenient parse for record timestamps: our writer's 6-digit-fraction
-    /// RFC3339 first, then ISO8601 with/without fractional seconds (Tauri-era
-    /// chrono emitted variable fraction widths).
-    static func parseRfc3339(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else { return nil }
-        if let date = rfc3339Formatter.date(from: value) { return date }
-        if let date = iso8601Fractional.date(from: value) { return date }
-        return iso8601Plain.date(from: value)
-    }
-
-    nonisolated(unsafe) private static let iso8601Fractional: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    nonisolated(unsafe) private static let iso8601Plain: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
+    static func parseRfc3339(_ value: String?) -> Date? { PositionTimestamp.parse(value) }
 }

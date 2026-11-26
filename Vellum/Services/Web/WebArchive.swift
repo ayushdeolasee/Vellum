@@ -1,133 +1,11 @@
-import Compression
-import CryptoKit
 import Foundation
+import VellumCore
 
-// `.vellumweb` — portable, versioned ZIP archive for annotated webpages.
-// Port of src-tauri/src/web_archive.rs. The entry names, JSON field names and
-// `"sha256:<hex>"` hash strings are a cross-app compatibility contract; the
-// compression choices (Deflate for text, Stored for precompressed media) are
-// kept for size parity but readers accept any method.
-
-struct ManifestHashes: Codable, Sendable {
-    /// "sha256:<hex>" of snapshot/index.html bytes.
-    var snapshotHtml: String
-    /// "sha256:<hex>" of text/pages.json bytes.
-    var pageText: String
-    /// "sha256:<hex>" of annotations.json bytes (verified on import when present).
-    var annotations: String?
-    /// "sha256:<hex>" of ink.json bytes (Apple Pencil web ink; verified on
-    /// import when present). Optional and additive: an archive written by a
-    /// build without web ink omits it, and a reader that predates web ink
-    /// decodes the manifest ignoring this unknown key — so the format version
-    /// stays 1 (no hard-fail path was triggered).
-    var ink: String?
-
-    enum CodingKeys: String, CodingKey {
-        case snapshotHtml = "snapshot_html"
-        case pageText = "page_text"
-        case annotations
-        case ink
-    }
-}
-
-struct ManifestAsset: Codable, Sendable {
-    var path: String
-    var url: String
-    var contentType: String
-    var bytes: Int
-    var sha256: String?
-
-    enum CodingKeys: String, CodingKey {
-        case path
-        case url
-        case contentType = "content_type"
-        case bytes
-        case sha256
-    }
-}
-
-struct ArchiveManifest: Codable, Sendable {
-    var format: String
-    var version: Int
-    var url: String
-    var canonicalUrl: String
-    var title: String?
-    /// Nil identifies older archives whose existing names are preserved conservatively.
-    var titleIsUserDefined: Bool?
-    var capturedAt: String
-    var generator: String
-    /// "live-first" (default) or "snapshot-only".
-    var loadingPolicy: String
-    var pageCount: Int?
-    var lastPage: Int?
-    var hashes: ManifestHashes
-    var assets: [ManifestAsset]
-    var assetsSkipped: Int
-
-    enum CodingKeys: String, CodingKey {
-        case format
-        case version
-        case url
-        case canonicalUrl = "canonical_url"
-        case title
-        case titleIsUserDefined = "title_is_user_defined"
-        case capturedAt = "captured_at"
-        case generator
-        case loadingPolicy = "loading_policy"
-        case pageCount = "page_count"
-        case lastPage = "last_page"
-        case hashes
-        case assets
-        case assetsSkipped = "assets_skipped"
-    }
-
-    init(
-        format: String, version: Int, url: String, canonicalUrl: String, title: String?,
-        titleIsUserDefined: Bool? = nil,
-        capturedAt: String, generator: String, loadingPolicy: String, pageCount: Int?,
-        lastPage: Int?, hashes: ManifestHashes, assets: [ManifestAsset], assetsSkipped: Int
-    ) {
-        self.format = format
-        self.version = version
-        self.url = url
-        self.canonicalUrl = canonicalUrl
-        self.title = title
-        self.titleIsUserDefined = titleIsUserDefined
-        self.capturedAt = capturedAt
-        self.generator = generator
-        self.loadingPolicy = loadingPolicy
-        self.pageCount = pageCount
-        self.lastPage = lastPage
-        self.hashes = hashes
-        self.assets = assets
-        self.assetsSkipped = assetsSkipped
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        format = try container.decode(String.self, forKey: .format)
-        version = try container.decode(Int.self, forKey: .version)
-        url = try container.decode(String.self, forKey: .url)
-        canonicalUrl = try container.decode(String.self, forKey: .canonicalUrl)
-        title = try container.decodeIfPresent(String.self, forKey: .title)
-        titleIsUserDefined = try container.decodeIfPresent(Bool.self, forKey: .titleIsUserDefined)
-        capturedAt = try container.decode(String.self, forKey: .capturedAt)
-        generator = try container.decode(String.self, forKey: .generator)
-        loadingPolicy = try container.decode(String.self, forKey: .loadingPolicy)
-        pageCount = try container.decodeIfPresent(Int.self, forKey: .pageCount)
-        lastPage = try container.decodeIfPresent(Int.self, forKey: .lastPage)
-        hashes = try container.decode(ManifestHashes.self, forKey: .hashes)
-        assets = try container.decodeIfPresent([ManifestAsset].self, forKey: .assets) ?? []
-        assetsSkipped = try container.decodeIfPresent(Int.self, forKey: .assetsSkipped) ?? 0
-    }
-}
-
-struct CapturedAsset: Sendable {
-    var name: String
-    var url: String
-    var contentType: String
-    var bytes: Data
-}
+typealias ArchiveManifest = VellumCore.ArchiveManifest
+typealias ManifestHashes = VellumCore.ManifestHashes
+typealias ManifestAsset = VellumCore.ManifestAsset
+typealias CapturedAsset = VellumCore.CapturedAsset
+typealias MiniZip = VellumCore.MiniZip
 
 struct CapturedSnapshot: Sendable {
     var html: String
@@ -152,33 +30,18 @@ private struct PageTextEntry: Codable {
 }
 
 enum WebArchive {
-    static let formatName = "vellumweb"
-    static let formatVersion = 1
-
-    static let maxAssets = 80
-    static let maxAssetBytes = 8 * 1024 * 1024
-    static let maxTotalAssetBytes = 64 * 1024 * 1024
-    static let maxManifestBytes = 4 * 1024 * 1024
-    static let maxAnnotationsBytes = 32 * 1024 * 1024
-    static let maxInkBytes = 32 * 1024 * 1024
-
-    // Existing payload budgets, including worst-case JSON escaping of extracted
-    // page text (six bytes per source byte), plus ZIP/compression overhead.
-    static let maxTotalUncompressedBytes = maxManifestBytes + maxAnnotationsBytes + maxInkBytes
-        + 7 * WebFetch.maxResponseBytes + maxTotalAssetBytes
-    static let maxArchiveBytes = maxTotalUncompressedBytes + 8 * 1024 * 1024
-    static let maxEntries = maxAssets + 5
-
-    private static func openArchive(at path: URL) throws -> MiniZip {
-        try MiniZip(contentsOf: path, maxBytes: maxArchiveBytes,
-                    maxEntries: maxEntries, maxUncompressedBytes: maxTotalUncompressedBytes)
-    }
+    static let formatName = ArchiveCodec.formatName
+    static let formatVersion = ArchiveCodec.formatVersion
+    static let maxAssets = ArchiveCodec.maxAssets
+    static let maxTotalAssetBytes = ArchiveCodec.maxTotalAssetBytes
+    static let maxArchiveBytes = ArchiveCodec.maxArchiveBytes
+    static let maxEntries = ArchiveCodec.maxEntries
+    static let maxTotalUncompressedBytes = ArchiveCodec.maxTotalUncompressedBytes
 
     static let assetPlaceholder = "__VELLUM_ASSET__"
 
     static func sha256Hex(_ bytes: Data) -> String {
-        let digest = SHA256.hash(data: bytes)
-        return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+        ArchiveCodec.sha256Hex(bytes)
     }
 
     // MARK: - Snapshot sanitizing & asset capture
@@ -338,12 +201,6 @@ enum WebArchive {
         }
     }
 
-    /// Media whose container is already compressed: Stored, not recompressed.
-    static func isPrecompressed(_ name: String) -> Bool {
-        ["png", "jpg", "jpeg", "gif", "webp", "avif", "woff", "woff2"]
-            .contains((name as NSString).pathExtension.lowercased())
-    }
-
     /// Sanitize + capture subresources for a fetched page. Asset references in
     /// the returned HTML point at `__VELLUM_ASSET__/<name>` placeholders.
     static func captureSnapshot(pageUrl: String, rawHtml: String) async -> CapturedSnapshot {
@@ -394,11 +251,12 @@ enum WebArchive {
         snapshotHtml: String,
         pagesJson: Data,
         assets: [CapturedAsset],
-        assetsSkipped: Int
+        assetsSkipped: Int,
+        previous: ArchiveManifest? = nil
     ) -> ArchiveManifest {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "0.1.0"
-        return ArchiveManifest(
+        var manifest = ArchiveManifest(
             format: formatName,
             version: formatVersion,
             url: url,
@@ -426,6 +284,21 @@ enum WebArchive {
             },
             assetsSkipped: assetsSkipped
         )
+        if let previous { manifest.inheritUnknownFields(from: previous) }
+        return manifest
+    }
+
+    static func installedManifest(forKey key: String) throws -> ArchiveManifest? {
+        let path = WebLibrary.archiveDir(forKey: key).appendingPathComponent("manifest.json")
+        let file: FileHandle
+        do { file = try FileHandle(forReadingFrom: path) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return nil }
+        defer { try? file.close() }
+        let data = try file.read(upToCount: ArchiveCodec.maxManifestBytes + 1) ?? Data()
+        guard data.count <= ArchiveCodec.maxManifestBytes else {
+            throw SessionServiceError.invalidDocument("Installed web manifest exceeds its size limit")
+        }
+        return try JSONDecoder().decode(ArchiveManifest.self, from: data)
     }
 
     static func encodePagesJson(_ pages: [WebPageText]) throws -> Data {
@@ -468,46 +341,24 @@ enum WebArchive {
         annotations: [Annotation],
         inkJson: Data? = nil
     ) throws -> Data {
-        let annotationsJson: Data
-        do {
-            annotationsJson = try WebLibrary.jsonEncoderCompact.encode(annotations)
-        } catch {
-            throw SessionServiceError.io(
-                "Failed to serialize annotations: \(error.localizedDescription)")
+        try translatingArchiveErrors {
+            try ArchiveCodec.encode(manifest: manifest, snapshotHtml: snapshotHtml, assets: assets,
+                                    pagesJson: pagesJson, annotations: annotations, inkJson: inkJson)
         }
-        var manifest = manifest
-        manifest.hashes.annotations = sha256Hex(annotationsJson)
-        manifest.hashes.ink = inkJson.map(sha256Hex)
-        let manifestJson: Data
-        do {
-            manifestJson = try WebLibrary.jsonEncoderPretty.encode(manifest)
-        } catch {
-            throw SessionServiceError.io("Failed to serialize manifest: \(error.localizedDescription)")
-        }
+    }
 
-        var entries: [MiniZip.Entry] = [
-            MiniZip.Entry(name: "manifest.json", data: manifestJson, stored: false),
-            MiniZip.Entry(name: "snapshot/index.html", data: Data(snapshotHtml.utf8), stored: false),
-        ]
-        for asset in assets {
-            entries.append(MiniZip.Entry(
-                name: "snapshot/assets/\(asset.name)",
-                data: asset.bytes,
-                stored: isPrecompressed(asset.name)))
-        }
-        entries.append(MiniZip.Entry(name: "text/pages.json", data: pagesJson, stored: false))
-        entries.append(MiniZip.Entry(name: "annotations.json", data: annotationsJson, stored: false))
-        if let inkJson {
-            entries.append(MiniZip.Entry(name: "ink.json", data: inkJson, stored: false))
-        }
-
-        let zipData: Data
+    static func translatingArchiveErrors<T>(_ operation: () throws -> T) throws -> T {
         do {
-            zipData = try MiniZip.write(entries: entries)
+            return try operation()
+        } catch ArchiveCodecError.invalidDocument(let detail) {
+            throw SessionServiceError.invalidDocument(detail)
+        } catch ArchiveCodecError.io(let detail) {
+            throw SessionServiceError.io(detail)
+        } catch let error as SessionServiceError {
+            throw error
         } catch {
-            throw SessionServiceError.io("Failed to write archive: \(error.localizedDescription)")
+            throw SessionServiceError.io(error.localizedDescription)
         }
-        return zipData
     }
 
     static func writeArchiveBytes(_ zipData: Data, to dest: URL) throws {
@@ -539,135 +390,33 @@ enum WebArchive {
         }
     }
 
-    /// Only bare file names are allowed for assets (zip-slip guard).
-    static func safeAssetName(_ name: String) -> String? {
-        if name.isEmpty || name.contains("..") || name.contains("/") || name.contains("\\")
-            || name.hasPrefix(".") {
-            return nil
-        }
-        return name
-    }
-
     static func readManifest(at path: URL) throws -> ArchiveManifest {
-        let zip = try openArchive(at: path)
-        return try readManifest(from: zip)
+        try translatingArchiveErrors { try ArchiveCodec.readManifest(at: path) }
     }
 
     static func readManifest(data: Data) throws -> ArchiveManifest {
-        try readManifest(from: MiniZip(
-            data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
-            maxUncompressedBytes: maxTotalUncompressedBytes))
-    }
-
-    private static func readManifest(from zip: MiniZip) throws -> ArchiveManifest {
-        let manifestBytes = try zip.readCapped("manifest.json", cap: maxManifestBytes)
-        let manifest: ArchiveManifest
-        do {
-            manifest = try JSONDecoder().decode(ArchiveManifest.self, from: manifestBytes)
-        } catch {
-            throw SessionServiceError.invalidDocument(
-                "Invalid archive manifest: \(error.localizedDescription)")
-        }
-        if manifest.format != formatName {
-            throw SessionServiceError.invalidDocument(
-                "Not a .vellumweb archive (wrong format marker)")
-        }
-        if manifest.version > formatVersion {
-            throw SessionServiceError.invalidDocument(
-                "This archive uses format version \(manifest.version) — please update Vellum")
-        }
-        return manifest
+        try translatingArchiveErrors { try ArchiveCodec.readManifest(data: data) }
     }
 
     static func readArchive(at path: URL) throws -> ImportedArchive {
-        try readArchive(from: openArchive(at: path))
+        try imported(translatingArchiveErrors { try ArchiveCodec.decode(at: path) })
     }
 
-    /// Decode bytes obtained through coordinated storage with the same limits
-    /// and integrity checks as a file import.
     static func readArchive(data: Data) throws -> ImportedArchive {
-        try readArchive(from: MiniZip(
-            data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
-            maxUncompressedBytes: maxTotalUncompressedBytes))
+        try imported(translatingArchiveErrors { try ArchiveCodec.decode(data) })
     }
 
-    private static func readArchive(from zip: MiniZip) throws -> ImportedArchive {
-        let manifest = try readManifest(from: zip)
-
-        let snapshotBytes = try zip.readCapped(
-            "snapshot/index.html", cap: WebFetch.maxResponseBytes)
-        if sha256Hex(snapshotBytes) != manifest.hashes.snapshotHtml {
+    private static func imported(_ archive: DecodedWebArchive) throws -> ImportedArchive {
+        let inkRecord: WebInkRecord?
+        do {
+            inkRecord = try archive.inkJSON.map { try JSONDecoder().decode(WebInkRecord.self, from: $0) }
+            _ = try inkRecord?.validatedMergedDrawing()
+        } catch {
             throw SessionServiceError.invalidDocument(
-                "Archive snapshot failed its integrity check (corrupted file?)")
+                "Archive ink data could not be read: \(error.localizedDescription)")
         }
-        let snapshotHtml = String(decoding: snapshotBytes, as: UTF8.self)
-
-        var annotations: [Annotation] = []
-        if zip.contains("annotations.json") {
-            let buf = try zip.readCapped("annotations.json", cap: maxAnnotationsBytes)
-            do {
-                annotations = try JSONDecoder().decode([Annotation].self, from: buf)
-            } catch {
-                throw SessionServiceError.invalidDocument(
-                    "Invalid annotations in archive: \(error.localizedDescription)")
-            }
-            if let expected = manifest.hashes.annotations, sha256Hex(buf) != expected {
-                throw SessionServiceError.invalidDocument(
-                    "Archive annotations failed their integrity check (corrupted file?)")
-            }
-        }
-
-        var inkRecord: WebInkRecord?
-        if manifest.hashes.ink != nil && !zip.contains("ink.json") {
-            throw SessionServiceError.invalidDocument("Archive is missing its ink data")
-        }
-        if zip.contains("ink.json") {
-            let buf = try zip.readCapped("ink.json", cap: maxInkBytes)
-            if let expected = manifest.hashes.ink, sha256Hex(buf) != expected {
-                throw SessionServiceError.invalidDocument(
-                    "Archive ink failed its integrity check (corrupted file?)")
-            }
-            do {
-                let decoded = try JSONDecoder().decode(WebInkRecord.self, from: buf)
-                _ = try decoded.validatedMergedDrawing()
-                inkRecord = decoded
-            } catch {
-                throw SessionServiceError.invalidDocument(
-                    "Archive ink data could not be read: \(error.localizedDescription)")
-            }
-        }
-
-        var assetNames: [String] = []
-        for entryName in zip.entryNames where entryName.hasPrefix("snapshot/assets/") {
-            let rest = String(entryName.dropFirst("snapshot/assets/".count))
-            if let safe = safeAssetName(rest) {
-                assetNames.append(safe)
-            }
-        }
-        var assets: [(String, Data)] = []
-        var totalAssetBytes = 0
-        for name in assetNames {
-            let entryPath = "snapshot/assets/\(name)"
-            let bytes = try zip.readCapped(entryPath, cap: maxAssetBytes)
-            totalAssetBytes += bytes.count
-            if totalAssetBytes > maxTotalAssetBytes {
-                throw SessionServiceError.invalidDocument(
-                    "Archive assets exceed the total size limit")
-            }
-            if let expected = manifest.assets.first(where: { $0.path == entryPath })?.sha256,
-               sha256Hex(bytes) != expected {
-                throw SessionServiceError.invalidDocument(
-                    "Archive asset \(name) failed its integrity check")
-            }
-            assets.append((name, bytes))
-        }
-
-        return ImportedArchive(
-            manifest: manifest,
-            snapshotHtml: snapshotHtml,
-            assets: assets,
-            annotations: annotations,
-            inkRecord: inkRecord)
+        return ImportedArchive(manifest: archive.manifest, snapshotHtml: archive.snapshotHtml,
+                               assets: archive.assets, annotations: archive.annotations, inkRecord: inkRecord)
     }
 
     // MARK: - Local self-contained snapshot dir (archives/<key>/)
@@ -703,7 +452,7 @@ enum WebArchive {
                 throw SessionServiceError.io("Failed to write snapshot: \(error.localizedDescription)")
             }
             for (name, bytes) in assets {
-                guard let safe = safeAssetName(name) else { continue }
+                guard let safe = ArchiveCodec.safeAssetName(name) else { continue }
                 do {
                     try bytes.write(
                         to: staging.appendingPathComponent("assets").appendingPathComponent(safe))
@@ -782,8 +531,25 @@ enum WebArchive {
         var changed = 0
         for annotation in incoming {
             if let index = existing.firstIndex(where: { $0.id == annotation.id }) {
-                if newerThan(annotation.updatedAt, existing[index].updatedAt) {
-                    existing[index] = annotation
+                let current = existing[index]
+                let newer = newerThan(annotation.updatedAt, current.updatedAt)
+                var merged = newer ? annotation : current
+                merged.unknownFields = current.unknownFields
+                merged.unknownFields.fillMissing(from: annotation.unknownFields)
+                if var position = merged.positionData {
+                    // Preserve current extras on collisions even when newer
+                    // known geometry came from the incoming annotation.
+                    if let old = current.positionData, let other = annotation.positionData {
+                        position.unknownFields = old.unknownFields
+                        for index in position.rects.indices.prefix(old.rects.count) {
+                            position.rects[index].unknownFields = old.rects[index].unknownFields
+                        }
+                        position.inheritUnknownFields(from: other)
+                    }
+                    merged.positionData = position
+                }
+                if merged != current {
+                    existing[index] = merged
                     changed += 1
                 }
             } else {
@@ -840,6 +606,9 @@ enum WebArchive {
             // snapshotting a fully-current record.
             current.version = min(current.version, incoming.version)
         }
+        if let original = existing {
+            WebInkStore.carryUnknownFields(into: &current, from: [original, incoming])
+        }
         existing = current
         return changed
     }
@@ -865,390 +634,24 @@ enum WebArchive {
     }()
 }
 
-// MARK: - Minimal ZIP container codec
-
-/// Just enough ZIP to write and read `.vellumweb` archives: Stored and
-/// Deflate entries, central directory, no zip64 (archives are size-capped far
-/// below 4 GiB). Read paths enforce decompressed-size caps *during* inflation
-/// so a crafted archive can't inflate a bomb.
-struct MiniZip {
-    struct Entry {
-        var name: String
-        var data: Data
-        var stored: Bool
-    }
-
-    struct SizeLimitExceeded: Error {}
-
-    // MARK: Writing
-
-    static func write(entries: [Entry]) throws -> Data {
-        var out = Data()
-        var central = Data()
-        let (dosTime, dosDate) = dosDateTime(Date())
-
-        for entry in entries {
-            let nameBytes = Data(entry.name.utf8)
-            let crc = crc32(entry.data)
-            let method: UInt16
-            let payload: Data
-            if entry.stored {
-                method = 0
-                payload = entry.data
-            } else {
-                method = 8
-                payload = try deflate(entry.data)
+extension ArchiveManifest {
+    mutating func inheritUnknownFields(from previous: ArchiveManifest) {
+        unknownFields.fillMissing(from: previous.unknownFields)
+        hashes.unknownFields.fillMissing(from: previous.hashes.unknownFields)
+        for index in assets.indices {
+            let asset = assets[index]
+            // A live capture can rename an asset. Offline captures retain
+            // its installed path, but do not have a source URL.
+            let prior = previous.assets.first { old in
+                if asset.url.isEmpty { return old.path == asset.path }
+                if !old.url.isEmpty { return old.url == asset.url }
+                // An offline export has no source URL. A live capture can
+                // identify that same asset by its installed path and digest.
+                return old.path == asset.path && old.sha256 != nil && old.sha256 == asset.sha256
             }
-            let offset = UInt32(out.count)
-
-            // Local file header
-            out.appendUInt32(0x0403_4b50)
-            out.appendUInt16(20)        // version needed
-            out.appendUInt16(0)         // flags
-            out.appendUInt16(method)
-            out.appendUInt16(dosTime)
-            out.appendUInt16(dosDate)
-            out.appendUInt32(crc)
-            out.appendUInt32(UInt32(payload.count))
-            out.appendUInt32(UInt32(entry.data.count))
-            out.appendUInt16(UInt16(nameBytes.count))
-            out.appendUInt16(0)         // extra length
-            out.append(nameBytes)
-            out.append(payload)
-
-            // Central directory record
-            central.appendUInt32(0x0201_4b50)
-            central.appendUInt16(20)    // version made by
-            central.appendUInt16(20)    // version needed
-            central.appendUInt16(0)     // flags
-            central.appendUInt16(method)
-            central.appendUInt16(dosTime)
-            central.appendUInt16(dosDate)
-            central.appendUInt32(crc)
-            central.appendUInt32(UInt32(payload.count))
-            central.appendUInt32(UInt32(entry.data.count))
-            central.appendUInt16(UInt16(nameBytes.count))
-            central.appendUInt16(0)     // extra length
-            central.appendUInt16(0)     // comment length
-            central.appendUInt16(0)     // disk number start
-            central.appendUInt16(0)     // internal attributes
-            central.appendUInt32(0)     // external attributes
-            central.appendUInt32(offset)
-            central.append(nameBytes)
-        }
-
-        let centralOffset = UInt32(out.count)
-        out.append(central)
-        // End of central directory
-        out.appendUInt32(0x0605_4b50)
-        out.appendUInt16(0)
-        out.appendUInt16(0)
-        out.appendUInt16(UInt16(entries.count))
-        out.appendUInt16(UInt16(entries.count))
-        out.appendUInt32(UInt32(central.count))
-        out.appendUInt32(centralOffset)
-        out.appendUInt16(0)
-        return out
-    }
-
-    // MARK: Reading
-
-    private struct CentralEntry {
-        var method: UInt16
-        var compressedSize: Int
-        var uncompressedSize: Int
-        var localHeaderOffset: Int
-    }
-
-    private let data: Data
-    private let entries: [String: CentralEntry]
-    private let orderedNames: [String]
-
-    var entryNames: [String] { orderedNames }
-
-    /// Number of entries the central directory declares.
-    var entryCount: Int { orderedNames.count }
-
-    /// Sum of every entry's DECLARED uncompressed size. Attacker-controlled in a
-    /// shared archive, so a caller uses it only as a pre-parse budget gate — never
-    /// as ground truth (`readCapped` re-checks each entry while inflating).
-    var totalDeclaredUncompressedSize: Int {
-        entries.values.reduce(0) { $0 + $1.uncompressedSize }
-    }
-
-    func contains(_ name: String) -> Bool { entries[name] != nil }
-
-    init(contentsOf path: URL, maxBytes: Int, maxEntries: Int,
-         maxUncompressedBytes: Int) throws {
-        let handle = try FileHandle(forReadingFrom: path)
-        defer { try? handle.close() }
-        // Inspect the opened file before allocation, then enforce the bound again
-        // while reading in case another writer grows it after the size check.
-        guard try handle.seekToEnd() <= UInt64(maxBytes) else {
-            throw Self.invalid("archive exceeds its size limit")
-        }
-        try handle.seek(toOffset: 0)
-        var bytes = Data()
-        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
-            guard chunk.count <= maxBytes - bytes.count else {
-                throw Self.invalid("archive exceeds its size limit")
-            }
-            bytes.append(chunk)
-        }
-        data = bytes
-        (entries, orderedNames) = try Self.parseCentralDirectory(
-            data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
-    }
-
-    init(data: Data, maxBytes: Int, maxEntries: Int, maxUncompressedBytes: Int) throws {
-        guard data.count <= maxBytes else {
-            throw Self.invalid("archive exceeds its size limit")
-        }
-        self.data = data
-        (entries, orderedNames) = try Self.parseCentralDirectory(
-            data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
-    }
-
-    private static func invalid(_ detail: String) -> SessionServiceError {
-        .invalidDocument("Not a valid .vellumweb archive: \(detail)")
-    }
-
-    private static func parseCentralDirectory(
-        _ data: Data, maxEntries: Int, maxUncompressedBytes: Int
-    ) throws -> ([String: CentralEntry], [String]) {
-        let bytes = [UInt8](data)
-        guard bytes.count >= 22 else { throw invalid("file too small") }
-        // Find the End of Central Directory record (scan back past a comment).
-        var eocd = -1
-        let scanStart = max(0, bytes.count - 22 - 65535)
-        var i = bytes.count - 22
-        while i >= scanStart {
-            if bytes[i] == 0x50, bytes[i + 1] == 0x4b, bytes[i + 2] == 0x05, bytes[i + 3] == 0x06 {
-                eocd = i
-                break
-            }
-            i -= 1
-        }
-        guard eocd >= 0 else { throw invalid("end of central directory not found") }
-
-        func u16(_ offset: Int) -> Int {
-            Int(bytes[offset]) | Int(bytes[offset + 1]) << 8
-        }
-        func u32(_ offset: Int) -> Int {
-            Int(bytes[offset]) | Int(bytes[offset + 1]) << 8
-                | Int(bytes[offset + 2]) << 16 | Int(bytes[offset + 3]) << 24
-        }
-
-        let entryCount = u16(eocd + 10)
-        guard entryCount <= maxEntries else { throw invalid("too many entries in archive") }
-        var declaredBytes = 0
-        var cursor = u32(eocd + 16)
-        var entries: [String: CentralEntry] = [:]
-        var names: [String] = []
-        for _ in 0..<entryCount {
-            guard cursor + 46 <= bytes.count, u32(cursor) == 0x0201_4b50 else {
-                throw invalid("bad central directory record")
-            }
-            let method = UInt16(u16(cursor + 10))
-            let compressedSize = u32(cursor + 20)
-            let uncompressedSize = u32(cursor + 24)
-            guard uncompressedSize <= maxUncompressedBytes - declaredBytes else {
-                throw invalid("declared archive data exceeds its size limit")
-            }
-            declaredBytes += uncompressedSize
-            let nameLen = u16(cursor + 28)
-            let extraLen = u16(cursor + 30)
-            let commentLen = u16(cursor + 32)
-            let localOffset = u32(cursor + 42)
-            guard cursor + 46 + nameLen <= bytes.count else {
-                throw invalid("bad central directory record")
-            }
-            let name = String(decoding: bytes[(cursor + 46)..<(cursor + 46 + nameLen)], as: UTF8.self)
-            guard entries[name] == nil else { throw invalid("duplicate archive entry") }
-            names.append(name)
-            entries[name] = CentralEntry(
-                method: method,
-                compressedSize: compressedSize,
-                uncompressedSize: uncompressedSize,
-                localHeaderOffset: localOffset)
-            cursor += 46 + nameLen + extraLen + commentLen
-        }
-        return (entries, names)
-    }
-
-    /// Read one entry with a hard decompressed-size cap. Size fields are
-    /// attacker-controlled in a shared archive, so they gate early but the
-    /// cap is enforced again while inflating.
-    func readCapped(_ name: String, cap: Int) throws -> Data {
-        guard let entry = entries[name] else {
-            throw SessionServiceError.invalidDocument("Archive is missing \(name)")
-        }
-        if entry.uncompressedSize > cap {
-            throw SessionServiceError.invalidDocument(
-                "Archive entry \(name) exceeds its size limit")
-        }
-        let bytes = data
-        let offset = entry.localHeaderOffset
-        guard offset + 30 <= bytes.count else {
-            throw SessionServiceError.invalidDocument("Failed to read \(name): bad local header")
-        }
-        func u16(_ at: Int) -> Int {
-            Int(bytes[bytes.startIndex + at]) | Int(bytes[bytes.startIndex + at + 1]) << 8
-        }
-        func u32(_ at: Int) -> Int {
-            u16(at) | u16(at + 2) << 16
-        }
-        guard u32(offset) == 0x0403_4b50 else {
-            throw SessionServiceError.invalidDocument("Failed to read \(name): bad local header")
-        }
-        let nameLen = u16(offset + 26)
-        let extraLen = u16(offset + 28)
-        let dataStart = offset + 30 + nameLen + extraLen
-        guard dataStart + entry.compressedSize <= bytes.count else {
-            throw SessionServiceError.invalidDocument("Failed to read \(name): truncated entry")
-        }
-        let payload = bytes.subdata(
-            in: (bytes.startIndex + dataStart)..<(bytes.startIndex + dataStart + entry.compressedSize))
-
-        switch entry.method {
-        case 0:
-            if payload.count > cap {
-                throw SessionServiceError.invalidDocument(
-                    "Archive entry \(name) exceeds its size limit")
-            }
-            return payload
-        case 8:
-            do {
-                return try MiniZip.inflate(payload, cap: cap)
-            } catch is SizeLimitExceeded {
-                throw SessionServiceError.invalidDocument(
-                    "Archive entry \(name) exceeds its size limit")
-            } catch {
-                throw SessionServiceError.invalidDocument(
-                    "Failed to read \(name): \(error.localizedDescription)")
-            }
-        default:
-            throw SessionServiceError.invalidDocument(
-                "Failed to read \(name): unsupported compression method")
-        }
-    }
-
-    // MARK: Deflate / Inflate (raw DEFLATE, RFC 1951)
-
-    struct CodecError: Error {}
-
-    static func deflate(_ input: Data) throws -> Data {
-        if input.isEmpty {
-            // Canonical empty raw-deflate stream (single final stored block).
-            return Data([0x03, 0x00])
-        }
-        var capacity = input.count + input.count / 2 + 256
-        for _ in 0..<2 {
-            var dst = Data(count: capacity)
-            let written = dst.withUnsafeMutableBytes { dstPtr -> Int in
-                input.withUnsafeBytes { srcPtr -> Int in
-                    compression_encode_buffer(
-                        dstPtr.baseAddress!.assumingMemoryBound(to: UInt8.self), capacity,
-                        srcPtr.baseAddress!.assumingMemoryBound(to: UInt8.self), input.count,
-                        nil, COMPRESSION_ZLIB)
-                }
-            }
-            if written > 0 {
-                dst.removeSubrange(written..<dst.count)
-                return dst
-            }
-            capacity = capacity * 2 + 1024
-        }
-        throw CodecError()
-    }
-
-    static func inflate(_ input: Data, cap: Int) throws -> Data {
-        var stream = compression_stream(
-            dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!, dst_size: 0,
-            src_ptr: UnsafePointer<UInt8>(bitPattern: 1)!, src_size: 0,
-            state: nil)
-        guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
-            == COMPRESSION_STATUS_OK else {
-            throw CodecError()
-        }
-        defer { compression_stream_destroy(&stream) }
-
-        let chunkSize = 64 * 1024
-        var out = Data()
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: chunkSize)
-        defer { buffer.deallocate() }
-
-        return try input.withUnsafeBytes { (srcRaw: UnsafeRawBufferPointer) -> Data in
-            let srcBase = srcRaw.baseAddress?.assumingMemoryBound(to: UInt8.self)
-            stream.src_ptr = srcBase ?? UnsafePointer<UInt8>(bitPattern: 1)!
-            stream.src_size = input.count
-            while true {
-                stream.dst_ptr = buffer
-                stream.dst_size = chunkSize
-                let status = compression_stream_process(
-                    &stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
-                let produced = chunkSize - stream.dst_size
-                if produced > 0 {
-                    out.append(buffer, count: produced)
-                    if out.count > cap {
-                        throw SizeLimitExceeded()
-                    }
-                }
-                switch status {
-                case COMPRESSION_STATUS_END:
-                    return out
-                case COMPRESSION_STATUS_OK:
-                    continue
-                default:
-                    throw CodecError()
-                }
+            if let prior {
+                assets[index].unknownFields.fillMissing(from: prior.unknownFields)
             }
         }
-    }
-
-    // MARK: CRC32 / DOS timestamps
-
-    private static let crcTable: [UInt32] = {
-        (0..<256).map { index -> UInt32 in
-            var value = UInt32(index)
-            for _ in 0..<8 {
-                value = (value & 1) != 0 ? (0xedb8_8320 ^ (value >> 1)) : (value >> 1)
-            }
-            return value
-        }
-    }()
-
-    static func crc32(_ data: Data) -> UInt32 {
-        var crc: UInt32 = 0xffff_ffff
-        for byte in data {
-            crc = crcTable[Int((crc ^ UInt32(byte)) & 0xff)] ^ (crc >> 8)
-        }
-        return crc ^ 0xffff_ffff
-    }
-
-    private static func dosDateTime(_ date: Date) -> (time: UInt16, date: UInt16) {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone.current
-        let parts = calendar.dateComponents(
-            [.year, .month, .day, .hour, .minute, .second], from: date)
-        let year = max(1980, parts.year ?? 1980)
-        let time = UInt16(((parts.hour ?? 0) << 11) | ((parts.minute ?? 0) << 5)
-            | ((parts.second ?? 0) / 2))
-        let dosDate = UInt16(((year - 1980) << 9) | ((parts.month ?? 1) << 5) | (parts.day ?? 1))
-        return (time, dosDate)
-    }
-}
-
-private extension Data {
-    mutating func appendUInt16(_ value: UInt16) {
-        append(UInt8(value & 0xff))
-        append(UInt8(value >> 8))
-    }
-
-    mutating func appendUInt32(_ value: UInt32) {
-        append(UInt8(value & 0xff))
-        append(UInt8((value >> 8) & 0xff))
-        append(UInt8((value >> 16) & 0xff))
-        append(UInt8((value >> 24) & 0xff))
     }
 }

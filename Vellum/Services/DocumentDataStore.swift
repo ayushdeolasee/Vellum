@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // Per-document user-data folder (class B in plans/storage-design.html §2/§4):
 //   <appData>/documents/<storageKey>/
@@ -25,7 +26,10 @@ enum DocumentDataStore {
     private struct Access: Sendable {
         let store: any LibraryFileStore
         let documentsRoot: URL
+        var sharedPDFs: SharedPDFLocation? = nil
+        var sharedContainer: (any SyncedContainer)? = nil
         let fallbackRoot: URL?
+        let backend: StorageBackendKind
     }
 
     private static func withAccess<T: Sendable>(
@@ -35,16 +39,23 @@ enum DocumentDataStore {
         if let rootDirectoryOverride {
             return try await operation(Access(
                 store: DirectLibraryFileStore(), documentsRoot: rootDirectoryOverride,
-                fallbackRoot: nil))
+                fallbackRoot: nil, backend: .direct))
         }
         return try await coordinator.withStorageContext { context in
             let localRoot = WebStorageLayout.local(storeDir: WebLibrary.storeDir).documentsDir
             let activeRoot = context.layout.documentsDir
+            let folderContainer: (any SyncedContainer)?
+            if context.layout.pdfsDir != nil, case .coordinated(let container, _) = context {
+                folderContainer = container
+            } else { folderContainer = nil }
             return try await operation(Access(
                 store: context.fileStore,
                 documentsRoot: activeRoot,
-                fallbackRoot: localRoot.standardizedFileURL == activeRoot.standardizedFileURL
-                    ? nil : localRoot))
+                sharedPDFs: context.layout.pdfsDir.map { _ in SharedPDFLocation(root: context.layout.rootDir) },
+                sharedContainer: folderContainer,
+                fallbackRoot: context.layout.pdfsDir != nil || localRoot.standardizedFileURL == activeRoot.standardizedFileURL
+                    ? nil : localRoot,
+                backend: context.layout.backend))
         }
     }
 
@@ -110,9 +121,11 @@ enum DocumentDataStore {
         forKey key: String,
         relativeName: String,
         coordinator: StorageCoordinator,
-        refuseUnavailable: Bool
+        refuseUnavailable: Bool,
+        automaticAttachmentRemoval: Bool = false
     ) async throws {
         try await withAccess(coordinator: coordinator) { access in
+            if automaticAttachmentRemoval, access.backend == .syncedFolder { return }
             let active = documentDir(forKey: key, root: access.documentsRoot)
                 .appendingPathComponent(relativeName)
             if refuseUnavailable { _ = try await access.store.read(active) }
@@ -198,6 +211,8 @@ enum DocumentDataStore {
     // MARK: - meta.json
 
     struct Meta: Codable, Equatable {
+        var unknownFields: [String: JSONValue] = [:]
+
         var version: Int
         var kind: String
         var title: String?
@@ -211,6 +226,16 @@ enum DocumentDataStore {
             case lastKnownPath = "last_known_path"
             case lastOpened = "last_opened"
         }
+    }
+
+    /// The stamped identity owns known metadata. Reuse its bytes when the
+    /// path-keyed copy contributes no additional fields.
+    private static func rekeyedMeta(destination: Data, source: Data) throws -> Data? {
+        var meta = try JSONDecoder().decode(Meta.self, from: destination)
+        let incoming = try JSONDecoder().decode(Meta.self, from: source)
+        let original = meta.unknownFields
+        meta.unknownFields.fillMissing(from: incoming.unknownFields)
+        return meta.unknownFields == original ? nil : try WebLibrary.jsonEncoderPretty.encode(meta)
     }
 
     static func loadMeta(forKey key: String) -> Meta? {
@@ -245,6 +270,7 @@ enum DocumentDataStore {
         }
         let existing = loadMeta(forKey: key)
         let meta = Meta(
+            unknownFields: existing?.unknownFields ?? [:],
             version: 1,
             kind: document.kind.rawValue,
             title: document.title ?? existing?.title,
@@ -260,20 +286,32 @@ enum DocumentDataStore {
         coordinator: StorageCoordinator
     ) async throws {
         let key = DocumentIdentity.storageKey(for: document)
-        let existing = try await loadMeta(forKey: key, coordinator: coordinator)
-        if !force, existing == nil,
-           try await hasDataFiles(forKey: key, coordinator: coordinator) == false {
-            return
+        try await withAccess(coordinator: coordinator) { access in
+            let url = documentDir(forKey: key, root: access.documentsRoot).appendingPathComponent("meta.json")
+            let prior = try await access.store.read(url)
+            let previous: Data?
+            if prior == nil, access.fallbackRoot != nil {
+                previous = try await readData(forKey: key, relativeName: "meta.json", access: access)
+            } else { previous = prior }
+            let existing = try previous.map { try JSONDecoder().decode(Meta.self, from: $0) }
+            if !force, existing == nil, access.sharedPDFs == nil || document.kind != .pdf {
+                guard try await hasDataFiles(forKey: key, access: access) else { return }
+            }
+            var path = document.pdfPath
+            if document.kind == .pdf, let location = access.sharedPDFs {
+                guard let relative = location.relativePath(for: URL(fileURLWithPath: path)) else {
+                    throw DocumentAccessError.unavailable(path)
+                }
+                path = relative
+            }
+            let meta = Meta(unknownFields: existing?.unknownFields ?? [:], version: 1,
+                            kind: document.kind.rawValue, title: document.title ?? existing?.title,
+                            lastKnownPath: path, lastOpened: WebLibrary.rfc3339Now())
+            let bytes = try WebLibrary.jsonEncoderPretty.encode(meta)
+            if let container = access.sharedContainer {
+                guard try await container.replace(url, with: bytes, ifCurrent: prior) else { throw LibraryFileError.retryable }
+            } else { try await access.store.replace(url, with: bytes) }
         }
-        let meta = Meta(
-            version: 1,
-            kind: document.kind.rawValue,
-            title: document.title ?? existing?.title,
-            lastKnownPath: document.pdfPath,
-            lastOpened: WebLibrary.rfc3339Now())
-        try await replaceData(
-            try WebLibrary.jsonEncoderPretty.encode(meta), forKey: key,
-            relativeName: "meta.json", coordinator: coordinator)
     }
 
     // MARK: - scratchpad.md
@@ -458,14 +496,18 @@ enum DocumentDataStore {
         forKey key: String, coordinator: StorageCoordinator
     ) async throws -> Bool {
         try await withAccess(coordinator: coordinator) { access in
-            let directory = documentDir(forKey: key, root: access.documentsRoot)
-            let active = try await access.store.list(directory, suffix: nil)
-            if active.contains(where: { $0.name != "meta.json" }) { return true }
-            guard let fallbackRoot = access.fallbackRoot else { return false }
-            return try await DirectLibraryFileStore().list(
-                documentDir(forKey: key, root: fallbackRoot), suffix: nil
-            ).contains(where: { $0.name != "meta.json" })
+            try await hasDataFiles(forKey: key, access: access)
         }
+    }
+
+    private static func hasDataFiles(forKey key: String, access: Access) async throws -> Bool {
+        let directory = documentDir(forKey: key, root: access.documentsRoot)
+        let active = try await access.store.list(directory, suffix: nil)
+        if active.contains(where: { $0.name != "meta.json" }) { return true }
+        guard let fallbackRoot = access.fallbackRoot else { return false }
+        return try await DirectLibraryFileStore().list(
+            documentDir(forKey: key, root: fallbackRoot), suffix: nil
+        ).contains(where: { $0.name != "meta.json" })
     }
 
     /// Remove the whole document folder when it holds no data files (§8).
@@ -477,9 +519,11 @@ enum DocumentDataStore {
     static func pruneEmptyDocumentDir(
         forKey key: String, coordinator: StorageCoordinator
     ) async {
-        guard (try? await hasDataFiles(forKey: key, coordinator: coordinator)) == false
-        else { return }
         try? await withAccess(coordinator: coordinator) { access in
+            // Ordinary discovery hides conflict and staging files. A recursive
+            // remove based on that listing could discard shared-folder bytes.
+            guard access.backend != .syncedFolder,
+                  try await !hasDataFiles(forKey: key, access: access) else { return }
             try await access.store.remove(
                 documentDir(forKey: key, root: access.documentsRoot))
             if let fallbackRoot = access.fallbackRoot {
@@ -558,7 +602,8 @@ enum DocumentDataStore {
     ) async {
         try? await removeData(
             forKey: key, relativeName: "attachments/\(name)",
-            coordinator: coordinator, refuseUnavailable: true)
+            coordinator: coordinator, refuseUnavailable: true,
+            automaticAttachmentRemoval: true)
     }
 
     // MARK: - iCloud placeholders (evicted synced files)
@@ -697,7 +742,7 @@ enum DocumentDataStore {
                     }
                 }
                 let meta: Meta? = if let data = try await readData(
-                    forKey: key, relativeName: "meta.json", coordinator: coordinator)
+                    forKey: key, relativeName: "meta.json", access: access)
                 {
                     try? JSONDecoder().decode(Meta.self, from: data)
                 } else {
@@ -706,6 +751,9 @@ enum DocumentDataStore {
                 let sourceExists: Bool = {
                     guard let meta else { return true }
                     if meta.kind == DocumentKind.web.rawValue { return true }
+                    if let shared = access.sharedPDFs {
+                        return documentAccess.scoped(to: shared.root).sourceExists(key: key, lastKnownPath: meta.lastKnownPath)
+                    }
                     return documentAccess.sourceExists(
                         key: key, lastKnownPath: meta.lastKnownPath)
                 }()
@@ -798,8 +846,12 @@ enum DocumentDataStore {
                 guard fileNames.contains("meta.json"),
                       let data = try await readData(
                         forKey: key, relativeName: "meta.json", access: access),
-                      let meta = try? JSONDecoder().decode(Meta.self, from: data)
+                      var meta = try? JSONDecoder().decode(Meta.self, from: data)
                 else { continue }
+                if meta.kind == "pdf", let location = access.sharedPDFs {
+                    guard let url = location.resolve(meta.lastKnownPath) else { continue }
+                    meta.lastKnownPath = url.path
+                }
                 entries.append(DocumentMetaEntry(
                     key: key,
                     meta: meta,
@@ -1192,8 +1244,13 @@ enum DocumentDataStore {
                     guard let sourceData else { continue }
                     let destinationURL = destination.appendingPathComponent(relative)
                     let destinationData = try await access.store.read(destinationURL)
-                    if destinationData != nil {
-                        if relative == "meta.json" { continue }
+                    if let destinationData {
+                        if relative == "meta.json" {
+                            if let merged = try rekeyedMeta(destination: destinationData, source: sourceData) {
+                                try await access.store.replace(destinationURL, with: merged)
+                            }
+                            continue
+                        }
                         let name = (relative as NSString).lastPathComponent
                         let sourceEntry = relative.hasPrefix("attachments/")
                             ? attachmentEntries[name] : sourceEntries[name]
@@ -1334,13 +1391,18 @@ enum DocumentDataStore {
             // rival copies of the same logical file. Materialize it so the
             // mod-date compare and atomic swap operate on real bytes.
             if WebICloud.itemExists(at: target) {
-                // meta.json: destination wins, source dropped (collapses stray
-                // meta-only path-hash folders; §8 self-heal).
-                if relative == "meta.json" { continue }
                 if !WebICloud.materialize(at: target, timeout: 10) {
                     // Can't download the destination to compare/replace safely —
                     // leave both copies for a later retry rather than guess.
                     allMerged = false
+                    continue
+                }
+                if relative == "meta.json" {
+                    do {
+                        if let data = try rekeyedMeta(destination: Data(contentsOf: target), source: Data(contentsOf: file)) {
+                            try writeAtomic(data, to: target, label: "rekeyed metadata")
+                        }
+                    } catch { allMerged = false }
                     continue
                 }
                 if modDate(file) > modDate(target) {
@@ -1382,5 +1444,27 @@ enum DocumentDataStore {
             try? FileManager.default.removeItem(at: tmp)
             throw SessionServiceError.io("Failed to commit \(label): rename failed")
         }
+    }
+}
+
+extension DocumentDataStore.Meta {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        kind = try container.decode(String.self, forKey: .kind)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        lastKnownPath = try container.decode(String.self, forKey: .lastKnownPath)
+        lastOpened = try container.decode(String.self, forKey: .lastOpened)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(kind, forKey: .kind)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encode(lastKnownPath, forKey: .lastKnownPath)
+        try container.encode(lastOpened, forKey: .lastOpened)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }

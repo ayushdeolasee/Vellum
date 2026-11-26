@@ -37,7 +37,7 @@ final class WebStorageLocationTests: XCTestCase {
     }
 
     private var prettyLayout: WebStorageLayout {
-        .pretty(root: prettyRoot, recordsInRoot: true, localStoreDir: storeDir)
+        .iCloud(root: prettyRoot)
     }
 
     @discardableResult
@@ -74,8 +74,7 @@ final class WebStorageLocationTests: XCTestCase {
         XCTAssertTrue(layout.recordsDir.path.contains("/.vellum/"))
 
         // Custom-style: records stay in the local store.
-        let custom = WebStorageLayout.pretty(
-            root: prettyRoot, recordsInRoot: false, localStoreDir: storeDir)
+        let custom = WebStorageLayout.custom(root: prettyRoot, storeDir: storeDir)
         XCTAssertEqual(custom.recordsDir, storeDir)
     }
 

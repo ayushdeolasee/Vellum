@@ -1,0 +1,40 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+enum { PDF_MAX_INPUT_BYTES = 128 * 1024 * 1024 };
+
+typedef enum { PDF_INFO, PDF_BITMAP, PDF_TEXT, PDF_OPEN_INFO } PdfOperation;
+typedef enum {
+    PDF_OK, PDF_BAD_DOCUMENT, PDF_PASSWORD_REQUIRED, PDF_SECURITY_ERROR,
+    PDF_BAD_PAGE, PDF_BAD_DIMENSIONS, PDF_LIMIT, PDF_ENGINE_ERROR
+} PdfStatus;
+
+typedef struct {
+    uint32_t unicode;
+    double left, bottom, right, top;
+    double selection_left, selection_bottom, selection_right, selection_top;
+    double origin_y;
+    bool generated, discretionary_hyphen;
+} PdfCharacter;
+
+typedef struct {
+    uint16_t document_id[65];        // UTF-16LE from /Info, including a terminator.
+    size_t document_id_units;        // Excludes the terminator; zero means unavailable.
+    int pages, rotation;             // Clockwise degrees; dimensions are already rotated.
+    double width_pt, height_pt;
+    double visible_left, visible_bottom, visible_right, visible_top; // Unrotated media/crop intersection in PDF user space.
+    int width, height, stride;
+    uint8_t *pixels;                 // Top-down opaque BGRA, malloc-owned.
+    int character_count;
+    PdfCharacter *characters;        // PDFium character order, malloc-owned.
+} PdfJobResult;
+
+// Call only on the process-wide PDFium worker. Input and password are borrowed
+// through return. On success the caller owns the two nullable output buffers.
+PdfStatus pdf_run_job(PdfOperation op, const void *bytes, size_t length,
+                      const char *password, int page_index, double scale,
+                      PdfJobResult *out);
+void pdf_worker_shutdown(void);
