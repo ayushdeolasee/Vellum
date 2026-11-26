@@ -463,8 +463,12 @@ private struct OverflowMenu: View {
         exporting = true
         Task {
             defer { exporting = false }
-            _ = try? await appStore.sessions.exportVellumweb(
-                sessionId: sessionId, destPath: destination.path, pages: pages)
+            do {
+                _ = try await appStore.sessions.exportVellumweb(
+                    sessionId: sessionId, destPath: destination.path, pages: pages)
+            } catch {
+                appStore.error = "Couldn’t export the webpage: \(error.localizedDescription)"
+            }
         }
     }
 

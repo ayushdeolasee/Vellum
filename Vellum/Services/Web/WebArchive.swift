@@ -499,22 +499,22 @@ enum WebArchive {
     }
 
     /// Load a previously installed self-contained snapshot, if present.
-    static func loadArchiveDir(key: String) -> (html: String, assets: [(String, Data)])? {
+    static func loadArchiveDir(key: String) -> CapturedSnapshot? {
         let dir = WebLibrary.archiveDir(forKey: key)
         guard let html = try? String(
             contentsOf: dir.appendingPathComponent("snapshot.html"), encoding: .utf8) else {
             return nil
         }
-        var assets: [(String, Data)] = []
+        var assets: [CapturedAsset] = []
         let assetsDir = dir.appendingPathComponent("assets")
         if let names = try? FileManager.default.contentsOfDirectory(atPath: assetsDir.path) {
             for name in names {
                 if let bytes = try? Data(contentsOf: assetsDir.appendingPathComponent(name)) {
-                    assets.append((name, bytes))
+                    assets.append(CapturedAsset(name: name, url: "", contentType: contentTypeForName(name), bytes: bytes))
                 }
             }
         }
-        return (html, assets)
+        return CapturedSnapshot(html: html, assets: assets, skipped: 0)
     }
 
     /// `__VELLUM_ASSET__/<name>` → `<asset base>/<name>` for serving.
