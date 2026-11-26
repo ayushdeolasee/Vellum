@@ -71,6 +71,14 @@ final class ReaderChatController {
         if let failure { throw failure }
     }
 
+    /// A fresh read can resolve the same locator to another document.
+    func detach(_ panel: OpaquePointer) -> Task<Void, Never>? {
+        guard document != nil else { return nil }
+        let pending = drain(panel)
+        reset(panel)
+        return pending
+    }
+
     func reset(_ panel: OpaquePointer) {
         work?.cancel()
         saveFailed = false

@@ -143,3 +143,57 @@ def exercise(ui):
             if app.poll() is None:
                 app.kill()
                 app.wait()
+
+    # A valid hash claim takes precedence even on a stamped PDF. Until the
+    # reader can check the claim, neither candidate may own this tab.
+    hash_directory = directory.parent / hashlib.sha256(original).hexdigest()
+    hash_directory.mkdir()
+    metadata = hash_directory / "meta.json"
+    metadata.write_text(json.dumps({"kind": "pdf", "last_known_path": "PDFs/classic-two-column.pdf"}))
+    hash_note = hash_directory / "scratchpad.md"
+    hash_note.write_bytes(b"Hash note")
+    hash_chat = hash_directory / "conversations.json"
+    hash_chat.write_bytes(b'[{"id":"h","content":"Hash history","role":"user","createdAt":"peer","x":1.200}]')
+    stamp_before = ui.manifest(directory)
+    for blocked in (root / ".vellum/positions", metadata):
+        mode = blocked.stat().st_mode & 0o777
+        before = snapshot()
+        blocked.chmod(0)
+        app = subprocess.Popen(["/runtime/vellum-linux", "--library", str(root)])
+        try:
+            ui.wait(lambda: ui.has_status("Restore access, then reopen the folder in Settings"), "metadata failure explained")
+            ui.click("Next page")
+            ui.wait(lambda: ui.has_status("Page 2 of 2") and ui.has_status("Restore access"), "PDF remains readable")
+            ui.click("Scratchpad")
+            ui.click("Chat")
+            ui.wait(lambda: ui.has_status("no shared scratchpad identity"), "no Scratchpad bound")
+            assert not text() and not ui.transcript()
+            assert not ui.get("Send").getState().contains(ui.pyatspi.STATE_SENSITIVE)
+            assert not ui.get("Scratchpad Markdown").getState().contains(ui.pyatspi.STATE_EDITABLE)
+            if blocked == metadata:
+                ui.capture("reader-identity-unavailable.png")
+            if blocked != metadata:
+                ui.click("Close")
+                assert app.wait(timeout=8) == 0
+            blocked.chmod(mode)
+            assert snapshot() == before
+            if blocked == metadata:
+                ui.click("Settings")
+                ui.click("Reopen")
+                ui.click("Done")
+                ui.wait(lambda: text() == "Hash note" and "Hash history" in ui.transcript(), "retry selects legacy hash")
+                assert "Existing turn" not in ui.transcript()
+                assert ui.get("Scratchpad Markdown").queryEditableText().setTextContents("Edited hash note")
+                ui.click("Save")
+                ui.reply("Hash chat?")
+                ui.wait(lambda: b"Hash chat?" in hash_chat.read_bytes() and hash_note.read_bytes() == b"Edited hash note",
+                        "verified hash receives both shared saves")
+                ui.click("Close")
+                assert app.wait(timeout=8) == 0
+                assert ui.manifest(directory) == stamp_before
+            print(blocked.name, "unreadable: PDF pages available, shared sidecars withheld", flush=True)
+        finally:
+            blocked.chmod(mode)
+            if app.poll() is None:
+                app.kill()
+                app.wait()

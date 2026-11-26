@@ -24,6 +24,7 @@ final class ReaderController {
     private var searchWork: Task<Void, Never>?
     private var selection: URL?
     private var bytes: Data?
+    private var pdfMetadataUnavailable = false
     private var pdfTitle: String?
     private var pageIndex = 0
     private var pageCount = 0
@@ -409,6 +410,7 @@ final class ReaderController {
         selectedEntry = nil
         selection = nil
         bytes = nil
+        pdfMetadataUnavailable = false
         pdfTitle = nil
         pageCount = 0
         pageIndex = 0
@@ -511,6 +513,12 @@ final class ReaderController {
                 if let cached = self.bytes {
                     data = cached
                 } else {
+                    let oldChat = self.chat.detach(reader_chat_panel(window))
+                    let oldPosition = self.positionSession
+                    self.bindPosition(target: nil, restored: nil, window: window)
+                    await oldChat?.value
+                    await oldPosition?.flush()
+                    guard self.isCurrent(token) else { return }
                     guard let loaded = try await store.read(file) else {
                         throw CocoaError(.fileNoSuchFile)
                     }
@@ -519,17 +527,22 @@ final class ReaderController {
                     guard self.isCurrent(token) else { return }
                     var restored: ReadingPosition?
                     var storageKey: String?
-                    if let catalog = try? await self.catalog(in: store, token: token),
-                       let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
-                                                               stamp: opening.stableIdentifier, fallbackTitle: title) {
+                    do {
+                        let catalog = try await self.catalog(in: store, token: token)
+                        let saved = try await catalog.sharedPDF(bytes: loaded, file: file,
+                                                                stamp: opening.stableIdentifier, fallbackTitle: title)
+                        guard self.isCurrent(token) else { return }
+                        self.pdfMetadataUnavailable = false
                         restored = saved.position
                         storageKey = saved.storageKey
                         title = saved.displayTitle
                         if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
+                    } catch {
+                        guard self.isCurrent(token) else { return }
+                        self.pdfMetadataUnavailable = true
                     }
-                    guard self.isCurrent(token) else { return }
                     self.bindPosition(target: storageKey.map { .pdf(key: $0, file: file) }, restored: restored, window: window)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
@@ -549,13 +562,18 @@ final class ReaderController {
                 let point = ReadingPosition(page: index + 1, pageCount: info.pageCount)
                 self.displayedPosition = point
                 self.positionSession?.moved(point)
-                self.chat.bind(.pdf(data, key: self.documentStorageKey, file: file, title: title, page: index),
-                               store: store, context: self.writeContext, provider: self.settings.provider,
-                               panel: reader_chat_panel(window))
+                if !self.pdfMetadataUnavailable {
+                    self.chat.bind(.pdf(data, key: self.documentStorageKey, file: file, title: title, page: index),
+                                   store: store, context: self.writeContext, provider: self.settings.provider,
+                                   panel: reader_chat_panel(window))
+                }
                 bitmap.pixels.withUnsafeBytes { buffer in
                     reader_set_page(window, title, Int32(index + 1), Int32(info.pageCount),
                                     buffer.bindMemory(to: UInt8.self).baseAddress,
                                     Int32(bitmap.width), Int32(bitmap.height), bitmap.bytesPerRow)
+                }
+                if self.pdfMetadataUnavailable {
+                    reader_show_status(window, "PDF open · Could not verify shared metadata. Restore access, then reopen the folder in Settings.")
                 }
             } catch {
                 guard self.isCurrent(token) else { return }

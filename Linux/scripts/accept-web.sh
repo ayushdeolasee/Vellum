@@ -133,7 +133,8 @@ PYCHAT
   manifest > "$stage/before"
   docker --context colima-vellum run "${args[@]}" "$image" bash -c '
     bash /runtime/with-test-keyring.sh python3 /runtime/chat-acceptance.py >&2 &&
-    if [[ -z ${VELLUM_PDF_SIDECAR_TEST:-} ]]; then cd /tmp && tar -czf - reader-before.png reader-chat*.png; fi'
+    if [[ -n ${VELLUM_PDF_SIDECAR_TEST:-} ]]; then cat /tmp/reader-identity-unavailable.png;
+    else cd /tmp && tar -czf - reader-before.png reader-chat*.png; fi'
   manifest > "$stage/after"
   diff -u "$stage/before" "$stage/after" >&2
   exit
