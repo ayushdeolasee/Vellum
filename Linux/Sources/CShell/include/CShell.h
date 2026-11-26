@@ -22,3 +22,4 @@ void shell_probe_mark(int slot, int sequence, uint64_t latency_ns);
 void shell_probe_fifo(int sequence);
 bool shell_probe_load_step(int slot);
 void shell_probe_turn_finished(void);
+#include "library_io.h"
