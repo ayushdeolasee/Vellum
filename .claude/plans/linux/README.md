@@ -24,7 +24,7 @@ The map is done when nothing is left to decide before someone starts building.
 ## Notes
 
 - Domain: macOS app on `main` (this repo). iPhone/iPad code is not ported.
-- Agents consulted while charting: Gemini 4 Neon and GPT 6.2 Astra (research + review rounds).
+- Agents consulted while charting: Gemini 4 Neon and GPT 6.2 Astra (research round 1, review round 2).
 - Standing preferences: native feel over convenience; personal use first, public later;
   every step must keep the Mac app building and behaving the same.
 - `project.yml` stays the source of truth for Apple targets. Linux builds with SwiftPM.
@@ -43,8 +43,11 @@ The map is done when nothing is left to decide before someone starts building.
 
 - **About half the Mac app is portable logic.** 113 non-iOS files (~37K lines) import no UI, PDF, web or ink framework. Roughly the same amount is tied to SwiftUI/AppKit/PDFKit/WebKit/PencilKit and must be rebuilt for Linux.
 - **Vellum started as Tauri** (React + Rust) and moved to Swift in July 2026 (`cd95f534`). Several Swift files still say "port of `src-tauri/…rs`"; `.vellumweb` is a format born in Rust and is already portable.
-- **PDF ink is portable already.** Pencil ink on PDFs is saved as standard `/Ink` annotations, so any Linux PDF engine displays it.
-- **Web-page ink is not.** `<key>.ink.json` wraps opaque `PKDrawing` blobs (`WebInkStore.swift:92`).
+- **PDF ink is mostly portable.** iPad ink on PDFs is saved as standard `/Ink` annotations (`/InkList` geometry, no appearance stream), plus an Apple-only `PKDrawing` copy in `/VellumInk`. A Linux engine can draw the geometry, not the brush look.
+- **Web-page ink is not portable.** `<key>.ink.json` wraps opaque `PKDrawing` blobs (`WebInkStore.swift:92`).
+- **Only iPad writes ink.** The Mac displays ink read-only, so ink-format changes start on iPad.
+- **Page annotations are written by PDFKit, not by Vellum's own code.** Vellum's pure-Swift PDF code writes document metadata and bookmarks and patches PDFKit's output. Linux needs a new annotation writer (`02-pdf-engine.md`).
+- **Custom-folder storage doesn't share notes or positions today.** Only iCloud mode keeps them in the library folder (`01-shared-library.md`).
 - **The repo is public with no licence.** The PDF engine's licence constrains Vellum's eventual licence.
 - **No container runtime is installed on the Mac yet.**
 
@@ -62,12 +65,20 @@ offline web reader · scratchpad · AI chat · continue-reading positions.
 
 Undecided: tabs and split panes · Raindrop/Readwise integrations · Chrome-extension capture via `vellum://`.
 
+## Build order (agreed after review)
+
+Read first, write later: (1) shared formats move into `VellumCore` → (2) a **read-only** Linux
+reader on a disposable copy of the library, verified to write nothing → (3) shared-folder storage
+mode and conflict handling → (4) Linux PDF annotation writer → (5) ink. Two machines writing to one
+library is only allowed after a two-machine offline-edit conflict test passes.
+
 ## Not yet specified (fog)
 
 - How the agent verifies Linux UI (headless Wayland + screenshots, or an AT-SPI driver).
 - API keys per device via libsecret, or synced.
 - Single-instance `vellum://` hand-off on Linux (D-Bus activation).
 - Look and feel: libadwaita vs plain GTK4 next to Omarchy/Hyprland tiling (needs the GTK spike first).
+- How Vellum's web-reader scripts (highlight anchoring, offline asset serving, page-to-app messages) map onto WebKitGTK 6, and whether web capture is in v1.
 
 ## Out of scope
 
