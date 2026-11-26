@@ -39,9 +39,28 @@ def validate():
         rows = zlib.decompress(xref.read_raw_bytes())
         assert xref.DecodeParms.Columns == row_width - 1
         assert len(rows) == xref.Size * row_width and set(rows[::row_width]) == {2}
-        for obj in [pdf.Root, pdf.Root.Pages, pdf.pages[0].obj, pdf.pages[0].Resources.Font.Helv]:
+        # libqpdf reverses the predictor. Check the decoded type-2 rows against the object stream.
+        assert list(xref.W) == [1, 2, 2]
+        decoded_xref = xref.read_bytes()
+        page = pdf.pages[0].obj
+        object_stream = pdf.get_object(table[page.objgen].obj_stream_number, 0)
+        assert object_stream.Type == "/ObjStm" and object_stream.Filter == "/FlateDecode"
+        compressed = object_stream.read_raw_bytes()
+        decoded = zlib.decompress(compressed)
+        assert len(compressed) < len(decoded) and decoded == object_stream.read_bytes()
+        header = [int(field) for field in decoded[:object_stream.First].split()]
+        assert len(header) == 2 * object_stream.N == 8
+        for obj in [pdf.Root, pdf.Root.Pages, page, page.Resources.Font.Helv]:
             entry = table[obj.objgen]
-            assert entry.type == 2 and pdf.get_object(entry.obj_stream_number, 0).Type == "/ObjStm"
+            assert entry.type == 2 and entry.obj_stream_number == object_stream.objgen[0]
+            index = entry.obj_stream_index
+            number, offset = header[2 * index:2 * index + 2]
+            assert (number, 0) == obj.objgen
+            assert decoded.startswith(f"<< /Type {obj.Type} ".encode(), object_stream.First + offset)
+            row = decoded_xref[number * 5:(number + 1) * 5]
+            assert row == b"\x02" + entry.obj_stream_number.to_bytes(2, "big") + index.to_bytes(2, "big")
+    text = subprocess.check_output(["pdftotext", corpus / "xref-stream-objstm.pdf", "-"])
+    assert text.decode().strip() == "Compressed page dictionary"
 
     for credentials in [{}, {"password": "wrong"}]:
         try:

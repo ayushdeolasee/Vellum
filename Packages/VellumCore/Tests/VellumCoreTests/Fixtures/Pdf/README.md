@@ -5,7 +5,7 @@ These six synthetic documents and their text and graphics are dedicated to the p
 | PDF | Source and expected contents |
 | --- | --- |
 | `classic-two-column.pdf` | `PdfFixtureBuilder.twoColumnPdf()`. One classic-xref page with no annotations. The stream alternates columns. The first visual row contains “Left column: Café” and “Right column: naïve”. |
-| `xref-stream-objstm.pdf` | `xrefStreamPdf()`. The final xref stream uses FlateDecode with PNG Up (predictor 12). Type-2 entries point to the catalog, page tree, page and font inside object stream 6. The page reads “Compressed page dictionary”. |
+| `xref-stream-objstm.pdf` | `xrefStreamPdf()`. The final xref stream uses FlateDecode with PNG Up (predictor 12). Type-2 entries point to the catalog, page tree, page and font inside FlateDecode object stream 6. Its 190 compressed bytes inflate to a 291-byte header and object body sequence. The page reads “Compressed page dictionary”. |
 | `rotated-all-angles.pdf` | `rotatedPdf()`. The four pages rotate 0°, 90°, 180° and 270° and inherit the crop box [24 36 576 744] inside a 612 × 792 media box. Before rotation the lower corners are red and green and the upper corners are blue and magenta, left to right. The marks have different sizes and insets. |
 | `foreign-annotations.pdf` | `foreignAnnotationsPdf()`. Self-authored examples of standard foreign markup. The raw slots are an indirect Highlight, null, a direct FreeText dictionary, and an indirect Link. All three annotations omit /NM. The FreeText ID should derive from slot 2 on page 1. |
 | `encrypted-user-pass.pdf` | The classic two-column original saved by pikepdf 10.18.2 (libqpdf 12.4.2) with revision 6 AES-256, user password `vellum`, owner password `fixture-owner`. Empty and incorrect passwords fail. |
