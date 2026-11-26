@@ -35,6 +35,12 @@ public enum PdfEditEligibility: Equatable, Sendable {
         }
     }
 
+    /// Prove the exact bytes about to be saved, including the last permitted
+    /// revision. A subsequent edit must still use classify for admission.
+    public static func validateOutput(_ candidate: Data) throws {
+        try inspect(candidate, reservingRevision: false)
+    }
+
     // The last provable revision can be saved and read. Classifying it for
     // another edit must report the limit before starting a new increment.
     static func inspect(_ data: Data, reservingRevision: Bool) throws {

@@ -574,6 +574,18 @@ public struct ClassicPdfFile {
     public var infoNumber: Int? { trailer.reference(forKey: "Info") }
 
     public init(data: Data) throws {
+        try self.init(data: data, forEditing: true)
+    }
+
+    /// Recover original metadata for a PDFKit rewrite. This returns only a
+    /// dictionary, so a read-only proof cannot be passed to an increment.
+    public static func infoForRecovery(in original: Data) throws -> PdfDictSource? {
+        let file = try ClassicPdfFile(data: original, forEditing: false)
+        if let number = file.infoNumber { return file.objectSource(number) }
+        return file.trailer.inlineDictionary(forKey: "Info").map(PdfDictSource.init)
+    }
+
+    private init(data: Data, forEditing: Bool) throws {
         self.data = data
         self.bytes = [UInt8](data)
 
@@ -607,7 +619,7 @@ public struct ClassicPdfFile {
                 newerSize = size
                 entries.merge(section.entries) { current, _ in current }
                 guard section.trailer.hasKey("Prev") else { break }
-                guard let previous = section.trailer.integer(forKey: "Prev"), previous < position else {
+                guard let previous = section.trailer.integer(forKey: "Prev") else {
                     throw PdfCoreError.invalidDocument("Failed to rewrite PDF: invalid cross-reference offset")
                 }
                 position = previous
@@ -616,7 +628,7 @@ public struct ClassicPdfFile {
                 // revision and use that exact object map for all subsequent reads.
                 guard data.count <= 128 * 1024 * 1024 else { throw PdfReadOnlyReason.inspectionLimit }
                 let structure = PdfClassicStructure(bytes: bytes)
-                try structure.inspect()
+                try structure.inspect(forEditing: forEditing)
                 guard structure.usesXrefStreams, let size = structure.latestTrailer.integer(forKey: "Size")
                 else { throw PdfReadOnlyReason.malformed }
                 self.size = size
@@ -895,7 +907,7 @@ public struct PdfIncrement {
     /// metadata or outline caller can publish the appended bytes.
     func checkedAppend(infoNumber: Int? = nil) throws -> Data {
         let bytes = appended(infoNumber: infoNumber)
-        if file.usesXrefStreams { try PdfEditEligibility.inspect(bytes, reservingRevision: false) }
+        if file.usesXrefStreams { try PdfEditEligibility.validateOutput(bytes) }
         return bytes
     }
 

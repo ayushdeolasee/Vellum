@@ -78,7 +78,7 @@ public enum PdfAnnotationIncrement {
         let output = increment.appended()
         // New caller-supplied IDs, object numbers and revision size must also
         // meet the same proof before a session may commit these bytes.
-        try PdfEditEligibility.inspect(output, reservingRevision: false)
+        try PdfEditEligibility.validateOutput(output)
         return output
     }
 
