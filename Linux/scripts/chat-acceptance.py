@@ -23,6 +23,7 @@ desktop = pyatspi.Registry.getDesktop(0)
 schema = Secret.Schema.new("com.vellum.Credential", Secret.SchemaFlags.NONE,
                            {"service": Secret.SchemaAttributeType.STRING, "account": Secret.SchemaAttributeType.STRING})
 provider = "gemini"
+started = threading.Event()
 finished = threading.Event()
 release = threading.Event()
 errors = []
@@ -104,6 +105,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(f"{len(part):x}\r\n".encode() + part + b"\r\n")
                 self.wfile.flush()
             emit(chunk)
+            started.set()
             if question in ("Switch?", "Stop?", "Reopen?", "Close?"):
                 self.connection.settimeout(12)
                 # A socket close is the evidence of transport cancellation.
@@ -172,15 +174,21 @@ def transcript():
 
 
 def send(question):
+    started.clear()
     finished.clear()
     release.clear()
     assert get("Question").queryEditableText().setTextContents(question)
     click("Send")
 
 
+def first_delta(question):
+    wait(lambda: started.is_set() and transcript().endswith(f"You\n{question}\n\nAssistant\nFirst café"),
+         "visible first delta for " + question)
+
+
 def reply(question):
     send(question)
-    wait(lambda: transcript().endswith("First café"), "live first delta")
+    first_delta(question)
     if writable and question == "Article?":
         # A peer appends while the provider is still streaming.
         peer = b',{"role":"assistant", "id":"peer","createdAt":"2026-11-26T10:00:00Z","content":"Other peer","extra":1.200}'
@@ -192,7 +200,7 @@ def reply(question):
     notice = "Saved history could not be read. " if damaged else ""
     destination = "New messages save to this library." if writable and not damaged else "New messages stay in this session."
     get(f"{notice}Send shares document text and recent chat with {title}. {destination}")
-    assert finished.is_set()
+    wait(finished.is_set, "provider finished the response")
 
 
 def select(label):
@@ -248,7 +256,7 @@ def exercise():
             if provider == "gemini":
                 capture("reader-chat.png")
                 send("Switch?")
-                wait(lambda: transcript().endswith("First café"), "midstream before selection")
+                first_delta("Switch?")
                 select("harbor.vellumweb")
                 wait(lambda: finished.is_set() and "Apple history" in transcript(), "switch cancels transport and loads archive")
                 assert "PDF?" not in transcript()
@@ -260,11 +268,11 @@ def exercise():
                 wait(lambda: "Switch?" in transcript(), "document-specific session")
                 assert "Apple history" not in transcript()
                 send("Stop?")
-                wait(lambda: transcript().endswith("First café"), "midstream before stop")
+                first_delta("Stop?")
                 click("Stop")
                 wait(lambda: finished.is_set() and has_status("Stopped."), "explicit stop")
                 send("Reopen?")
-                wait(lambda: transcript().endswith("First café"), "midstream before reopening library")
+                first_delta("Reopen?")
                 click("Settings")
                 click("Reopen")
                 wait(finished.is_set, "library reopen cancels transport")
@@ -278,7 +286,7 @@ def exercise():
                 wait(lambda: get("Send").getState().contains(pyatspi.STATE_SENSITIVE) and "Reopen?" in transcript(),
                      "returned to PDF")
                 send("Close?")
-                wait(lambda: transcript().endswith("First café"), "midstream before close")
+                first_delta("Close?")
             if provider == "opencodeGo":
                 subprocess.run(["gdbus", "call", "--session", "--dest", "org.freedesktop.secrets",
                                 "--object-path", "/org/freedesktop/secrets", "--method",
