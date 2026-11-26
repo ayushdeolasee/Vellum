@@ -1,6 +1,9 @@
 import Foundation
 import Testing
 import VellumCore
+#if canImport(ImageIO)
+import ImageIO
+#endif
 #if !SWIFT_PACKAGE
 @testable import Vellum
 #endif
@@ -17,7 +20,7 @@ struct PeerLibrary {
     static let meta = doc + "meta.json"
     static let imageName = "abc.png"
     static let imageLink = "![Image](attachments/\(imageName))"
-    static let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY1sAAAAASUVORK5CYII=")!
+    static let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAABEAAAALCAIAAAAWQvFQAAAAFElEQVR4nGNQKogjFTGM6hnVA0QAvTWvUWQMAeMAAAAASUVORK5CYII=")!
     static let capture = "Web Pages/Same Title.vellumweb"
     static let index = ".vellum/index.json"
     static let future: JSONValue = .object(["array": .array([.bool(true), .null, .int(17)])])
@@ -69,6 +72,46 @@ struct PeerLibrary {
             unknownFields: ["future_position": future])
     }
 
+    static let stagingPaths = [
+        ".vellum/index.json.tmp", ".vellum/documents/abc/scratchpad.md.tmp",
+        ".vellum/positions/.device.json.tmp-42-00000000-0000-4000-8000-000000000001",
+        "PDFs/.Paper.pdf.vellum-00000000-0000-4000-8000-000000000001.tmp",
+        ".vellum/cache/items", "Web Pages/.DS_Store"
+    ]
+
+    func prepareIgnore(_ peer: String) async throws {
+        let userRule = Data(("// private to " + peer + "\nlocal-" + peer + "\n").utf8)
+        try await write(".stignore", userRule)
+        let installed = try StignoreManager.ensure(at: root)
+        try #require(installed)
+        let bytes = try read(".stignore")
+        #expect(bytes.starts(with: userRule))
+        #expect(try !StignoreManager.ensure(at: root))
+        #expect(try read(".stignore") == bytes)
+    }
+
+    #if !SWIFT_PACKAGE
+    func removeOfflineImage() async throws {
+        let local = root.deletingLastPathComponent().appendingPathComponent("app-local/web", isDirectory: true)
+        let coordinator = StorageCoordinator(storeDir: local, modeProvider: { .syncedFolder },
+            syncedFolderRootResolver: { root }, conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        await coordinator.start()
+        do {
+            try #require(await coordinator.currentStatus().effectiveMode == .syncedFolder)
+            let before = try store.contents(of: url(Self.doc))
+            #expect(!before.contains { $0.url.lastPathComponent.contains("sync-conflict") })
+            let document = DocumentInfo(kind: .web, pdfPath: Self.address, title: "Fixture",
+                                        pageCount: 1, lastPage: 1, docId: Self.key.hash)
+            let saved = await ScratchpadPersistence.save(forKey: Self.key.hash, document: document,
+                schemeText: "Removed image", expectedBaseline: ScratchpadPersistence.relativeToScheme(Self.imageLink),
+                attachments: [], dirtyAttachmentNames: [], coordinator: coordinator)
+            try #require(saved == "Removed image")
+            #expect(try read(Self.doc + "attachments/" + Self.imageName) == Self.png)
+        } catch { await coordinator.stop(); throw error }
+        await coordinator.stop()
+    }
+    #endif
+
     func seed() async throws {
         var record = WebPageRecord(url: Self.address)
         record.unknownFields["future"] = Self.future
@@ -87,7 +130,12 @@ struct PeerLibrary {
         try await write(Self.record, JSONEncoder().encode(record))
         try await write(Self.messages, Self.messageBytes(["shared", peer]))
         let note = peer == "mac" ? "Removed image" : "Retained offline\n" + Self.imageLink
+        #if SWIFT_PACKAGE
         try await write(Self.note, Data(note.utf8))
+        #else
+        if peer == "mac" { try await removeOfflineImage() }
+        else { try await write(Self.note, Data(note.utf8)) }
+        #endif
         var meta = ["kind": "web", "last_known_path": Self.address + "/" + peer,
                     "last_opened": peer == "mac" ? "2026-02-01T00:00:00Z" : "2026-01-01T00:00:00Z",
                     "future_" + peer: peer] as [String: Any]
@@ -183,7 +231,13 @@ struct PeerLibrary {
         let notes = try versions(Self.note).map { String(decoding: $0, as: UTF8.self) }
         #expect(notes == ["Removed image", "Retained offline\n" + Self.imageLink])
         let retained = try #require(notes.last?.components(separatedBy: "](").last?.dropLast())
-        #expect(try read(Self.doc + retained) == Self.png)
+        let imageURL = url(Self.doc + retained)
+        #expect(try Data(contentsOf: imageURL) == Self.png)
+        #if canImport(ImageIO)
+        let source = try #require(CGImageSourceCreateWithURL(imageURL as CFURL, nil))
+        let pixels = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(pixels.width > 0 && pixels.height > 0)
+        #endif
         let archives = try versions(Self.capture).map { try ArchiveCodec.decode($0) }
         #expect(archives.map(\.manifest.canonicalUrl) == ["mac", "linux"].map { Self.address + "/" + $0 })
         #expect(archives.map(\.manifest.title) == ["Same Title", "Same Title"])
@@ -198,15 +252,30 @@ struct PeerLibrary {
     }
 }
 
-@Suite struct TwoPeerOfflineConflictTests {
+#if SWIFT_PACKAGE
+@Suite
+#else
+@Suite(.isolatedStorage)
+#endif
+struct TwoPeerOfflineConflictTests {
     @Test func concurrentEdits() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).standardizedFileURL
         defer { try? FileManager.default.removeItem(at: dir) }
         let a = PeerLibrary(root: dir.appendingPathComponent("a", isDirectory: true))
         let b = PeerLibrary(root: dir.appendingPathComponent("b", isDirectory: true))
         var transport = SyncthingSimulator(a: .init(id: "MACPEER", root: a.root), b: .init(id: "LNXPEER", root: b.root))
+        try await a.prepareIgnore("mac")
+        try await b.prepareIgnore("linux")
+        for path in PeerLibrary.stagingPaths { try await a.write(path, Data([42])) }
+        try await a.write(".vellum/documents/abc/attachments/real.tmp", Data([43]))
         try await a.seed()
         #expect(try await transport.sync().isEmpty)
+        for path in PeerLibrary.stagingPaths {
+            #expect(try await b.store.read(b.url(path)) == nil)
+            try await a.store.remove(a.url(path))
+        }
+        #expect(try b.read(".vellum/documents/abc/attachments/real.tmp") == Data([43]))
+        #expect(try a.read(".stignore") != b.read(".stignore"))
         try await a.edit("mac")
         try await b.edit("linux")
         #expect(try await transport.sync() == PeerLibrary.conflictingPaths)
