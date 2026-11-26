@@ -786,16 +786,13 @@ enum WebInkStore {
 
     /// Relocation keeps the newest whole canvas, including its deletions.
     static func relocationSnapshot(current: WebInkRecord, incoming: WebInkRecord) throws -> WebInkRecord {
-        var result = WebArchive.newerThan(incoming.updatedAt, current.updatedAt) ? incoming : current
-        let other = WebArchive.newerThan(incoming.updatedAt, current.updatedAt) ? current : incoming
-        // Relocation still selects the newer whole canvas. Carry older erases
-        // without importing strokes absent from the selected snapshot.
-        var erases = other.history
-        erases.restored = [:]
-        erases.updated = [:]
-        result.history.formUnion(erases)
-        try discardDeleted(from: &result)
+        let incomingWins = WebArchive.newerThan(incoming.updatedAt, current.updatedAt)
+        var result = incomingWins ? incoming : current
+        let other = incomingWins ? current : incoming
+        // Resolve each erase with its own generation's undo before filtering
+        // the winning canvas. The other location contributes no geometry.
         result.history.formUnion(other.history)
+        try discardDeleted(from: &result)
         carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
         return result
     }

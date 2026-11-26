@@ -364,6 +364,53 @@ final class PortableInkReaderTests: XCTestCase {
         }
     }
 
+    func testRelocationKeepsWinnerGeometryAfterOtherLocationUndoesErase() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.ink.json")
+        let destination = root.appendingPathComponent("destination.ink.json")
+        func relocate(current: WebInkRecord, incoming: WebInkRecord) throws -> WebInkRecord {
+            try WebInkStore.writeRecord(current, to: destination)
+            try WebInkStore.writeRecord(incoming, to: source)
+            XCTAssertTrue(WebInkStore.adoptInkFile(from: source, to: destination))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+            return try XCTUnwrap(WebInkStore.loadRecord(at: destination))
+        }
+
+        var restored = try webRecord(dual: true)
+        let wire = try XCTUnwrap(restored.clusters[0].strokes?.first)
+        var winner = restored
+        winner.updatedAt = "2026-01-06T00:00:00Z"
+        winner.clusters[0].bounds.x += 40
+        restored.updatedAt = "2026-01-05T00:00:00Z"
+        restored.history.deleted[wire.id] = "2026-01-01T00:00:00Z"
+        restored.history.restored[wire.id] = "2026-01-04T00:00:00Z"
+        restored.history.nativeIDs[wire.id] = wire.rawPathID
+        restored.history.updated[wire.id] = restored.updatedAt
+
+        // Both copies contain the stroke. The winner never observed the erase.
+        for (current, incoming) in [(winner, restored), (restored, winner)] {
+            let relocated = try relocate(current: current, incoming: incoming)
+            XCTAssertEqual(relocated.clusters, winner.clusters)
+            XCTAssertEqual(relocated.history, restored.history)
+        }
+        var emptyWinner = winner
+        emptyWinner.clusters = []
+        let empty = try relocate(current: emptyWinner, incoming: restored)
+        XCTAssertTrue(empty.clusters.isEmpty)
+        XCTAssertEqual(empty.history, restored.history)
+
+        // The undo's clock is ahead of a different erase, but it only saw the first generation.
+        winner.history = restored.history
+        var laterErase = restored
+        laterErase.clusters = []
+        laterErase.history.deleted[wire.id] = "2026-01-03T00:00:00Z"
+        laterErase.history.restored.removeValue(forKey: wire.id)
+        let erased = try relocate(current: winner, incoming: laterErase)
+        XCTAssertTrue(erased.clusters.isEmpty)
+        XCTAssertEqual(erased.history, laterErase.history)
+    }
+
     func testImportChoosesWholeMaskAndCarriesNestedFieldsThroughSplit() throws {
         var older = try webRecord()
         let masked = try JSONDecoder().decode(PortableStroke.self, from: fixture("partial-stroke", "json", in: "Ink"))
