@@ -6,6 +6,7 @@ import VellumCore
 /// An open library directory. Moving or replacing its name does not redirect the reader.
 public final class RootDirectory: Sendable {
     public let url: URL
+    public let identity: String
     private let components: [String]
     private let descriptor: Int32
 
@@ -14,11 +15,19 @@ public final class RootDirectory: Sendable {
         return try await LibraryIO.run { _ in
             let fd = library_open_root("/" + components.joined(separator: "/"))
             guard fd >= 0 else { throw fileError(errno, at: url) }
-            return RootDirectory(url: url, components: components, descriptor: fd)
+            var info = stat()
+            guard fstat(fd, &info) == 0 else {
+                let error = fileError(errno, at: url)
+                _ = close(fd)
+                throw error
+            }
+            return RootDirectory(url: url, components: components, descriptor: fd,
+                                 identity: "\(info.st_dev)-\(info.st_ino)")
         }
     }
 
-    private init(url: URL, components: [String], descriptor: Int32) {
+    private init(url: URL, components: [String], descriptor: Int32, identity: String) {
+        self.identity = identity
         self.url = url
         self.components = components
         self.descriptor = descriptor
@@ -55,6 +64,27 @@ public final class RootDirectory: Sendable {
         else { throw LibraryFileError.outsideAllowedRoot(url) }
         let relative = path.dropFirst(components.count)
         return relative.isEmpty ? "." : relative.joined(separator: "/")
+    }
+
+    func replace(_ url: URL, with data: Data, ifCurrent expected: Data?, limit: Int) async throws -> Bool {
+        let relative = try relativePath(to: url)
+        guard relative != ".", !url.hasDirectoryPath else { throw LibraryFileError.outsideAllowedRoot(url) }
+        let parts = relative.split(separator: "/")
+        let parent = parts.dropLast().joined(separator: "/")
+        let leaf = String(parts.last!)
+        guard data.count <= limit, (expected?.count ?? 0) <= limit else { throw ReaderFileError.fileTooLarge }
+        return try await LibraryIO.run { [self] _ in
+            let fd = withExtendedLifetime(self) {
+                library_parent(descriptor, parent.isEmpty ? "." : parent, expected == nil ? 1 : 0)
+            }
+            guard fd >= 0 else {
+                if errno == ENOENT { return false }
+                throw Self.fileError(errno, at: url)
+            }
+            defer { _ = close(fd) }
+            return try LocalFolderFileStore.replace(in: fd, name: leaf, with: data,
+                                                    ifCurrent: expected, limit: limit)
+        }
     }
 
     func readRegularFile(_ url: URL, byteLimit: Int) async throws -> Data? {

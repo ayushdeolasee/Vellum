@@ -16,16 +16,20 @@ let package = Package(
         .target(name: "CPdfiumJob", dependencies: ["CPdfium"], linkerSettings: [.linkedLibrary("m")]),
         .systemLibrary(name: "CSecret", pkgConfig: "libsecret-1", providers: [.apt(["libsecret-1-dev"])]),
         .target(name: "LinuxServices",
-                dependencies: ["CSecret", .product(name: "VellumCore", package: "VellumCore"),
+                dependencies: ["CSecret", .product(name: "VellumCore", package: "VellumCore")],
+                swiftSettings: [.swiftLanguageMode(.v5)]),
+        .target(name: "LinuxHTTP",
+                dependencies: [.product(name: "VellumCore", package: "VellumCore"),
                                .product(name: "AsyncHTTPClient", package: "async-http-client")],
                 swiftSettings: [.swiftLanguageMode(.v5)]),
-        .testTarget(name: "LinuxServicesTests", dependencies: ["LinuxServices"]),
+        .testTarget(name: "LinuxServicesTests", dependencies: ["LinuxServices", "LinuxHTTP"]),
         .target(name: "LinuxReader",
                 dependencies: ["CPdfiumJob", "CShell", .product(name: "VellumCore", package: "VellumCore")],
                 swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "LinuxReaderTests", dependencies: ["LinuxReader"]),
         .executableTarget(name: "VellumLinux",
-                          dependencies: ["CShell", "LinuxReader", .product(name: "VellumCore", package: "VellumCore")],
+                          dependencies: ["CShell", "LinuxReader", "LinuxServices",
+                                         .product(name: "VellumCore", package: "VellumCore")],
                           swiftSettings: [.swiftLanguageMode(.v5)])
     ]
 )

@@ -145,7 +145,7 @@ public enum StignoreManager {
         return Snapshot(bytes: bytes, info: after)
     }
 
-    private static func render(_ original: Data) throws -> Data {
+    public static func render(_ original: Data) throws -> Data {
         let bom: [UInt8] = [0xef, 0xbb, 0xbf]
         let contentStart = original.starts(with: bom) ? bom.count : original.startIndex
         var start: Int?
