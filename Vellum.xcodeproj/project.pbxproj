@@ -563,6 +563,7 @@
 		B2D1BA290BFA82E3F231FFCB /* HomeDropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 561F3C626CFABE5272246F4A /* HomeDropTests.swift */; };
 		B308C89B1D5065203951DFE7 /* CaptureInboxLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 727E2F4BE67C51B47AAFB570 /* CaptureInboxLayout.swift */; };
 		B325508C2DB7E97DB2C02889 /* RetentionLedgerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C47DC45229291BFD95CEC006 /* RetentionLedgerTests.swift */; };
+		B36BC561B3F1F492D4E02B21 /* ScratchpadAttachmentCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32541AECB3186EE688451632 /* ScratchpadAttachmentCleanup.swift */; };
 		B370CC64C56C8E29DC8A4C42 /* WebStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF653B1B8741B61DBE9B55EE /* WebStorage.swift */; };
 		B3DA8203EC8840A14F4D6AFD /* StorageRelocationInventoryReloadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7968C20D5E48A1B564CD3A45 /* StorageRelocationInventoryReloadPolicy.swift */; };
 		B3E44891A8E2A43F2685347A /* DocumentAccessBookmarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5DD549A406B0F92F0CC6B8 /* DocumentAccessBookmarkStoreTests.swift */; };
@@ -590,6 +591,7 @@
 		BD8F105AAF25C4D1EE4037FC /* StorageLocationCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72276AEF5468523548FD8BB7 /* StorageLocationCopy.swift */; };
 		BD900255324258F9AB01B1B4 /* DocumentPositionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0727CBE4A1E17381964FFF5C /* DocumentPositionService.swift */; };
 		BDCA776FEABD1AA03677E0CF /* StorageHousekeeping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */; };
+		BE9C05A19AD9667D1FD7AEFE /* ScratchpadAttachmentCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32541AECB3186EE688451632 /* ScratchpadAttachmentCleanup.swift */; };
 		BEADF6098AC6C592A53810F2 /* TabResidencyBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD7C72856A02537E63E6CC4 /* TabResidencyBudgetTests.swift */; };
 		BED26752A59B776BB3E5CCC8 /* WebInkOverlay_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93537C94A45F51BE5F91DF3B /* WebInkOverlay_iOS.swift */; };
 		BEEE0A40A34EFCD976777E4D /* Controls.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2630E8BE36D65B9E485FD6F /* Controls.swift */; };
@@ -943,6 +945,7 @@
 		3180FE94F812DBF0B9C91ED5 /* KaTeX_Size1-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size1-Regular.woff2"; sourceTree = "<group>"; };
 		31A8106FCE25E9DAFD04367D /* MoveToCollectionMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveToCollectionMenu.swift; sourceTree = "<group>"; };
 		323AC3C2D15E23D95BE3A6E0 /* RaindropClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaindropClientTests.swift; sourceTree = "<group>"; };
+		32541AECB3186EE688451632 /* ScratchpadAttachmentCleanup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadAttachmentCleanup.swift; sourceTree = "<group>"; };
 		327F0E350D7D13A26878EB77 /* AiConversationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiConversationStoreTests.swift; sourceTree = "<group>"; };
 		3327FE5E7C3DE48E4B9479B8 /* PdfKitView_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfKitView_iOS.swift; sourceTree = "<group>"; };
 		338949714215E58B03C6B359 /* Vellum-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Vellum-iOS.entitlements"; sourceTree = "<group>"; };
@@ -2162,6 +2165,7 @@
 		F271A96845AFED2A54F2E5E3 /* Scratchpad */ = {
 			isa = PBXGroup;
 			children = (
+				32541AECB3186EE688451632 /* ScratchpadAttachmentCleanup.swift */,
 				814A8BA159D87FCEEA80B3B3 /* ScratchpadMarkdownExporter.swift */,
 				287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */,
 			);
@@ -2767,6 +2771,7 @@
 				EC924D21D1EF72BBECC0E64E /* RuntimeProfile.swift in Sources */,
 				E4CE1738795B94F8EBF84502 /* ScratchOutInk_iOS.swift in Sources */,
 				0140E7EB39BCE9CA91C1D1B4 /* ScratchOutRecognizer.swift in Sources */,
+				B36BC561B3F1F492D4E02B21 /* ScratchpadAttachmentCleanup.swift in Sources */,
 				E2B8207D7A7660B264FEC83E /* ScratchpadDrop_macOS.swift in Sources */,
 				E481A5799E9ACBC37BDCAF1E /* ScratchpadMarkdownExporter.swift in Sources */,
 				4490E12B60BFEB870801E2E3 /* ScratchpadMarkdownStyler_iOS.swift in Sources */,
@@ -3106,6 +3111,7 @@
 				B86935749867E512F08FB9C5 /* RuntimeProfile.swift in Sources */,
 				D4E3F592FB25D9F7BBE0B010 /* ScratchOutInk_iOS.swift in Sources */,
 				13BB407EB986D9510A89DBB9 /* ScratchOutRecognizer.swift in Sources */,
+				BE9C05A19AD9667D1FD7AEFE /* ScratchpadAttachmentCleanup.swift in Sources */,
 				D60910465B35CE134EBAF4A5 /* ScratchpadDrop_macOS.swift in Sources */,
 				C8231E85A8CE98CFF5596DF5 /* ScratchpadMarkdownExporter.swift in Sources */,
 				21F27DC2CC8F713F429C2E04 /* ScratchpadMarkdownStyler_iOS.swift in Sources */,
