@@ -118,7 +118,11 @@ struct SyncedFolderStorageTests {
                 conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
             await coordinator.start()
             do {
-                #expect(await coordinator.currentStatus().effectiveMode == .syncedFolder)
+                let active = await coordinator.currentStatus()
+                #expect(active.effectiveMode == .syncedFolder)
+                #expect(active.activeSharedFolderRoot == shared)
+                #expect(StorageLocationCopy.sharedFolderFooter(status: active, deviceName: "Mac")
+                    .contains("shared library storage"))
                 let ignoreBytes = try Data(contentsOf: ignoreFile)
                 #expect(ignoreBytes.starts(with: userRules))
                 #expect(ignoreBytes.range(of: Data("// BEGIN VELLUM MANAGED".utf8)) != nil)
@@ -131,6 +135,14 @@ struct SyncedFolderStorageTests {
                 #expect(try Data(contentsOf: archived.archiveURL) == Data([2]))
                 #expect(try Data(contentsOf: canonical) == Data([1]))
                 #expect(!fm.fileExists(atPath: sibling.path))
+
+                try fm.removeItem(at: shared)
+                await coordinator.foreground()
+                let fallback = await coordinator.currentStatus()
+                #expect(fallback.activeSharedFolderRoot == nil)
+                #expect(fallback.availability == .degradedToLocal(.syncedFolderUnavailable))
+                #expect(StorageLocationCopy.sharedFolderFooter(status: fallback, deviceName: "Mac")
+                    .contains("private local storage"))
             } catch { await coordinator.stop(); throw error }
             await coordinator.stop()
         }

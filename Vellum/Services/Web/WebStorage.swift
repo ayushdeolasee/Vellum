@@ -136,16 +136,23 @@ enum WebStorageSettings {
 
     private static func resolveSyncedFolderRoot(selection: (path: String?, bookmark: Data?)) -> URL? {
         #if os(macOS)
+        let root: URL
         if let bookmark = selection.bookmark,
            let url = resolveBookmark(bookmark, allowUI: false, refresh: nil) {
-            return url
+            root = url
+        } else if let path = selection.path, !path.isEmpty {
+            root = URL(fileURLWithPath: path, isDirectory: true)
+        } else {
+            return nil
         }
-        guard let path = selection.path, !path.isEmpty else { return nil }
-        let url = URL(fileURLWithPath: path, isDirectory: true)
+        let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else { return nil }
-        return url
+        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              fileManager.isReadableFile(atPath: root.path),
+              fileManager.isWritableFile(atPath: root.path),
+              fileManager.isExecutableFile(atPath: root.path) else { return nil }
+        return root
         #else
         return nil
         #endif

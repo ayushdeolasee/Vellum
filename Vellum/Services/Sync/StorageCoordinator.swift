@@ -24,6 +24,7 @@ actor StorageCoordinator {
         case iCloudUnavailable
         case customFolderUnavailable
         case syncedFolderUnavailable
+        case syncedFolderSyncDisabled
         case syncedFolderBackendUnavailable
         case coordinatorStopped
     }
@@ -48,6 +49,7 @@ actor StorageCoordinator {
         var effectiveMode: WebStorageMode
         var lifecycle: Lifecycle
         var availability: Availability
+        var activeSharedFolderRoot: URL?
         var acceptsCoordinatedOperations: Bool
         var pendingConflicts: Int
         var inFlightConflicts: Int
@@ -707,8 +709,10 @@ actor StorageCoordinator {
                     availability: .degradedToLocal(.iCloudUnavailable))
             }
         case .syncedFolder:
-            guard RuntimeProfile.current.syncEnabled,
-                  let root = await syncedFolderRootResolver() else {
+            guard RuntimeProfile.current.syncEnabled else {
+                return syncedFolderFallback(reason: .syncedFolderSyncDisabled)
+            }
+            guard let root = await syncedFolderRootResolver() else {
                 return syncedFolderFallback(reason: .syncedFolderUnavailable)
             }
             let layout = WebStorageLayout.syncedFolder(root: root)
@@ -1375,6 +1379,8 @@ actor StorageCoordinator {
             effectiveMode: effectiveMode,
             lifecycle: lifecycle,
             availability: availability,
+            activeSharedFolderRoot: effectiveMode == .syncedFolder && availability == .coordinated
+                ? layout.rootDir : nil,
             acceptsCoordinatedOperations: acceptsCoordinatedOperations,
             pendingConflicts: pendingConflicts.count,
             inFlightConflicts: inFlightConflict == nil ? 0 : 1,
