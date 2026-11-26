@@ -19,7 +19,7 @@ extension LocalFolderFileStore {
         // from the size of a peer file. Keep the existing file's permission bits.
         var mode: mode_t = 0o600
         func matches(_ leaf: String, _ bytes: Data?) throws -> Bool {
-            let fd = openat(directory, leaf, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+            let fd = vellum_open_beneath(directory, leaf, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_NOCTTY)
             guard fd >= 0 else {
                 if errno == ENOENT { return bytes == nil }
                 throw error()
@@ -75,7 +75,7 @@ extension LocalFolderFileStore {
             for: URL(fileURLWithPath: "/").appendingPathComponent(name),
             version: ConflictVersion(id: UUID().uuidString))
         guard mkdirat(directory, "conflicts", 0o700) == 0 || errno == EEXIST else { throw error() }
-        let archive = vellum_open_subdirectory(directory, "conflicts")
+        let archive = vellum_open_beneath(directory, "conflicts", O_DIRECTORY | O_RDONLY)
         guard archive >= 0 else { throw error() }
         defer { _ = close(archive) }
         let archived = vellum_rename_at(directory, temp, archive, recovery.lastPathComponent, 0)

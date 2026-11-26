@@ -166,12 +166,16 @@ final class ReaderController {
     private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
         guard !closing, transition == nil else { return }
         let pendingChat = chat.drain(reader_chat_panel(window))
-        if pendingChat == nil && positionSession == nil && (!flushDrafts || scratchpad == nil) { proceed(); return }
+        if pendingChat == nil && positionSession == nil && scratchpad?.pendingSave == nil && (!flushDrafts || scratchpad == nil) {
+            proceed()
+            return
+        }
         reader_set_close_pending(window, true)
         let rendering = work
         transition = Task {
             await rendering?.value
             do {
+                await scratchpad?.pendingSave?.value
                 if await pendingChat?.value == false { throw LibraryFileError.retryable }
                 try await flushPosition()
                 if flushDrafts, await scratchpad?.flush() == false {
