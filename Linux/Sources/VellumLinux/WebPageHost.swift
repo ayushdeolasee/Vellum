@@ -17,7 +17,15 @@ final class WebPageHost {
 
     private static func script(restoring position: ReadingPosition?) -> String {
         // JSONEncoder quotes all peer-provided strings before they enter this isolated world.
-        let saved = position.flatMap { try? JSONEncoder().encode($0) }
+        // Imported positions may have forward fields or very large anchors. Only
+        // send bounded, known values into the web process.
+        let bounded = position.map {
+            ReadingPosition(page: $0.page, scrollFraction: $0.scrollFraction,
+                            anchorPrefix: $0.anchorPrefix.flatMap { $0.utf8.count <= 1024 ? $0 : nil },
+                            anchorSuffix: $0.anchorSuffix.flatMap { $0.utf8.count <= 1024 ? $0 : nil },
+                            viewportOffset: $0.viewportOffset)
+        }
+        let saved = bounded.flatMap { try? JSONEncoder().encode($0) }
             .flatMap { String(data: $0, encoding: .utf8) } ?? "null"
         return """
         addEventListener('load', () => {
@@ -27,8 +35,10 @@ final class WebPageHost {
                 if (!saved) return;
                 const prefix = saved.anchor_prefix ?? '', suffix = saved.anchor_suffix ?? '';
                 const quote = prefix + suffix;
+                const target = extent() * (saved.scroll_fraction ?? 0);
                 if (quote) {
                     const nodes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                    let nearest = null;
                     for (let i = 0, node; i < 50000 && (node = nodes.nextNode()); i++) {
                         const start = node.data.indexOf(quote);
                         if (start < 0) continue;
@@ -37,11 +47,12 @@ final class WebPageHost {
                         range.collapse(true);
                         const rect = range.getBoundingClientRect();
                         if (!rect.height) continue;
-                        scrollBy(0, rect.top - (saved.viewport_offset ?? 0));
-                        return;
+                        const y = scrollY + rect.top - (saved.viewport_offset ?? 0);
+                        if (nearest === null || Math.abs(y - target) < Math.abs(nearest - target)) nearest = y;
                     }
+                    if (nearest !== null) { scrollTo(0, nearest); return; }
                 }
-                scrollTo(0, extent() * (saved.scroll_fraction ?? 0));
+                scrollTo(0, target);
             }
             window.vellumLocation = () => {
                 if (!innerHeight) return null;
