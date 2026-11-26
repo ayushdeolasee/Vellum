@@ -142,9 +142,10 @@ struct PeerLibrary {
         meta["version"] = 1
         if peer == "linux" { meta["title"] = "Retained title" }
         try await write(Self.meta, JSONSerialization.data(withJSONObject: meta))
-        try await write(Self.capture, Self.archive(peer))
+        let catalog = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher()).webArchives
         let captureKey = DocumentKey.web(normalizedURL: Self.address + "/" + peer)
-        try await write(Self.index, JSONSerialization.data(withJSONObject: ["version": 1, "entries": [captureKey.hash: "Same Title.vellumweb"]]))
+        let saved = try await catalog.save(Self.archive(peer), forKey: captureKey.hash)
+        #expect(saved == url(Self.capture))
         try await positions.write(Self.position(peer))
         // Explicit, distinct mtimes let the real daemon and simulator agree on winner.
         for file in Self.conflictingPaths {
@@ -177,19 +178,21 @@ struct PeerLibrary {
     // The Mac app injects its typed policies. Portable peers ship the Core preserve policy.
     func recover() async throws {
         #if SWIFT_PACKAGE
-        let container = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher())
+        let container = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher(),
+                                               rescanInterval: .milliseconds(80))
         #else
         let container = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher(),
-                                               merge: ConflictMerge.decide)
+                                               rescanInterval: .milliseconds(80), merge: ConflictMerge.decide)
         #endif
         await container.resume()
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
                     var pending = Set(Self.conflictingPaths.map { url($0) })
-                    for await event in container.conflicts where pending.remove(event.url) != nil {
+                    for await event in container.conflicts where pending.contains(event.url) {
                         let outcome = try await container.resolveConflict(event)
-                        try #require(outcome != .deferred)
+                        guard outcome != .deferred else { continue }
+                        pending.remove(event.url)
                         if pending.isEmpty { return }
                     }
                     throw CocoaError(.fileReadUnknown)
@@ -238,10 +241,22 @@ struct PeerLibrary {
         let pixels = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
         #expect(pixels.width > 0 && pixels.height > 0)
         #endif
-        let archives = try versions(Self.capture).map { try ArchiveCodec.decode($0) }
-        #expect(archives.map(\.manifest.canonicalUrl) == ["mac", "linux"].map { Self.address + "/" + $0 })
-        #expect(archives.map(\.manifest.title) == ["Same Title", "Same Title"])
-        #expect(archives.map { $0.annotations.map(\.id) } == [["mac"], ["linux"]])
+        let index = try JSONDecoder().decode(WebArchiveIndexContents.self, from: read(Self.index))
+        let keys = ["mac", "linux"].map { DocumentKey.web(normalizedURL: Self.address + "/" + $0).hash }.sorted()
+        let expectedNames = [keys[0]: "Same Title.vellumweb", keys[1]: "Same Title (\(keys[1].prefix(6))).vellumweb"]
+        #expect(index.entries == expectedNames)
+        let catalog = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher()).webArchives
+        for peer in ["mac", "linux"] {
+            let address = Self.address + "/" + peer
+            let key = DocumentKey.web(normalizedURL: address).hash
+            let found = try #require(try await catalog.lookup(forKey: key))
+            #expect(found.name == expectedNames[key])
+            #expect(found.bytes == (try read("Web Pages/" + found.name)))
+            let capture = try ArchiveCodec.decode(found.bytes)
+            #expect(capture.manifest.canonicalUrl == address && capture.manifest.title == "Same Title")
+            #expect(capture.annotations.map(\.id) == [peer])
+            #expect(capture.snapshotHtml == "<html>\(peer)</html>")
+        }
         #if !SWIFT_PACKAGE
         let merged = try JSONDecoder().decode(DocumentDataStore.Meta.self, from: read(Self.meta))
         #expect(merged.lastKnownPath == Self.address + "/mac")
