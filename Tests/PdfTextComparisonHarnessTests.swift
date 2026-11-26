@@ -13,13 +13,16 @@ final class PdfTextComparisonHarnessTests: XCTestCase {
         let output = ProcessInfo.processInfo.environment["VELLUM_PDF_TEXT_GOLDEN_OUTPUT"]
             .map { URL(fileURLWithPath: $0, isDirectory: true) }
 
-        let mismatches = try await Task.detached {
-            try await Self.generateOrCompare(pdfs: bundledPdf, goldens: bundledGolden, output: output)
-        }.value
+        let mismatches = try await PdfTextReferenceRunner.generateOrCompare(
+            pdfs: bundledPdf, goldens: bundledGolden, output: output)
         XCTAssertEqual(mismatches, [], "Sources or PDFKit references changed")
     }
+}
 
-    private static func generateOrCompare(pdfs: URL, goldens: URL, output: URL?) async throws -> [String] {
+private enum PdfTextReferenceRunner {
+    @concurrent
+    static func generateOrCompare(pdfs: URL, goldens: URL, output: URL?) async throws -> [String] {
+        dispatchPrecondition(condition: .notOnQueue(.main))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let names = [
