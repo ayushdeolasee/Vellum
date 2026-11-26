@@ -64,6 +64,26 @@ final class WebInkPersistenceTests: XCTestCase {
 
     // MARK: - Record round-trip + wire format
 
+    func testSharedIPadWebInkFixture() throws {
+        let bundle = Bundle(for: WebInkPersistenceTests.self)
+        let pageURL = try XCTUnwrap(bundle.url(forResource: "web-ink-v3.page", withExtension: "json", subdirectory: "Web"))
+        let inkURL = try XCTUnwrap(bundle.url(forResource: "web-ink-v3.ink", withExtension: "json", subdirectory: "Web"))
+        let page = try XCTUnwrap(WebLibrary.loadRecord(at: pageURL))
+        let ink = try XCTUnwrap(WebInkStore.loadRecord(at: inkURL))
+        XCTAssertTrue(page.saved)
+        XCTAssertEqual(page.url, "https://fixture.test/article")
+        XCTAssertEqual(ink.url, page.url)
+        XCTAssertEqual(ink.version, 3)
+        XCTAssertEqual(ink.clusters.count, 1)
+        let cluster = try XCTUnwrap(ink.clusters.first)
+        XCTAssertFalse(try XCTUnwrap(cluster.anchor?.text).isEmpty)
+        XCTAssertEqual(try PKDrawing(data: cluster.drawing).strokes.count, 1)
+        let restored = try ink.validatedMergedDrawing()
+        XCTAssertEqual(restored.strokes.count, 1)
+        XCTAssertEqual(restored.bounds.minY, cluster.bounds.y, accuracy: 0.5)
+        XCTAssertEqual(restored.bounds.minX, cluster.bounds.x, accuracy: 0.5)
+    }
+
     func testRecordRoundTripAndWireFormat() throws {
         let drawing = sampleDrawing()
         let record = WebInkRecord.snapshot(

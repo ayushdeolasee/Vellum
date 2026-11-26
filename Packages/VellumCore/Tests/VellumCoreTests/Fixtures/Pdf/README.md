@@ -1,0 +1,28 @@
+# Non-ink PDF fixtures
+
+These six synthetic documents and their text and graphics are dedicated to the public domain under CC0 1.0. All six fit in 13 KB combined. Coordinates below are PDF points. The Swift inputs use the standard Helvetica font and include no external assets.
+
+| PDF | Source and expected contents |
+| --- | --- |
+| `classic-two-column.pdf` | `PdfFixtureBuilder.twoColumnPdf()`. One classic-xref page with no annotations. The stream alternates columns. The first visual row contains “Left column: Café” and “Right column: naïve”. |
+| `xref-stream-objstm.pdf` | `xrefStreamPdf()`. The final xref stream uses FlateDecode with PNG Up (predictor 12). Type-2 entries point to the catalog, page tree, page and font inside FlateDecode object stream 6. Its 190 compressed bytes inflate to a 291-byte header and object body sequence. The page reads “Compressed page dictionary”. |
+| `rotated-all-angles.pdf` | `rotatedPdf()`. The four pages rotate 0°, 90°, 180° and 270° and inherit the crop box [24 36 576 744] inside a 612 × 792 media box. Before rotation the lower corners are red and green and the upper corners are blue and magenta, left to right. The marks have different sizes and insets. |
+| `foreign-annotations.pdf` | `foreignAnnotationsPdf()`. Self-authored examples of standard foreign markup. The raw slots are an indirect Highlight, null, a direct FreeText dictionary, and an indirect Link. All three annotations omit /NM. The FreeText ID should derive from slot 2 on page 1. |
+| `encrypted-user-pass.pdf` | The classic two-column original saved by pikepdf 10.18.2 (libqpdf 12.4.2) with revision 6 AES-256, user password `vellum`, owner password `fixture-owner`. Empty and incorrect passwords fail. |
+| `digitally-signed.pdf` | The classic two-column original incrementally signed by pyHanko 0.38.2. The invisible `FixtureSignature` field uses /SigFlags 3 and a detached SHA-256 CMS signature covering the full file except /Contents. OpenSSL generated the disposable self-signed RSA-2048 certificate with CN “Vellum Fixture Signer”. The private key was discarded. |
+
+## Reproduction and validation
+
+The four Swift factories produce the checked-in bytes on every run. The encrypted and signed samples are fixed test inputs. Regenerating them introduces fresh encryption randomness or a new signing identity.
+
+To recreate encryption, open the classic PDF with pikepdf and call `pdf.save(output, encryption=pikepdf.Encryption(owner="fixture-owner", user="vellum", R=6))`. For a new signature, use a throwaway directory and key, then run the following commands against the classic PDF.
+
+```sh
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
+  -subj '/CN=Vellum Fixture Signer' -keyout disposable.pem -out certificate.pem
+pyhanko sign addsig --field FixtureSignature pemder --no-pass \
+  --key disposable.pem --cert certificate.pem classic-two-column.pdf digitally-signed.pdf
+rm disposable.pem
+```
+
+From the repository root, run `uv run tools/pdf-fixtures/validate.py` with Poppler and OpenSSL on PATH. It parses PDF objects with libqpdf recovery disabled, checks the detached signature against the actual byte ranges and samples the corner colors from all four rendered pages. `PdfFixturesSanityTests` compares the bundled bytes with the Swift factories and opens the fixtures in PDFKit on Apple platforms.
