@@ -137,6 +137,22 @@ struct FolderSyncedContainerTests {
         }
     }
 
+    #if os(macOS)
+    @Test("The selected /private/tmp spelling supports a missing record and its subsequent read")
+    func firstWriteUnderPrivateTmp() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = LocalFolderFileStore(root: root)
+        let record = root.appendingPathComponent(".vellum/records/first.json")
+        try await store.replace(record, with: winner)
+        #expect(try Data(contentsOf: record) == winner)
+        #expect(try await store.read(record) == winner)
+    }
+    #endif
+
     @Test("Only one competing compare-and-replace succeeds across backend instances")
     func competingWrites() async throws {
         try await fixture { root, first in

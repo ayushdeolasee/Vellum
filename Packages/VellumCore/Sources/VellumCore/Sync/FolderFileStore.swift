@@ -28,29 +28,43 @@ public struct FolderEntry: Sendable {
 public struct LocalFolderFileStore: FolderFileStore {
     public let isCoordinated = false
     private let root: URL
+    private let selectedRootComponents: [String]
     private var fm: FileManager { .default }
     // Shared across instances, bounded even for a long-running library.
     private static let locks = (0..<64).map { _ in NSLock() }
 
     public init(root: URL) {
         self.root = root.standardizedFileURL
+        selectedRootComponents = root.pathComponents
     }
 
     private func checked(_ url: URL, allowRoot: Bool = false) throws -> URL {
         let candidate = url.standardizedFileURL
         let parts = candidate.pathComponents
         let base = root.pathComponents
-        guard url.isFileURL, parts.starts(with: base), allowRoot || parts.count > base.count else {
+        let relative: ArraySlice<String>
+        if parts.starts(with: base) {
+            relative = parts.dropFirst(base.count)
+        } else if parts == url.pathComponents,
+                  parts.starts(with: selectedRootComponents, by: { $0.utf8.elementsEqual($1.utf8) }) {
+            // Darwin can shorten an existing /private/tmp root to /tmp while
+            // leaving its missing child untouched. Rebase only a literal child
+            // of the supplied root; never resolve a link to establish ancestry.
+            relative = parts.dropFirst(selectedRootComponents.count)
+        } else {
+            throw LibraryFileError.outsideAllowedRoot(url)
+        }
+        guard url.isFileURL, allowRoot || !relative.isEmpty else {
             throw LibraryFileError.outsideAllowedRoot(url)
         }
         var cursor = root
-        for component in [""] + Array(parts.dropFirst(base.count)) {
+        for component in [""] + relative {
             if !component.isEmpty { cursor.appendPathComponent(component) }
             if (try? fm.destinationOfSymbolicLink(atPath: cursor.path)) != nil {
                 throw LibraryFileError.symbolicLink(cursor)
             }
         }
-        return candidate
+        return cursor
     }
 
     private func lock(for url: URL) -> NSLock {
