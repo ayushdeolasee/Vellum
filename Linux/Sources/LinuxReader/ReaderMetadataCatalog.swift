@@ -2,6 +2,7 @@ import Foundation
 import VellumCore
 
 public struct ReaderDocumentMetadata: Sendable {
+    public let storageKey: String?
     public let displayTitle: String
     /// One-based. Legacy last_page supplies only a page and an optional page count.
     public let position: ReadingPosition?
@@ -84,17 +85,17 @@ public struct ReaderMetadataCatalog: Sendable {
         let position = peer?.readingPosition?.value
             ?? Self.legacyPosition(page: record?.lastPage, count: record?.pageCount)
             ?? Self.legacyPosition(page: manifest.lastPage, count: manifest.pageCount)
-        return ReaderDocumentMetadata(displayTitle: displayTitle, position: position,
+        return ReaderDocumentMetadata(storageKey: key?.hash, displayTitle: displayTitle, position: position,
                                       hasInkSidecar: key.map { inkKeys.contains($0) } ?? false)
     }
 
     /// Pass the existing stamp from this PDF, if known. A relocated path, basename,
     /// byte hash or metadata last_known_path cannot establish that identity.
     public func pdf(stableIdentifier: String?, fallbackTitle: String) -> ReaderDocumentMetadata {
-        let peer = stableIdentifier.flatMap { id in
-            DocumentIdentity.isCanonicalKey(id) ? peers[.pdf(stableIdentifier: id)] : nil
-        }
-        return ReaderDocumentMetadata(displayTitle: Self.title(peer?.title?.value) ?? fallbackTitle,
+        let key = stableIdentifier.flatMap { DocumentIdentity.isCanonicalKey($0) ? $0 : nil }
+        let peer = key.flatMap { peers[.pdf(stableIdentifier: $0)] }
+        return ReaderDocumentMetadata(storageKey: key,
+                                      displayTitle: Self.title(peer?.title?.value) ?? fallbackTitle,
                                       position: peer?.readingPosition?.value, hasInkSidecar: false)
     }
 
@@ -116,7 +117,8 @@ public struct ReaderMetadataCatalog: Sendable {
            let meta = try? JSONDecoder().decode(Meta.self, from: data), meta.kind == "pdf",
            let relative = location.relativePath(for: file), meta.last_known_path == relative {
             let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
-            return ReaderDocumentMetadata(displayTitle: Self.title(meta.title) ?? result.displayTitle,
+            return ReaderDocumentMetadata(storageKey: result.storageKey,
+                                          displayTitle: Self.title(meta.title) ?? result.displayTitle,
                                           position: result.position, hasInkSidecar: false)
         }
         return pdf(stableIdentifier: SharedPDFIdentity.stamp(in: bytes, readerID: stamp), fallbackTitle: fallbackTitle)

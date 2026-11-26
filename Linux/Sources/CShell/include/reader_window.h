@@ -10,7 +10,7 @@ typedef struct ReaderSettings ReaderSettings;
 typedef enum {
     READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE, READER_SEARCH,
     READER_SETTINGS_DONE, READER_CHOOSE_LIBRARY, READER_REOPEN_LIBRARY,
-    READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY
+    READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY, READER_CLOSE_REQUEST
 } ReaderEvent;
 // Text, when supplied, is borrowed only for the duration of the callback.
 typedef void (*ReaderCallback)(ReaderWindow *, ReaderEvent, int entry, const char *text, void *context);
@@ -23,6 +23,10 @@ int reader_run(ReaderCallback callback, void *context);
 // share the same sidebar and window; the stack owns each added child.
 GtkStack *reader_content_stack(ReaderWindow *reader);
 ReaderSettings *reader_settings(ReaderWindow *reader);
+typedef struct ScratchpadPanel ScratchpadPanel;
+ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *reader);
+void reader_set_close_pending(ReaderWindow *reader, bool pending);
+void reader_commit_close(ReaderWindow *reader);
 void reader_finish_close(ReaderWindow *reader);
 void reader_enable_search(ReaderWindow *reader);
 void reader_reset_search(ReaderWindow *reader);

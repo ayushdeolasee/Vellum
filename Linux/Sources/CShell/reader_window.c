@@ -9,6 +9,7 @@ struct ReaderWindow {
     GtkStack *screens;
     GtkWidget *paging, *body, *settings_button;
     ReaderSettings *settings;
+    ScratchpadPanel *scratchpad;
     ReaderCallback callback;
     void *context;
     gboolean closing, drained;
@@ -66,9 +67,24 @@ static void window_removed(GtkApplication *app, GtkWindow *window, ReaderWindow 
 }
 
 static gboolean close_requested(GtkWindow *window, ReaderWindow *r) {
-    gtk_widget_set_sensitive(GTK_WIDGET(window), FALSE);
-    begin_close(r);
+    if (!r->closing) notify(r, READER_CLOSE_REQUEST, -1);
     return TRUE;
+}
+
+ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    return r->scratchpad;
+}
+
+void reader_set_close_pending(ReaderWindow *r, bool pending) {
+    g_assert(shell_on_gtk_thread());
+    if (!r->closing) gtk_widget_set_sensitive(GTK_WIDGET(r->window), !pending);
+}
+
+void reader_commit_close(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    reader_set_close_pending(r, true);
+    begin_close(r);
 }
 
 GtkStack *reader_content_stack(ReaderWindow *r) {
@@ -270,6 +286,8 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_box_append(GTK_BOX(r->paging), r->previous);
     gtk_box_append(GTK_BOX(r->paging), r->page);
     gtk_box_append(GTK_BOX(r->paging), r->next);
+    r->scratchpad = scratchpad_panel_new();
+    gtk_box_append(GTK_BOX(r->paging), scratchpad_panel_toggle(r->scratchpad));
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), r->paging);
     gtk_window_set_titlebar(r->window, header);
 
@@ -320,8 +338,12 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_paned_set_position(GTK_PANED(paned), 220);
     g_signal_connect(r->list, "row-selected", G_CALLBACK(selected), r);
 
+    GtkWidget *reader_area = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     r->stack = gtk_stack_new();
-    gtk_paned_set_end_child(GTK_PANED(paned), r->stack);
+    gtk_widget_set_hexpand(r->stack, TRUE);
+    gtk_box_append(GTK_BOX(reader_area), r->stack);
+    gtk_box_append(GTK_BOX(reader_area), scratchpad_panel_widget(r->scratchpad));
+    gtk_paned_set_end_child(GTK_PANED(paned), reader_area);
     r->message = gtk_label_new(NULL);
     gtk_label_set_wrap(GTK_LABEL(r->message), TRUE);
     gtk_stack_add_child(reader_content_stack(r), r->message);
