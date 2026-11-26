@@ -154,6 +154,31 @@ public final class RootDirectory: Sendable {
         }
     }
 
+    /// Unlike library browsing, a capability inventory must see conflict
+    /// names, placeholders and symlinks. Only the confined file reader may
+    /// subsequently open a candidate.
+    func entryNames(in url: URL) async throws -> [String] {
+        let path = try relativePath(to: url)
+        return try await LibraryIO.run { [self] checkCancellation in
+            guard let stream = withExtendedLifetime(self, {
+                library_open_directory(descriptor, path)
+            }) else {
+                if errno == ENOENT { return [] }
+                throw Self.fileError(errno, at: url)
+            }
+            defer { _ = closedir(stream) }
+            var names: [String] = []
+            while let rawName = library_next_name(stream) {
+                try checkCancellation()
+                guard let name = String(validatingCString: rawName), names.count < 16_384
+                else { throw LibraryFileError.unavailable }
+                if name != "." && name != ".." { names.append(name) }
+            }
+            guard errno == 0 else { throw Self.fileError(errno, at: url) }
+            return names.sorted()
+        }
+    }
+
     private static func ioError(_ code: Int32) -> LibraryFileError {
         .io(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO).localizedDescription)
     }
