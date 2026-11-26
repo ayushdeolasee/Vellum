@@ -40,6 +40,7 @@ actor StorageCoordinator {
     enum OperationError: Error, Sendable, Equatable {
         case unavailable
         case suspended
+        case storageChanged
     }
 
     struct Status: Sendable, Equatable {
@@ -574,6 +575,19 @@ actor StorageCoordinator {
     func withStorageContext<T: Sendable>(
         _ operation: @Sendable (StorageContext) async throws -> T
     ) async throws -> T {
+        try await withStorageContext(expectedGeneration: nil) { context, _ in
+            try await operation(context)
+        }
+    }
+
+    /// A maintenance action must still address the storage it was listed from.
+    func withStorageContext<T: Sendable>(
+        expectedGeneration: Int?,
+        _ operation: @Sendable (StorageContext, Int) async throws -> T
+    ) async throws -> T {
+        if let expectedGeneration, expectedGeneration != storageGeneration {
+            throw OperationError.storageChanged
+        }
         try beginOperation(requiresContainer: false)
         let context: StorageContext
         if let container = access.container {
@@ -582,7 +596,7 @@ actor StorageCoordinator {
             context = .direct(layout: layout)
         }
         do {
-            let value = try await operation(context)
+            let value = try await operation(context, storageGeneration)
             finishOperation()
             return value
         } catch {

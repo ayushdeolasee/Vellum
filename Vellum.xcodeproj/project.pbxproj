@@ -460,10 +460,12 @@
 		8FDF7BE5B341E8B2431FA444 /* ScratchpadPanel_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B798B2674E640302A02F17C /* ScratchpadPanel_macOS.swift */; };
 		8FE6BB2DF90FA6EAAE020485 /* SyncedContainerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C854CEB16A3B128A02C7499A /* SyncedContainerModels.swift */; };
 		8FF03A236A01FA78CB3BFA13 /* WebInkAnchorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C47C0EFFADDC0E71F679E5E /* WebInkAnchorTests.swift */; };
+		8FFDB6BFF4A3E80A6E83E9CE /* SharedScratchpadMaintenanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C88E812DD8C46EE0833897E0 /* SharedScratchpadMaintenanceView.swift */; };
 		9033E11592AF76E1B9E32114 /* FakeSyncedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE2FEB56AF83B86BE5EE77D1 /* FakeSyncedContainer.swift */; };
 		9101026F402396303D36C75D /* VellumWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F34132A71B97C3227C29DF1 /* VellumWidgets.swift */; };
 		9180B44C77B01D9BA6CCBF87 /* LibraryFileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DF00639EE1AD1ABD46261E7 /* LibraryFileStore.swift */; };
 		91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */; };
+		91B193A4C4E4F7AB83524B2D /* SharedScratchpadMaintenanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C88E812DD8C46EE0833897E0 /* SharedScratchpadMaintenanceView.swift */; };
 		91F222D3BA33FB57079495ED /* katex in Resources */ = {isa = PBXBuildFile; fileRef = E3E5D7D6B867201216086389 /* katex */; };
 		920B059184B5064D1111B4D6 /* TabPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1BFC5037CE20820A854225 /* TabPresentation.swift */; };
 		923DF93BFF82ECA377E4BEE9 /* WebArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = E064C75923B5E7D98E256470 /* WebArchive.swift */; };
@@ -1217,6 +1219,7 @@
 		C7B863B676278E0E8D3C2EDB /* PaneTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTree.swift; sourceTree = "<group>"; };
 		C854CEB16A3B128A02C7499A /* SyncedContainerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContainerModels.swift; sourceTree = "<group>"; };
 		C888E571A951AE6BCD089B3D /* PdfSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfSearch.swift; sourceTree = "<group>"; };
+		C88E812DD8C46EE0833897E0 /* SharedScratchpadMaintenanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedScratchpadMaintenanceView.swift; sourceTree = "<group>"; };
 		C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathRenderer.swift; sourceTree = "<group>"; };
 		C8F4E0214AE68A33C5052709 /* Untitled.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = Untitled.icon; sourceTree = "<group>"; };
 		CB5DD0F9F32296074A28086D /* PdfTextGolden */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PdfTextGolden; path = Packages/VellumCore/Tests/VellumCoreTests/Fixtures/PdfTextGolden; sourceTree = SOURCE_ROOT; };
@@ -1920,6 +1923,7 @@
 				2B798B2674E640302A02F17C /* ScratchpadPanel_macOS.swift */,
 				08111ACF12BEE6ACC52F1835 /* SelectableMessageText_macOS.swift */,
 				02269B75EB688D2DA06FD7BA /* SentReferenceChips_macOS.swift */,
+				C88E812DD8C46EE0833897E0 /* SharedScratchpadMaintenanceView.swift */,
 				F18DE1801E094BBF642D7F69 /* SheetPresenceMonitor_macOS.swift */,
 				25C0A113831547B57F8F3CB6 /* SidebarBrowserView_macOS.swift */,
 				D8C2FE7E64BD765B9DBEB4A4 /* SidebarDropCatcher_macOS.swift */,
@@ -2794,6 +2798,7 @@
 				E62EBB8FB7E1797C60DD26E7 /* SessionService.swift in Sources */,
 				ACD33980FFF1DBC8693B6C80 /* SettingsSheet_iOS.swift in Sources */,
 				30BB3A40F3C768FDA467EBC0 /* SettingsView.swift in Sources */,
+				91B193A4C4E4F7AB83524B2D /* SharedScratchpadMaintenanceView.swift in Sources */,
 				09591F1E397733FAE9E84BEF /* SheetPresenceMonitor_macOS.swift in Sources */,
 				11E2E63E94EA67BA3BFDA181 /* SheetPresence_iOS.swift in Sources */,
 				AAC2C2D0A33EBFAE7A7E46BF /* ShellIdiom_iOS.swift in Sources */,
@@ -3135,6 +3140,7 @@
 				B1EA8A76FD9FE32930829528 /* SessionService.swift in Sources */,
 				35AD253CCB3E6544989CBEFD /* SettingsSheet_iOS.swift in Sources */,
 				2439956FEFA7E14A045B9289 /* SettingsView.swift in Sources */,
+				8FFDB6BFF4A3E80A6E83E9CE /* SharedScratchpadMaintenanceView.swift in Sources */,
 				F6EC8690F30D98D70B782D43 /* SheetPresenceMonitor_macOS.swift in Sources */,
 				8B86C4435F04F6310965D0E7 /* SheetPresence_iOS.swift in Sources */,
 				C00AC72121CE0C914C5B1C32 /* ShellIdiom_iOS.swift in Sources */,
