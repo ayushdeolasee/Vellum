@@ -23,6 +23,34 @@ final class SharedPDFMigrationTests: XCTestCase {
         XCTAssertEqual(locked.key, DocumentIdentity.byteHash(unsigned))
     }
 
+    func testResumeAndRollbackWithoutDirectoryOwnershipInLegacyJournal() async throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: tmp) }
+        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let source = tmp.appendingPathComponent("Paper.pdf")
+        let root = tmp.appendingPathComponent("shared")
+        let journals = tmp.appendingPathComponent("journals")
+        let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("digitally-signed"))
+        try original.write(to: source)
+        let migration = try SharedPDFMigration(root: root, localData: tmp.appendingPathComponent("private"), journals: journals)
+        do {
+            try await migration.migrate([source], readID: id) { if $0 == 1 { throw CancellationError() } }
+            XCTFail("Expected interruption")
+        } catch is CancellationError {}
+        let manifest = journals.appendingPathComponent(DocumentIdentity.sha256Hex(root.path) + "/migration.json")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])
+        XCTAssertNotNil(json.removeValue(forKey: "createdDirectories"))
+        try JSONSerialization.data(withJSONObject: json).write(to: manifest, options: .atomic)
+        try await migration.migrate([], readID: id)
+        let pdf = root.appendingPathComponent("PDFs/Paper.pdf")
+        XCTAssertEqual(try Data(contentsOf: pdf), original)
+        try await migration.rollback()
+        XCTAssertFalse(fm.fileExists(atPath: pdf.path))
+        XCTAssertTrue(fm.fileExists(atPath: pdf.deletingLastPathComponent().path))
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
     func testMigrationAcrossPrefixesInterruptionRollbackAndPeerChanges() async throws {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)

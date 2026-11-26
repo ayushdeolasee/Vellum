@@ -42,7 +42,8 @@ public struct SharedPDFMigration: Sendable {
         var inputs: [Source] = []
         var directories: [String: [String]] = [:]
         var changes: [Change] = []
-        var createdDirectories: [URL] = []
+        // Older journals did not record directory ownership. Leave those directories intact.
+        var createdDirectories: [URL]?
         var completed = 0
         var pending = false
         var reversing = false
@@ -394,7 +395,7 @@ public struct SharedPDFMigration: Sendable {
         }
         // rmdir only removes empty directories this batch created. Never
         // recursively remove a folder that may contain a new peer attachment.
-        for dir in j.createdDirectories where dir.pathComponents.starts(with: location.root.pathComponents) {
+        for dir in j.createdDirectories ?? [] where dir.pathComponents.starts(with: location.root.pathComponents) {
             guard dir.resolvingSymlinksInPath().standardizedFileURL.path == dir.standardizedFileURL.path else {
                 throw Failure.changed(dir.path)
             }
