@@ -11,9 +11,12 @@ struct ReaderSettings {
     ReaderCallback callback;
     FolderRequest *folder_request;
     GtkWidget *page, *path, *library_status, *choose, *reopen;
-    GtkWidget *provider, *provider_status, *key_section, *key, *save, *remove, *key_status;
+    GtkWidget *providers, *provider_status, *key_section, *key, *save, *remove, *key_status;
+    unsigned provider_count;
     gboolean changing_provider, key_busy;
 };
+
+enum { PROVIDERS_PER_ROW = 3 };
 
 static void notify(ReaderSettings *s, ReaderEvent event, int index, const char *text) {
     s->callback(s->reader, event, index, text, NULL);
@@ -66,12 +69,11 @@ static void done(GtkButton *button, ReaderSettings *s) {
     notify(s, READER_SETTINGS_DONE, -1, NULL);
 }
 
-static void provider_changed(GObject *object, GParamSpec *property, ReaderSettings *s) {
-    if (s->changing_provider) return;
-    guint index = gtk_drop_down_get_selected(GTK_DROP_DOWN(s->provider));
-    if (index == GTK_INVALID_LIST_POSITION) return;
+static void provider_changed(GtkCheckButton *choice, ReaderSettings *s) {
+    if (s->changing_provider || !gtk_check_button_get_active(choice)) return;
+    int index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(choice), "provider-index"));
     gtk_editable_set_text(GTK_EDITABLE(s->key), "");
-    notify(s, READER_CHANGE_PROVIDER, (int)index, NULL);
+    notify(s, READER_CHANGE_PROVIDER, index, NULL);
 }
 
 static void key_section_changed(GObject *object, GParamSpec *property, ReaderSettings *s) {
@@ -154,11 +156,11 @@ ReaderSettings *reader_settings_new(GtkWindow *parent, ReaderWindow *reader, Rea
     gtk_box_append(GTK_BOX(column), GTK_WIDGET(ai));
     GtkWidget *provider_label = label("AI Provider", "heading");
     gtk_box_append(ai, provider_label);
-    s->provider = gtk_drop_down_new(G_LIST_MODEL(gtk_string_list_new(NULL)), NULL);
-    gtk_widget_set_halign(s->provider, GTK_ALIGN_START);
-    gtk_accessible_update_relation(GTK_ACCESSIBLE(s->provider), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
+    s->providers = gtk_grid_new();
+    gtk_grid_set_column_spacing(GTK_GRID(s->providers), 16);
+    gtk_accessible_update_relation(GTK_ACCESSIBLE(s->providers), GTK_ACCESSIBLE_RELATION_LABELLED_BY,
                                    provider_label, NULL, -1);
-    gtk_box_append(ai, s->provider);
+    gtk_box_append(ai, s->providers);
     s->provider_status = label(NULL, "dim-label");
     gtk_box_append(ai, s->provider_status);
 
@@ -181,7 +183,6 @@ ReaderSettings *reader_settings_new(GtkWindow *parent, ReaderWindow *reader, Rea
     s->remove = button(key_buttons, "Remove Key", G_CALLBACK(remove_key), s);
     reader_settings_set_key(s, "", FALSE, FALSE);
     g_signal_connect(s->key, "changed", G_CALLBACK(key_changed), s);
-    g_signal_connect(s->provider, "notify::selected", G_CALLBACK(provider_changed), s);
     g_signal_connect(s->key_section, "notify::expanded", G_CALLBACK(key_section_changed), s);
     return s;
 }
@@ -204,15 +205,21 @@ void reader_settings_free(ReaderSettings *s) {
 }
 
 void reader_settings_add_provider(ReaderSettings *s, const char *name) {
-    s->changing_provider = TRUE;
-    GtkDropDown *dropdown = GTK_DROP_DOWN(s->provider);
-    gtk_string_list_append(GTK_STRING_LIST(gtk_drop_down_get_model(dropdown)), name);
-    s->changing_provider = FALSE;
+    GtkGrid *grid = GTK_GRID(s->providers);
+    GtkWidget *choice = gtk_check_button_new_with_label(name);
+    GtkWidget *first = gtk_grid_get_child_at(grid, 0, 0);
+    if (first) gtk_check_button_set_group(GTK_CHECK_BUTTON(choice), GTK_CHECK_BUTTON(first));
+    unsigned index = s->provider_count++;
+    g_object_set_data(G_OBJECT(choice), "provider-index", GUINT_TO_POINTER(index));
+    gtk_grid_attach(grid, choice, index % PROVIDERS_PER_ROW, index / PROVIDERS_PER_ROW, 1, 1);
+    g_signal_connect(choice, "toggled", G_CALLBACK(provider_changed), s);
 }
 
 void reader_settings_set_provider(ReaderSettings *s, unsigned index, const char *message) {
     s->changing_provider = TRUE;
-    gtk_drop_down_set_selected(GTK_DROP_DOWN(s->provider), index);
+    GtkWidget *choice = gtk_grid_get_child_at(GTK_GRID(s->providers), index % PROVIDERS_PER_ROW,
+                                              index / PROVIDERS_PER_ROW);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(choice), TRUE);
     s->changing_provider = FALSE;
     gtk_label_set_text(GTK_LABEL(s->provider_status), message);
     gtk_widget_set_visible(s->provider_status, *message != '\0');
@@ -231,7 +238,7 @@ void reader_settings_set_library(ReaderSettings *s, const char *path, const char
 void reader_settings_set_key(ReaderSettings *s, const char *message, bool busy, bool removable) {
     s->key_busy = busy;
     gtk_label_set_text(GTK_LABEL(s->key_status), message);
-    gtk_widget_set_sensitive(s->provider, !busy);
+    gtk_widget_set_sensitive(s->providers, !busy);
     gtk_widget_set_sensitive(s->key, !busy);
     key_changed(GTK_EDITABLE(s->key), s);
     gtk_widget_set_sensitive(s->remove, !busy && removable);

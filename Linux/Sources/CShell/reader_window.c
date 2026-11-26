@@ -7,7 +7,7 @@ struct ReaderWindow {
     GtkWidget *search, *no_matches;
     GtkWidget *title, *page, *previous, *next, *message, *picture, *stack, *status;
     GtkStack *screens;
-    GtkWidget *paging, *body;
+    GtkWidget *paging, *body, *settings_button;
     ReaderSettings *settings;
     ReaderCallback callback;
     void *context;
@@ -215,6 +215,7 @@ static void show_settings(GSimpleAction *action, GVariant *parameter, ReaderWind
     gtk_stack_set_visible_child(r->screens, reader_settings_page(r->settings));
     gtk_widget_set_visible(r->title, FALSE);
     gtk_widget_set_visible(r->paging, FALSE);
+    gtk_widget_set_visible(r->settings_button, FALSE);
     gtk_window_set_title(r->window, "Vellum Settings");
 }
 
@@ -226,20 +227,18 @@ static void settings_event(ReaderWindow *r, ReaderEvent event, int index, const 
         gtk_stack_set_visible_child(r->screens, r->body);
         gtk_widget_set_visible(r->title, TRUE);
         gtk_widget_set_visible(r->paging, TRUE);
+        gtk_widget_set_visible(r->settings_button, TRUE);
         gtk_window_set_title(r->window, gtk_label_get_text(GTK_LABEL(r->title)));
     } else {
         r->callback(r, event, index, text, r->context);
     }
 }
 
-// Window actions for Settings and future document panels share this menu.
-static void add_window_action(ReaderWindow *r, GMenu *menu, const char *name, const char *label,
-                              GCallback activate) {
+// Settings and document panels can register with the same window action map.
+static void add_window_action(ReaderWindow *r, const char *name, GCallback activate) {
     g_autoptr(GSimpleAction) action = g_simple_action_new(name, NULL);
     g_signal_connect(action, "activate", activate, r);
     g_action_map_add_action(G_ACTION_MAP(r->window), G_ACTION(action));
-    g_autofree char *detailed = g_strdup_printf("win.%s", name);
-    g_menu_append(menu, label, detailed);
 }
 
 static void activated(GtkApplication *app, ReaderWindow *r) {
@@ -260,14 +259,10 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_label_set_ellipsize(GTK_LABEL(r->title), PANGO_ELLIPSIZE_END);
     gtk_widget_add_css_class(r->title, "title");
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), r->title);
-    g_autoptr(GMenu) menu = g_menu_new();
-    add_window_action(r, menu, "settings", "Settings", G_CALLBACK(show_settings));
-    GtkWidget *menu_button = gtk_menu_button_new();
-    gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(menu_button), "open-menu-symbolic");
-    gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(menu_button), G_MENU_MODEL(menu));
-    gtk_widget_set_tooltip_text(menu_button, "Menu");
-    gtk_accessible_update_property(GTK_ACCESSIBLE(menu_button), GTK_ACCESSIBLE_PROPERTY_LABEL, "Menu", -1);
-    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), menu_button);
+    add_window_action(r, "settings", G_CALLBACK(show_settings));
+    r->settings_button = gtk_button_new_with_label("Settings");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(r->settings_button), "win.settings");
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), r->settings_button);
     r->paging = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     r->previous = page_button("go-previous-symbolic", "Previous page", r);
     r->next = page_button("go-next-symbolic", "Next page", r);
