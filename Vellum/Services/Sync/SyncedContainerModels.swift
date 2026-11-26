@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // The vocabulary of the coordination seam. Nothing in here knows that
 // `NSFileCoordinator`, `NSFilePresenter`, `NSMetadataQuery` or `NSFileVersion`
@@ -165,17 +166,7 @@ enum VellumUbiquityContainerRoot {
     #endif
 }
 
-/// Mirrors `NSURLUbiquitousItemDownloadingStatusKey` without exposing it.
-enum ItemReadiness: String, Sendable, Codable, CaseIterable {
-    case notDownloaded
-    case downloaded
-    case current
-
-    /// `.downloaded` means A LOCAL COPY EXISTS BUT IS STALE. It is not ready.
-    /// Every readiness decision in the app funnels through this one property so
-    /// "stale local bytes" can never be mistaken for "the current file".
-    var isReady: Bool { self == .current }
-}
+typealias ItemReadiness = VellumCore.ItemReadiness
 
 enum Materialization: Hashable, Sendable {
     /// Default. Anything but `.current` is refused rather than served stale.
