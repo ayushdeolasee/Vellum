@@ -204,6 +204,7 @@
 		3B3E8C22A60A93B66B58362F /* VellumWidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37A11C32CA0EBF44219673A3 /* VellumWidgetSnapshot.swift */; };
 		3BB5312318C00F8A977844B3 /* IntegrationThumbnailCache_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEA5B44F62915EF18EEE22C2 /* IntegrationThumbnailCache_macOS.swift */; };
 		3BD832551E4B2F9143763C3C /* CaptureRecordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 901640829E3A153018E80E2C /* CaptureRecordTests.swift */; };
+		3C63366CC99821CDBF39891C /* Web in Resources */ = {isa = PBXBuildFile; fileRef = 1C1A34149853DCBC865B5CB4 /* Web */; };
 		3C6B56B6EE324DDA994E4988 /* PdfOverlays.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47A602CA71FB338EEBF4BAF4 /* PdfOverlays.swift */; };
 		3DA6CF8CCF2666634EC157D8 /* AiStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = E201F2530645C6348ECC59AA /* AiStreaming.swift */; };
 		3DB291A451AD1F97C1A85EED /* RetentionLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = D47206539C63AB91217C0F80 /* RetentionLedger.swift */; };
@@ -413,6 +414,7 @@
 		833A8D1115E2FD34210195F0 /* WebInkViewportGroundTruthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D536BB707855760EBBA0A9AB /* WebInkViewportGroundTruthTests.swift */; };
 		833F7AA94109E4E841EAEF98 /* KaTeX_Fraktur-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 9304E8D40BBDAA6890D83939 /* KaTeX_Fraktur-Regular.woff2 */; };
 		848F0C763949065E094AC369 /* MacHandwritingNavigator.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDD76CE53AEBEE2230DCEE5B /* MacHandwritingNavigator.swift */; };
+		849FF3A4E65ACA2D9A1645A8 /* Web in Resources */ = {isa = PBXBuildFile; fileRef = 1C1A34149853DCBC865B5CB4 /* Web */; };
 		852138F8BE51971133242B8D /* PaneDocumentState_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B633A746E91D010B8EF69B /* PaneDocumentState_iOS.swift */; };
 		85FB484C37EE97CDC44BCCC5 /* ModelSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43A2E8F7A54C9B8E4E160D /* ModelSelector.swift */; };
 		8650CD0CEBB5D7A0723A8E9D /* AiSharingConsent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C693EB2623BEEF5646B6DF3 /* AiSharingConsent.swift */; };
@@ -887,6 +889,7 @@
 		1AF164F3710054DE83B01BD6 /* ScratchDefaultsTrait.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchDefaultsTrait.swift; sourceTree = "<group>"; };
 		1B16BB3DA6BAD63BFC33B328 /* IntegrationDownloadClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationDownloadClientTests.swift; sourceTree = "<group>"; };
 		1B7D1E617157C08AD0AB7246 /* HomeSearchStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchStore.swift; sourceTree = "<group>"; };
+		1C1A34149853DCBC865B5CB4 /* Web */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Web; path = Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Web; sourceTree = SOURCE_ROOT; };
 		1C693EB2623BEEF5646B6DF3 /* AiSharingConsent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSharingConsent.swift; sourceTree = "<group>"; };
 		1C9BE797AE8229E8D9218ED7 /* PhoneHome_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHome_iOS.swift; sourceTree = "<group>"; };
 		1DB1457E96D2FA9A96B968DD /* ScratchOutRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchOutRecognizer.swift; sourceTree = "<group>"; };
@@ -1514,6 +1517,7 @@
 			isa = PBXGroup;
 			children = (
 				8596A56D741DC5CB830FDDA8 /* Pdf */,
+				1C1A34149853DCBC865B5CB4 /* Web */,
 			);
 			path = Fixtures;
 			sourceTree = "<group>";
@@ -2451,6 +2455,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FCF6150DAE3B0AD25495C56B /* Pdf in Resources */,
+				3C63366CC99821CDBF39891C /* Web in Resources */,
 				D029777CB004B5CD28A30A94 /* harbor-linux.vellumweb in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2514,6 +2519,7 @@
 			files = (
 				A6B15C407BA2A67340D91616 /* Fixtures in Resources */,
 				52FDBE8051904268330A7644 /* Pdf in Resources */,
+				849FF3A4E65ACA2D9A1645A8 /* Web in Resources */,
 				D35AB21101663064F284E536 /* harbor-linux.vellumweb in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
