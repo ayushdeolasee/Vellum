@@ -33,7 +33,7 @@ enum WebStorageRelocator {
     @discardableResult
     private static func enqueue(_ work: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
         let prior = relocationChain
-        let task = Task.detached(priority: .utility) {
+        let task = Task(priority: .utility) {
             await prior?.value
             await work()
         }
@@ -78,33 +78,47 @@ enum WebStorageRelocator {
     }
 
     /// Save an explicit folder selection without making a migration journal.
-    static func selectSyncedFolder(_ selection: FolderSelection, coordinator: StorageCoordinator) {
+    static func selectSyncedFolder(_ selection: FolderSelection, workspace: WorkspaceStore) async {
         guard WebStorageMigrator.pendingMarker == nil else { return }
-        WebStorageSettings.selectSyncedFolder(path: selection.path, bookmark: selection.bookmarkData)
-        reconfigureWithoutRelocation(coordinator)
+        await changeSharedLocation(workspace: workspace, path: selection.path) {
+            WebStorageSettings.selectSyncedFolder(path: selection.path, bookmark: selection.bookmarkData)
+        }
     }
 
-    private static func reconfigureWithoutRelocation(_ coordinator: StorageCoordinator) {
-        enqueue {
-            await coordinator.reconfigure()
-            await MainActor.run {
-                NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
-                NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+    private static func changeSharedLocation(
+        workspace: WorkspaceStore, path: String, select: @escaping @MainActor @Sendable () -> Void
+    ) async {
+        guard !status.isInProgress else { return }
+        status = Status(isInProgress: true, message: "Changing storage location…")
+        NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+        do {
+            try await workspace.changeSharedStorageLocation(path: path) {
+                await enqueue {
+                    await select()
+                    await workspace.storageCoordinator.reconfigure()
+                }.value
             }
+            status = Status()
+            NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
+        } catch {
+            status = Status(message: "Couldn’t change storage location. " + error.localizedDescription)
         }
+        NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
     }
 
     static func apply(
         mode: WebStorageMode,
         customPath: String? = nil,
         customBookmark: Data? = nil,
-        coordinator: StorageCoordinator
-    ) {
+        workspace: WorkspaceStore
+    ) async {
         guard mode != .syncedFolder else { return }
+        let coordinator = workspace.storageCoordinator
         let previous = WebStorageSettings.chosenMode ?? .local
         if previous == .syncedFolder {
-            WebStorageSettings.setMode(mode, customPath: customPath, customBookmark: customBookmark)
-            reconfigureWithoutRelocation(coordinator)
+            await changeSharedLocation(workspace: workspace, path: customPath ?? WebLibrary.storeDir.path) {
+                WebStorageSettings.setMode(mode, customPath: customPath, customBookmark: customBookmark)
+            }
             return
         }
         let previousCustomPath = AppDefaults.current.string(forKey: WebStorageSettings.customPathKey)
@@ -271,9 +285,10 @@ struct StorageLocationChoiceSheet: View {
                 disabled: !icloudAvailable,
                 identifier: "storageChoice.icloud"
             ) {
-                WebStorageRelocator.apply(
-                    mode: .icloud, coordinator: workspace.storageCoordinator)
-                dismiss()
+                Task {
+                    await WebStorageRelocator.apply(mode: .icloud, workspace: workspace)
+                    dismiss()
+                }
             }
 
             choiceCard(
@@ -286,11 +301,11 @@ struct StorageLocationChoiceSheet: View {
             ) {
                 Task {
                     guard let selection = await WebStorageRelocator.pickCustomFolder() else { return }
-                    WebStorageRelocator.apply(
+                    await WebStorageRelocator.apply(
                         mode: .custom,
                         customPath: selection.path,
                         customBookmark: selection.bookmarkData,
-                        coordinator: workspace.storageCoordinator)
+                        workspace: workspace)
                     dismiss()
                 }
             }
@@ -303,9 +318,10 @@ struct StorageLocationChoiceSheet: View {
                 disabled: false,
                 identifier: "storageChoice.local"
             ) {
-                WebStorageRelocator.apply(
-                    mode: .local, coordinator: workspace.storageCoordinator)
-                dismiss()
+                Task {
+                    await WebStorageRelocator.apply(mode: .local, workspace: workspace)
+                    dismiss()
+                }
             }
         }
         .padding(24)
