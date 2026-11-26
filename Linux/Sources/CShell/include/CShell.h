@@ -25,5 +25,6 @@ void shell_probe_turn_finished(void);
 
 #include "library_io.h"
 
+#include "scratchpad_panel.h"
 #include "reader_window.h"
 #include "web_reader.h"

@@ -18,6 +18,7 @@ final class ReaderController {
     private var generation = 0
     private var work: Task<Void, Never>?
 
+    private var scratchpad: ScratchpadPane?
     private var metadataCatalog: ReaderMetadataCatalog?
     private var webPage: WebPageHost?
     private let webProbe: WebProbe?
@@ -69,7 +70,11 @@ final class ReaderController {
                     let store = ReadOnlyLibraryFileStore(root: root)
                     let (entries, catalog) = try await LibraryCatalog.searchEntries(in: store)
                     guard self.isCurrent(token) else { return }
+                    let scratchpadStorage = await self.scratchpadStorage(files: store)
+                    guard self.isCurrent(token) else { return }
                     self.store = store
+                    self.scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window),
+                                                      storage: scratchpadStorage)
                     self.metadataCatalog = catalog
                     self.entries = entries
                     self.showRows(entries.indices, window: window)
@@ -87,6 +92,7 @@ final class ReaderController {
         case READER_SELECT:
             guard entries.indices.contains(entry), entry != selectedEntry else { return }
             selectedEntry = entry
+            scratchpad?.beginSelection()
             selection = entries[entry].file.url
             bytes = nil
             pdfTitle = nil
@@ -104,18 +110,32 @@ final class ReaderController {
             if pageIndex + 1 < pageCount { showPage(pageIndex + 1, window: window) }
         case READER_SEARCH:
             updateSearch(String(cString: reader_search_query(window)), window: window)
+        case READER_CLOSE_REQUEST:
+            if let scratchpad {
+                scratchpad.requestClose(window: window)
+            } else {
+                reader_commit_close(window)
+            }
         case READER_CLOSE:
             webPage = nil
             let search = searchWork
             search?.cancel()
             replaceWork { _ in
                 await search?.value
+                await self.scratchpad?.shutdown()
                 await PdfiumActor.shared.shutdown()
                 reader_finish_close(window)
             }
         default:
             preconditionFailure("Unknown reader event")
         }
+    }
+
+    private func scratchpadStorage(files: ReadOnlyLibraryFileStore) async -> ScratchpadStorage {
+        #if DEBUG && SCRATCHPAD_QUALIFICATION
+        if let storage = await ScratchpadQualification.storage(files: files) { return storage }
+        #endif
+        return ScratchpadStorage(files: files)
     }
 
     private func updateSearch(_ query: String, window: OpaquePointer) {
@@ -164,6 +184,7 @@ final class ReaderController {
                 let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
+                self.scratchpad?.select(metadata.storageKey)
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
                                            probe: self.webProbe) {
                     let position = metadata.position.map { position in
@@ -173,6 +194,7 @@ final class ReaderController {
                 }
             } catch {
                 guard self.isCurrent(token) else { return }
+                self.scratchpad?.select(nil)
                 reader_set_message(window, title, "Could not open archive: \(error.localizedDescription)")
             }
         }
@@ -198,15 +220,18 @@ final class ReaderController {
                     guard self.isCurrent(token) else { return }
                     let opening = try await PdfiumDocument.openingInfo(in: loaded)
                     guard self.isCurrent(token) else { return }
+                    var storageKey = opening.stableIdentifier
                     if let catalog = try? await self.catalog(in: store, token: token),
                        let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
                                                                stamp: opening.stableIdentifier, fallbackTitle: title) {
+                        storageKey = saved.storageKey
                         title = saved.displayTitle
                         if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
                     }
                     guard self.isCurrent(token) else { return }
+                    self.scratchpad?.select(storageKey)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index
@@ -229,6 +254,7 @@ final class ReaderController {
                 }
             } catch {
                 guard self.isCurrent(token) else { return }
+                if self.bytes == nil { self.scratchpad?.select(nil) }
                 let message: String
                 switch error {
                 case PdfiumError.passwordRequired: message = "This PDF requires a password."
