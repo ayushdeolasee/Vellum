@@ -1,0 +1,35 @@
+{
+  "updated_at" : "2026-11-26T17:53:25.975000+00:00",
+  "url" : "https://fixture.test/article",
+  "version" : 3,
+  "layout" : {
+    "doc_height" : 1000,
+    "content_width" : 800
+  },
+  "clusters" : [
+    {
+      "drawing" : "d3Jk8AEACAASEAAAAAAAAAAAAAAAAAAAAAASEBjte8vhyUPbtKZxoVOssr0aBggAEAAYABoGCAEQARgBIjQKFA0AAAAAFQAAAAAdAAAAACUAAIA/EhFjb20uYXBwbGUuaW5rLnBlbhgDQQAAAAAAAAAAKowCChDAZRbwcC1It7HjuHgjR3wvEgYIABABGAEaBggAEAEYACAAKqgBChBlG4H9O1BGNa2JfuidIuMrEQAAANzjJ83BGAkgAyj8DzIWAACAQOgDAADoA/9/AAD/fwAAgEAAADpsAAAAQgBwMUMAAAAAAAAwQgBwMUMK1yM8AABgQgBwMUMK16M8AACIQgBwMUOPwvU8AACgQgBwMUMK1yM9AAC4QgBwMUPNzEw9AADQQgBwMUOPwnU9AADoQgBwMUMpXI89AAAAQwBwMUMK16M9MhQNAAAAABUAAAAAHQAAzEIlAACgQDoeDQAAgD8VAAAAAB0AAAAAJQAAgD8tAADowTUAAC/DQICygICABDoGCAAQABgAQhAk3kc/oxJPnZKJ5N5FFyAu",
+      "id" : "a:210:370",
+      "anchor" : {
+        "start_offset" : 210,
+        "prefix" : "o anchor ink clusters to.Paragra",
+        "rect" : {
+          "y" : 161.4375,
+          "x" : 80,
+          "h" : 20,
+          "w" : 10
+        },
+        "end_offset" : 370,
+        "text" : "ph 2 of the anchor fixture. The quick brown fox jumps over the lazy dog again and again, wrapping across several lines so the layout has real text geometry to a",
+        "page" : 1,
+        "suffix" : "nchor ink clusters to.Paragraph "
+      },
+      "bounds" : {
+        "h" : 5,
+        "y" : 175,
+        "x" : 29,
+        "w" : 102
+      }
+    }
+  ]
+}
