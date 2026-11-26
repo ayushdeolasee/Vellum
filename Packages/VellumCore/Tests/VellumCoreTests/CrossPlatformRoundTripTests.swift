@@ -33,13 +33,14 @@ import VellumCore
         case "send":
             #if os(macOS)
             try await library.seed()
-            try await library.positions.write(PeerLibrary.position("mac"))
+            _ = try await library.verifyPDFs()
             try await library.write(PeerLibrary.capture, PeerLibrary.archive("mac"))
             #else
             Issue.record("The first writer must be native macOS.")
             #endif
         case "mutate":
             #if os(Linux)
+            try await library.verifyLongCapture()
             let baseline = try library.read(PeerLibrary.record)
             var page = try JSONDecoder().decode(WebPageRecord.self, from: baseline)
             try #require(page.unknownFields["future"] == PeerLibrary.future)
@@ -50,7 +51,12 @@ import VellumCore
             try await library.write(PeerLibrary.record, JSONEncoder().encode(page))
             let existing = await library.positions.loadAll()
             try #require(existing.count == 1 && existing[0].devicePlatform == "macos")
-            try await library.positions.write(PeerLibrary.position("linux"))
+            #if canImport(LinuxReader)
+            let pdfID = try await library.verifyPDFs()
+            try await library.positions.write(PeerLibrary.position("linux", pdfID: pdfID))
+            #else
+            Issue.record("Run the exchange with the production Linux reader linked by roundtrip-e2e.sh.")
+            #endif
 
             // Read the Mac ZIP and re-export its actual manifest and contents.
             let original = try library.read(PeerLibrary.capture)
@@ -67,6 +73,7 @@ import VellumCore
             #endif
         case "receive":
             #if os(macOS)
+            try await library.verifyLongCapture()
             var page = try JSONDecoder().decode(WebPageRecord.self, from: library.read(PeerLibrary.record))
             #expect(page.title == "Read on Linux")
             #expect(page.annotations.map(\.id) == ["shared", "linux"])
@@ -80,7 +87,8 @@ import VellumCore
             #expect(capture.manifest.unknownFields["future_capture"] == PeerLibrary.future)
             #expect(capture.annotations.map(\.id) == ["mac", "linux"])
             #expect(capture.snapshotHtml == "<html>mac</html>")
-            #expect(try library.read(PeerLibrary.pdf) == Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column")))
+            let originalDigest = library.root.deletingLastPathComponent().appendingPathComponent("before-migration/published.sha256")
+            #expect(try DocumentIdentity.byteHash(library.read(PeerLibrary.pdf)) == String(contentsOf: originalDigest, encoding: .utf8))
             #expect(try library.read(PeerLibrary.messages) == PeerLibrary.messageBytes(["shared"]))
             #expect(try library.read(PeerLibrary.note) == Data(PeerLibrary.imageLink.utf8))
             #expect(try library.read(PeerLibrary.doc + "attachments/" + PeerLibrary.imageName) == PeerLibrary.png)

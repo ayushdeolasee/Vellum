@@ -21,7 +21,11 @@ struct PeerLibrary {
     static let imageName = "abc.png"
     static let imageLink = "![Image](attachments/\(imageName))"
     static let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAABEAAAALCAIAAAAWQvFQAAAAFElEQVR4nGNQKogjFTGM6hnVA0QAvTWvUWQMAeMAAAAASUVORK5CYII=")!
-    static let capture = "Web Pages/Same Title.vellumweb"
+    static let title = "Café"
+    static let capture = "Web Pages/Café.vellumweb"
+    static let longTitle = String(repeating: "각", count: 80)
+    static let longName = String(repeating: "각", count: 27) + ".vellumweb"
+    static let longKey = DocumentKey.web(normalizedURL: address + "/long").hash
     static let index = ".vellum/index.json"
     static let future: JSONValue = .object(["array": .array([.bool(true), .null, .int(17)])])
     static let pdf = "PDFs/Paper.pdf"
@@ -49,12 +53,12 @@ struct PeerLibrary {
         }, options: [.sortedKeys])
     }
 
-    static func archive(_ peer: String) throws -> Data {
+    static func archive(_ peer: String, title: String = title) throws -> Data {
         let address = Self.address + "/" + peer
         let page = "<html>\(peer)</html>"
         let text = Data("[]".utf8)
         let manifest = ArchiveManifest(format: "vellumweb", version: 1, url: address, canonicalUrl: address,
-            title: "Same Title", capturedAt: "2026-01-01T00:00:00Z", generator: "fixture",
+            title: peer == "linux" ? title.decomposedStringWithCanonicalMapping : title, capturedAt: "2026-01-01T00:00:00Z", generator: "fixture",
             loadingPolicy: "snapshot-only", pageCount: 1, lastPage: 1,
             hashes: ManifestHashes(snapshotHtml: ArchiveCodec.sha256Hex(Data(page.utf8)),
                                    pageText: ArchiveCodec.sha256Hex(text)), assets: [], assetsSkipped: 0)
@@ -62,13 +66,17 @@ struct PeerLibrary {
                                       pagesJson: text, annotations: [annotation(peer)])
     }
 
-    static func position(_ peer: String) -> PositionDeviceRecord {
+    static func position(_ peer: String, pdfID: String? = nil) -> PositionDeviceRecord {
         let mac = peer == "mac"
         let stamp = Date(timeIntervalSince1970: mac ? 100 : 200)
+        var documents = [key: PositionDeviceRecord.DocumentEntry(readingPosition: Stamped(at: stamp, value: ReadingPosition(page: mac ? 1 : 2)))]
+        if let pdfID {
+            documents[.pdf(stableIdentifier: pdfID)] = .init(readingPosition: Stamped(at: stamp, value: ReadingPosition(page: 1)))
+        }
         return PositionDeviceRecord(deviceID: DeviceID(mac ? "aaaaaaaa-0000-4000-8000-000000000001" :
                                                        "bbbbbbbb-0000-4000-8000-000000000002"),
             deviceName: peer, devicePlatform: mac ? "macos" : "linux", writtenAt: stamp,
-            documents: [key: .init(readingPosition: Stamped(at: stamp, value: ReadingPosition(page: mac ? 1 : 2)))],
+            documents: documents,
             unknownFields: ["future_position": future])
     }
 
@@ -112,6 +120,17 @@ struct PeerLibrary {
     }
     #endif
 
+    var catalog: SharedWebArchives {
+        FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher()).webArchives
+    }
+
+    func verifyLongCapture() async throws {
+        let found = try #require(try await catalog.lookup(forKey: Self.longKey))
+        #expect(found.name == Self.longName)
+        #expect(found.name.decomposedStringWithCanonicalMapping.utf8.count <= 255)
+        #expect(try ArchiveCodec.decode(found.bytes).manifest.title == Self.longTitle)
+    }
+
     func seed() async throws {
         var record = WebPageRecord(url: Self.address)
         record.unknownFields["future"] = Self.future
@@ -120,7 +139,8 @@ struct PeerLibrary {
         try await write(Self.messages, Self.messageBytes(["shared"]))
         try await write(Self.doc + "attachments/" + Self.imageName, Self.png)
         try await write(Self.note, Data(Self.imageLink.utf8))
-        try await write(Self.pdf, Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column")))
+        _ = try await catalog.save(Self.archive("long", title: Self.longTitle), forKey: Self.longKey)
+        try await migratePDFs()
     }
 
     func edit(_ peer: String) async throws {
@@ -142,11 +162,11 @@ struct PeerLibrary {
         meta["version"] = 1
         if peer == "linux" { meta["title"] = "Retained title" }
         try await write(Self.meta, JSONSerialization.data(withJSONObject: meta))
-        let catalog = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher()).webArchives
         let captureKey = DocumentKey.web(normalizedURL: Self.address + "/" + peer)
         let saved = try await catalog.save(Self.archive(peer), forKey: captureKey.hash)
         #expect(saved == url(Self.capture))
-        try await positions.write(Self.position(peer))
+        let pdfID = try await verifyPDFs()
+        try await positions.write(Self.position(peer, pdfID: pdfID))
         // Explicit, distinct mtimes let the real daemon and simulator agree on winner.
         for file in Self.conflictingPaths {
             try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: peer == "mac" ? 180 : 120)],
@@ -163,7 +183,8 @@ struct PeerLibrary {
         let merged = PositionMerge.merge(records)[Self.key]?.readingPosition
         #expect(merged?.device.platform == "linux")
         #expect(merged?.value.page == 2)
-        let expected = ["mac", "linux"].map(Self.position)
+        let pdfID = try await verifyPDFs()
+        let expected = ["mac", "linux"].map { Self.position($0, pdfID: pdfID) }
         #expect(Set(files) == Set(expected.map { $0.deviceID.rawValue + ".v1.json" }))
         for record in expected {
             let file = positions.root.appendingPathComponent(record.deviceID.rawValue + ".v1.json")
@@ -243,9 +264,9 @@ struct PeerLibrary {
         #endif
         let index = try JSONDecoder().decode(WebArchiveIndexContents.self, from: read(Self.index))
         let keys = ["mac", "linux"].map { DocumentKey.web(normalizedURL: Self.address + "/" + $0).hash }.sorted()
-        let expectedNames = [keys[0]: "Same Title.vellumweb", keys[1]: "Same Title (\(keys[1].prefix(6))).vellumweb"]
+        let expectedNames = [keys[0]: "Café.vellumweb", keys[1]: "Café (\(keys[1].prefix(6))).vellumweb", Self.longKey: Self.longName]
         #expect(index.entries == expectedNames)
-        let catalog = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher()).webArchives
+        try await verifyLongCapture()
         for peer in ["mac", "linux"] {
             let address = Self.address + "/" + peer
             let key = DocumentKey.web(normalizedURL: address).hash
@@ -253,7 +274,7 @@ struct PeerLibrary {
             #expect(found.name == expectedNames[key])
             #expect(found.bytes == (try read("Web Pages/" + found.name)))
             let capture = try ArchiveCodec.decode(found.bytes)
-            #expect(capture.manifest.canonicalUrl == address && capture.manifest.title == "Same Title")
+            #expect(capture.manifest.canonicalUrl == address && capture.manifest.title == Self.title)
             #expect(capture.annotations.map(\.id) == [peer])
             #expect(capture.snapshotHtml == "<html>\(peer)</html>")
         }

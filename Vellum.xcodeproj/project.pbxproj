@@ -510,6 +510,7 @@
 		9E139713CC03274E03B94E92 /* ToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E2B3DF66E30481C363C740 /* ToolbarView.swift */; };
 		9E46351128C4DA74D10E3F98 /* IntegrationTestDoubles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6656F3826738A92BE26422D2 /* IntegrationTestDoubles.swift */; };
 		9E702B90F8729B9145F7D31B /* SelectableMessageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B4601C034B834B5E610FD84 /* SelectableMessageText.swift */; };
+		9E7513046F9CE73526E202AE /* PeerPDFMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B7F67198A56506EA582AE2 /* PeerPDFMigration.swift */; };
 		9EA6B2F77FA7F9C3A4D27101 /* CaptureInboxLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 727E2F4BE67C51B47AAFB570 /* CaptureInboxLayout.swift */; };
 		9EDA0384B3306F7594C1B5E4 /* HelpTopic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9226E4F0D1E5CD00013BCC49 /* HelpTopic.swift */; };
 		9EECA809ACF9D63A2A40199C /* RenameDocumentSheet_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76731D87C0B0381DBFFBF420 /* RenameDocumentSheet_macOS.swift */; };
@@ -1319,6 +1320,7 @@
 		F062AD70FC7186BB19425B0D /* WebNoteDraftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebNoteDraftTests.swift; sourceTree = "<group>"; };
 		F062F6AD131F0C0181F9A45B /* BundleImportPrompts_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleImportPrompts_iOS.swift; sourceTree = "<group>"; };
 		F07613531ED060241AC3AE6C /* ICloudSyncedContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudSyncedContainer.swift; sourceTree = "<group>"; };
+		F0B7F67198A56506EA582AE2 /* PeerPDFMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerPDFMigration.swift; sourceTree = "<group>"; };
 		F0DFDC9680D91E7026BF044C /* LibraryFileStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryFileStoreTests.swift; sourceTree = "<group>"; };
 		F125F1382328217B11BF1DB2 /* AttachmentDropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDropTests.swift; sourceTree = "<group>"; };
 		F18DE1801E094BBF642D7F69 /* SheetPresenceMonitor_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetPresenceMonitor_macOS.swift; sourceTree = "<group>"; };
@@ -1892,6 +1894,7 @@
 			isa = PBXGroup;
 			children = (
 				57D849C35EEF4593A049D921 /* PdfFixtureBuilder.swift */,
+				F0B7F67198A56506EA582AE2 /* PeerPDFMigration.swift */,
 				55DC525ACFBCD1931E8FD9C0 /* SyncthingSimulator.swift */,
 			);
 			path = TestSupport;
@@ -2950,6 +2953,7 @@
 				DDDF1A419B658BFCB4F630C1 /* PdfFixturesSanityTests.swift in Sources */,
 				EDEA6E3022E09A620D3BC395 /* PdfSearchTests.swift in Sources */,
 				97CCA6DD019CB15223F609BE /* PdfTextComparisonHarnessTests.swift in Sources */,
+				9E7513046F9CE73526E202AE /* PeerPDFMigration.swift in Sources */,
 				806632250DA756C5DA69318D /* PortableStrokeTests.swift in Sources */,
 				A166F385754680A7B2DAC538 /* ReleaseIsolationTests.swift in Sources */,
 				44D261051D7E8718BB8843F9 /* StorageIsolationTrait.swift in Sources */,

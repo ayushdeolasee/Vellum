@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Run on a Mac with the existing vellum Colima profile and cached, pinned SwiftPM deps.
+# VELLUM_SYNCTHING_E2E=1 also needs a pre-staged Linux arm64 VELLUM_SYNCTHING_BINARY
+# or a local VELLUM_SYNCTHING_IMAGE containing /bin/syncthing. No image is pulled.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../.." && pwd -P)
 pkg="$repo/Packages/VellumCore"
@@ -33,6 +35,24 @@ COPYFILE_DISABLE=1 tar --no-xattrs -C "$pkg" -cf - Package.swift Package.resolve
     "${dockerctl[@]}" exec -i "$linux" tar --no-same-owner -xf - -C /s9/pkg
 COPYFILE_DISABLE=1 tar --no-xattrs -C "$stage/build" -cf - repositories |
     "${dockerctl[@]}" exec -i "$linux" tar --no-same-owner -xf - -C /s9/build
+# Compile the Linux reader and its native targets exactly as specified in the
+# shipping Linux manifest. Link them into the staged Core test bundle so the
+# Linux leg uses PDFium, the read-only store and the reader metadata catalog.
+reader_targets=(CGtk CWebKit CShell CPdfium CPdfiumJob LinuxReader)
+COPYFILE_DISABLE=1 tar --no-xattrs -C "$repo/Linux/Sources" -cf - "${reader_targets[@]}" |
+    "${dockerctl[@]}" exec -i "$linux" tar --no-same-owner -xf - -C /s9/pkg/Sources
+"${dockerctl[@]}" exec -i "$linux" sh -c 'cat >> /s9/pkg/Package.swift' <<'MANIFEST'
+package.targets += [
+    .systemLibrary(name: "CGtk", pkgConfig: "gtk4"),
+    .systemLibrary(name: "CWebKit", pkgConfig: "webkitgtk-6.0"),
+    .systemLibrary(name: "CPdfium", pkgConfig: "pdfium"),
+    .target(name: "CShell", dependencies: ["CGtk", "CWebKit"], linkerSettings: [.linkedLibrary("dl")]),
+    .target(name: "CPdfiumJob", dependencies: ["CPdfium"], linkerSettings: [.linkedLibrary("m")]),
+    .target(name: "LinuxReader", dependencies: ["CPdfiumJob", "CShell", "VellumCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)])
+]
+package.targets.first { $0.name == "VellumCoreTests" }!.dependencies.append("LinuxReader")
+MANIFEST
 opts=(--configuration debug --force-resolved-versions -j 2)
 mac_test() {
     swift test --package-path "$pkg" --scratch-path "$stage/build" "${opts[@]}" "$@"
@@ -49,8 +69,8 @@ linux_phase() {
         swift test --package-path /s9/pkg --scratch-path /s9/build "${opts[@]}" --skip-build --filter CrossPlatformRoundTripTests/exchange
     [[ $("${dockerctl[@]}" exec "$linux" cat "/s9/exchange/completed-$1") == "$1" ]]
 }
-mac_test --filter TwoPeerOfflineConflictTests
-linux_test --filter TwoPeerOfflineConflictTests
+swift build --build-tests --package-path "$pkg" --scratch-path "$stage/build" "${opts[@]}"
+"${dockerctl[@]}" exec -e GIT_ALLOW_PROTOCOL=file "$linux" swift build --build-tests --package-path /s9/pkg --scratch-path /s9/build "${opts[@]}"
 mac_phase send mac
 "${dockerctl[@]}" cp "$stage/exchange/.synthetic-s9" "$linux:/s9/exchange/"
 "${dockerctl[@]}" cp "$stage/exchange/mac" "$linux:/s9/exchange/linux"
@@ -60,6 +80,8 @@ mv "$stage/exchange/mac" "$stage/mac-original"
 "${dockerctl[@]}" cp "$linux:/s9/exchange/linux" "$stage/exchange/mac"
 mac_phase receive mac
 echo 'Native Mac → Linux → Mac byte and semantic checks passed.'
+mac_test --skip-build --filter TwoPeerOfflineConflictTests
+linux_test --skip-build --filter TwoPeerOfflineConflictTests
 if [[ ${VELLUM_SYNCTHING_E2E:-0} == 1 ]]; then
-    python3 "$repo/Linux/scripts/syncthing-peers.py" "$stage" "$linux" "$pkg"
+    python3 -I "$repo/Linux/scripts/syncthing-peers.py" "$stage" "$linux" "$pkg"
 fi

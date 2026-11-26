@@ -35,6 +35,7 @@ class Peer:
         self.role = role
         self.library = root / role
         self.library.mkdir()
+        (self.library / ".stfolder").mkdir()
         docker("run", "-d", "--pull", "never", "--network", network, "--name", name,
                "--user", "0", "--cpus", "1", "--env", "STNOUPGRADE=1", "--env", "STNODEFAULTFOLDER=1",
                "--mount", f"type=bind,src={self.library},dst=/library",
@@ -59,7 +60,7 @@ class Peer:
         remote = ET.SubElement(self.config, "device", id=other.device, name=other.role)
         ET.SubElement(remote, "address").text = f"tcp://{other.name}:22000"
         folder = ET.SubElement(self.config, "folder", id="synthetic", path="/library",
-                               type="sendreceive", rescanIntervalS="1", fsWatcherEnabled="false")
+                               type="sendreceive", rescanIntervalS="1", fsWatcherEnabled="false", ignorePerms="true")
         for device in (self.device, other.device):
             ET.SubElement(folder, "device", id=device)
         options = self.config.find("options")
@@ -92,6 +93,12 @@ class Peer:
     def connected(self, peer):
         connections = json.loads(self.api("system/connections"))["connections"]
         return connections.get(peer.device, {}).get("connected", False)
+
+    def up_to_date(self, other):
+        state = json.loads(self.api("db/status?folder=synthetic"))
+        completion = json.loads(self.api("db/completion?folder=synthetic&device=" + other.device))
+        return (state["state"] == "idle" and state["globalFiles"] > 0 and state["needTotalItems"] == 0
+                and completion["completion"] == 100 and completion["needItems"] == 0)
 
     def scan(self):
         self.api("db/scan?folder=synthetic", "POST")
@@ -161,6 +168,7 @@ def run(stage, build_container, package):
                             return False
                 return True
             eventually("first complete Mac library", baseline)
+            eventually("common indexed baseline", lambda: mac.up_to_date(linux) and linux.up_to_date(mac))
             assert not (linux.library / ".vellum/index.json.tmp").exists()
             assert (linux.library / ".stignore").read_bytes() != (mac.library / ".stignore").read_bytes()
             # Disconnect at the bridge, while both databases and scanners remain live.
@@ -175,6 +183,7 @@ def run(stage, build_container, package):
             eventually("both peers reconnected", lambda: mac.connected(linux) and linux.connected(mac))
             eventually("six actual conflict siblings at both peers",
                        lambda: all(len(list(p.library.rglob("*.sync-conflict-*"))) == 6 for p in peers))
+            eventually("both conflict directories fully replicated", lambda: mac.up_to_date(linux) and linux.up_to_date(mac))
             # Freeze the actual daemon outputs before independently consuming either side.
             for peer in peers:
                 docker("stop", peer.name)
