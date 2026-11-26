@@ -12,8 +12,7 @@ public struct ReadOnlyLibraryFileStore: LibraryFileStore {
 
     private let maxArchiveBytes: Int
 
-    // On the integrated C4 branch the caller supplies ArchiveCodec.maxArchiveBytes.
-    public init(root: RootDirectory, maxArchiveBytes: Int = 315 * 1024 * 1024) {
+    public init(root: RootDirectory, maxArchiveBytes: Int = ArchiveCodec.maxArchiveBytes) {
         self.root = root
         self.maxArchiveBytes = maxArchiveBytes
     }
