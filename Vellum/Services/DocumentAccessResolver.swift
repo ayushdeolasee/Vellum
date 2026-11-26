@@ -496,22 +496,22 @@ struct DocumentAccessResolver: Sendable {
                 throw DocumentAccessError.unavailable(url.path)
             }
             let localData = WebLibrary.storeDir.deletingLastPathComponent()
+            let scoped = access == .external && adapter.startAccessing(url)
+            defer { if scoped { adapter.stopAccessing(url) } }
             let migration = try SharedPDFImport.migration(in: sharedPDFs)
             if let migrated = try await migration.migratedURL(for: url, readID: SharedPDFImport.readID) {
                 return (migrated, false)
             }
             let bytes = try await performFileOperation {
-                try withSecurityScopeIfNeeded(to: url, access: access) {
-                    let result = try SharedPDFImport.prepare(url)
-                    let localDocuments = localData.appendingPathComponent("documents")
-                    let keys = [DocumentIdentity.sha256Hex(url.path), DocumentIdentity.sha256Hex(normalizedPath(url)), result.key, DocumentIdentity.byteHash(result.original),
-                                adapter.documentId(atPath: url.path)].compactMap { $0 }
-                    if keys.contains(where: { DocumentIdentity.isCanonicalKey($0) &&
-                        FileManager.default.fileExists(atPath: localDocuments.appendingPathComponent($0).path) }) {
-                        throw DocumentAccessError.storeUnavailable("This PDF has local reading data. Use Migrate Local PDFs in Settings > Storage.")
-                    }
-                    return result
+                let result = try SharedPDFImport.prepare(url)
+                let localDocuments = localData.appendingPathComponent("documents")
+                let keys = [DocumentIdentity.sha256Hex(url.path), DocumentIdentity.sha256Hex(normalizedPath(url)), result.key, DocumentIdentity.byteHash(result.original),
+                            adapter.documentId(atPath: url.path)].compactMap { $0 }
+                if keys.contains(where: { DocumentIdentity.isCanonicalKey($0) &&
+                    FileManager.default.fileExists(atPath: localDocuments.appendingPathComponent($0).path) }) {
+                    throw DocumentAccessError.storeUnavailable("This PDF has local reading data. Use Migrate Local PDFs in Settings > Storage.")
                 }
+                return result
             }
             let destination = try await SharedPDFImport.copy(bytes.bytes, original: bytes.original, named: url.lastPathComponent, into: sharedPDFs)
             // The PDF is now a published shared file. Ownership never passes

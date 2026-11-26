@@ -113,6 +113,25 @@ final class SharedPDFMigrationTests: XCTestCase {
             try fm.createSymbolicLink(at: link, withDestinationURL: source.deletingLastPathComponent())
             XCTAssertNil(location.resolve("PDFs/alias/Paper.pdf"))
         }
+        let sharedPDF = apple.appendingPathComponent("PDFs/Paper.pdf")
+        let migratedBytes = try Data(contentsOf: sharedPDF)
+        let edited = raw + Data("% local edit".utf8)
+        try edited.write(to: source)
+        do {
+            _ = try await migration().migratedURL(for: source, readID: id)
+            XCTFail("An edited original must require an explicit choice")
+        } catch SharedPDFMigration.Failure.originalChanged(let copy) {
+            XCTAssertEqual(copy.path, sharedPDF.path)
+            XCTAssertEqual(try Data(contentsOf: copy), migratedBytes)
+        }
+        try raw.write(to: sharedPDF)
+        do {
+            _ = try await migration().migratedURL(for: source, readID: id)
+            XCTFail("An unverified destination must not be offered for recovery")
+        } catch SharedPDFMigration.Failure.changed {}
+        XCTAssertEqual(try Data(contentsOf: source), edited)
+        try migratedBytes.write(to: sharedPDF)
+        try raw.write(to: source)
         let scratch = apple.appendingPathComponent(".vellum/documents/" + new + "/scratchpad.md")
         try Data("peer edit".utf8).write(to: scratch)
         do { try await migration().rollback(); XCTFail("Expected peer conflict") } catch is SharedPDFMigration.Failure {}
