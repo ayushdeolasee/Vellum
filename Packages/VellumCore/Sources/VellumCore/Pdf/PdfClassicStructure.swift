@@ -79,9 +79,7 @@ final class PdfClassicStructure {
                 try keyword("obj")
                 guard i - offset < 64 else { throw Reason.inspectionLimit }
                 skipSpace()
-                let bodyStart = i
                 let body = try value()
-                let bodyEnd = i
                 skipSpace()
                 if consumeWord("stream") {
                     guard let dict = body.dictionary else { throw Reason.malformed }
@@ -96,12 +94,6 @@ final class PdfClassicStructure {
                     streams[number] = body
                     objects[number] = .stream
                 } else {
-                    // rawObjectValue uses the first endobj marker. Its range
-                    // must agree even when that word occurs inside a string.
-                    if bytes[bodyStart..<bodyEnd].contains(101),
-                       bytes[bodyStart..<bodyEnd].firstRange(of: "endobj".utf8) != nil {
-                        portableSyntax = false
-                    }
                     streams.removeValue(forKey: number)
                     objects[number] = body
                 }
