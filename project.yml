@@ -149,6 +149,9 @@ targets:
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf
         type: folder
         buildPhase: resources
+      - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Web
+        type: folder
+        buildPhase: resources
       - path: Tests/DocumentActionsTests.swift
       - path: Tests/PdfSearchTests.swift
       - path: Tests/DocumentAccessBookmarkStoreTests.swift
@@ -176,6 +179,9 @@ targets:
       - path: Packages/VellumCore/Tests/VellumCoreTests/TestSupport/PdfFixtureBuilder.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/PdfFixturesSanityTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf
+        type: folder
+        buildPhase: resources
+      - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Web
         type: folder
         buildPhase: resources
       - path: Tests
