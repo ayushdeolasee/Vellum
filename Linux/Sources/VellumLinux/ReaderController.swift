@@ -7,6 +7,7 @@ import VellumCore
 final class ReaderController {
     private let rootOverride: URL?
     private let preferences = ReaderPreferences()
+    private let chat = ReaderChatController()
     let settings = ReaderSettingsController()
     private var libraryRoot: URL?
     private var store: ReadOnlyLibraryFileStore?
@@ -17,6 +18,7 @@ final class ReaderController {
     private var transition: Task<Void, Never>?
     private var closing = false
     private var closeRequested = false
+    private var chatCloseHandled = false
     private var entries: [LibrarySearchEntry] = []
     private var selectedEntry: Int?
     private var searchWork: Task<Void, Never>?
@@ -99,9 +101,22 @@ final class ReaderController {
             }
         case READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY:
             settings.handle(event, index: entry, text: text, panel: reader_settings(window))
+        case READER_SETTINGS_DONE:
+            chat.refreshProvider(settings.provider, panel: reader_chat_panel(window))
+        case READER_CHAT_TOGGLE:
+            chat.show(provider: settings.provider, panel: reader_chat_panel(window))
+        case READER_CHAT_SEND:
+            chat.send(provider: settings.provider, panel: reader_chat_panel(window))
+        case READER_CHAT_DRAFT:
+            chat.draftChanged(reader_chat_panel(window))
+        case READER_CHAT_RETRY:
+            chat.save(panel: reader_chat_panel(window), retry: true)
+        case READER_CHAT_STOP:
+            chat.stop(panel: reader_chat_panel(window))
         case READER_SELECT:
             guard entries.indices.contains(entry), entry != selectedEntry else { return }
             leaveDocument(window, flushDrafts: false) {
+                self.chat.reset(reader_chat_panel(window))
                 self.resetDocument()
                 self.selectedEntry = entry
                 let file = self.entries[entry].file.url
@@ -121,7 +136,8 @@ final class ReaderController {
             updateSearch(String(cString: reader_search_query(window)), window: window)
         case READER_CLOSE_REQUEST:
             if transition != nil { closeRequested = true; return }
-            leaveDocument(window, flushDrafts: true) {
+            leaveDocument(window, flushDrafts: true, quitting: true) {
+                self.chatCloseHandled = true
                 self.webPage?.session = nil
                 self.positionSession = nil
                 reader_commit_close(window)
@@ -131,9 +147,15 @@ final class ReaderController {
             let changing = transition
             let search = searchWork
             search?.cancel()
+            let pendingChat = chatCloseHandled ? nil : chat.drain(reader_chat_panel(window), closing: true)
             let pendingSettings = settings.beginClose()
             replaceWork { _ in
                 await changing?.value
+                await pendingChat?.value
+                if !self.chatCloseHandled {
+                    do { try await self.chat.keepForNextLaunch(allDocuments: true) }
+                    catch { FileHandle.standardError.write(Data("Could not preserve chat recovery during reader shutdown.\n".utf8)) }
+                }
                 await self.flushPosition()
                 if await self.scratchpad?.flush() == false, await self.scratchpad?.recoverPending() == false {
                     FileHandle.standardError.write(Data("Could not recover scratchpad drafts in local device state.\n".utf8))
@@ -157,16 +179,19 @@ final class ReaderController {
         await session.flush()
     }
 
-    private func confirmLeaving(_ window: OpaquePointer, scratchpad: Bool) async -> Bool {
+    private func confirmLeaving(_ window: OpaquePointer, chat: Bool = false) async -> Bool {
         // The dialog always replies once, including when GTK shuts down.
         final class Reply {
             let continuation: CheckedContinuation<Bool, Never>
             init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
         }
         return await withCheckedContinuation { continuation in
-            reader_confirm_leave(window, scratchpad, { owner, discard in
+            let answer: ReaderLeaveReply = { owner, discard in
                 Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: discard)
-            }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
+            }
+            let owner = Unmanaged.passRetained(Reply(continuation)).toOpaque()
+            if chat { reader_confirm_chat_close(window, answer, owner) }
+            else { reader_confirm_leave(window, true, answer, owner) }
         }
     }
 
@@ -182,15 +207,21 @@ final class ReaderController {
         }
     }
 
-    private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
+    private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, quitting: Bool = false, then proceed: @escaping () -> Void) {
         guard !closing, transition == nil else { return }
-        if positionSession == nil && scratchpad?.pendingSave == nil && (!flushDrafts || scratchpad == nil) { proceed(); return }
+        let pendingChat = chat.drain(reader_chat_panel(window))
+        if pendingChat == nil && positionSession == nil && scratchpad?.pendingSave == nil && (!flushDrafts || scratchpad == nil) {
+            proceed()
+            return
+        }
         reader_set_close_pending(window, true)
         let rendering = work
         transition = Task {
             await rendering?.value
             do {
                 await scratchpad?.pendingSave?.value
+                await pendingChat?.value
+                guard !closing else { return }
                 await flushPosition()
                 if flushDrafts, let scratchpad, await scratchpad.flush() == false {
                     let recovered = await scratchpad.recoverPending()
@@ -200,15 +231,25 @@ final class ReaderController {
                         guard choice == 1 || choice == 2 else { throw LibraryFileError.retryable }
                         discard = choice == 2
                     } else {
-                        guard await confirmLeaving(window, scratchpad: true) else { throw LibraryFileError.retryable }
+                        guard await confirmLeaving(window) else { throw LibraryFileError.retryable }
                         discard = true
                     }
                     try await scratchpad.releaseDrafts(discard: discard)
                 }
                 guard !closing else { return }
+                do { try await chat.keepForNextLaunch(allDocuments: quitting) }
+                catch {
+                    guard !closing else { return }
+                    if quitting {
+                        guard await confirmLeaving(window, chat: true) else { throw error }
+                    } else {
+                        reader_notice(window, "Could not keep a local copy of this chat. Its unsaved changes remain in this reader.")
+                    }
+                }
+                guard !closing else { return }
                 transition = nil
                 reader_set_close_pending(window, false)
-                if closeRequested {
+                if closeRequested && !quitting {
                     closeRequested = false
                     handle(READER_CLOSE_REQUEST, entry: -1, text: nil, window: window)
                 } else {
@@ -219,6 +260,9 @@ final class ReaderController {
                 transition = nil
                 closeRequested = false
                 reader_set_close_pending(window, false)
+                if reader_chat_visible(reader_chat_panel(window)) {
+                    chat.show(provider: settings.provider, panel: reader_chat_panel(window))
+                }
                 let message = "Could not save changes. This document is still open."
                 reader_show_status(window, message)
                 reader_settings_set_library(reader_settings(window), libraryRoot?.path ?? "", message, false)
@@ -259,6 +303,7 @@ final class ReaderController {
                 await writeContext?.retire()
                 guard !closing else { await next?.retire(); return }
                 writeContext = next
+                chat.setContext(next, provider: settings.provider, panel: reader_chat_panel(window))
                 let storage = await scratchpadStorage(files: store, context: next)
                 guard !closing else { return }
                 scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
@@ -295,6 +340,7 @@ final class ReaderController {
         let search = searchWork
         search?.cancel()
         searchWork = nil
+        chat.reset(reader_chat_panel(window))
         resetDocument()
         let oldContext = writeContext
         writeContext = nil
@@ -424,7 +470,7 @@ final class ReaderController {
         guard let store else { return }
         let title = file.lastPathComponent
         reader_set_message(window, title, "Opening offline archive…")
-        replaceWork { token in
+        replaceWork { [self] token in
             do {
                 let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
@@ -435,7 +481,12 @@ final class ReaderController {
                                            probe: self.webProbe, restoring: metadata.position, session: self.positionSession,
                                            onLocation: { point in
                     reader_article_location(window, Int32(point.page), Int32(((point.scrollFraction ?? 0) * 100).rounded()))
-                }) {
+                }) { [weak self] visibleText in
+                    guard let self, self.isCurrent(token) else { return }
+                    self.chat.bind(.article(resources.hashes, key: metadata.storageKey, title: metadata.displayTitle,
+                                            file: file, store: store, visibleText: visibleText),
+                                   store: store, context: self.writeContext, provider: self.settings.provider,
+                                   panel: reader_chat_panel(window))
                     let position = metadata.position.map { position in
                         "Saved page \(position.page)" + (position.pageCount.map { " of \($0)" } ?? "")
                     }
@@ -502,6 +553,9 @@ final class ReaderController {
                 let point = ReadingPosition(page: index + 1, pageCount: info.pageCount)
                 self.displayedPosition = point
                 self.positionSession?.moved(point)
+                self.chat.bind(.pdf(data, key: self.documentStorageKey, file: file, title: title, page: index),
+                               store: store, context: self.writeContext, provider: self.settings.provider,
+                               panel: reader_chat_panel(window))
                 bitmap.pixels.withUnsafeBytes { buffer in
                     reader_set_page(window, title, Int32(index + 1), Int32(info.pageCount),
                                     buffer.bindMemory(to: UInt8.self).baseAddress,

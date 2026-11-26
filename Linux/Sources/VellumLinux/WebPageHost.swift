@@ -11,7 +11,7 @@ final class WebPageHost {
         let uri: String
         let anchor: String?
         let width, height: Int?
-        let event: String?
+        let event, excerpt: String?
         let position: ReadingPosition?
     }
 
@@ -86,7 +86,8 @@ final class WebPageHost {
             const text = document.querySelector('p, h1')?.textContent ?? '';
             window.webkit.messageHandlers.vellum.postMessage({
                 uri: location.href.split('#')[0], anchor: text.slice(0, 256),
-                width: img?.naturalWidth ?? 0, height: img?.naturalHeight ?? 0
+                width: img?.naturalWidth ?? 0, height: img?.naturalHeight ?? 0,
+                excerpt: (document.body?.innerText ?? '').slice(0, 12000)
             });
         }, {once: true});
         """
@@ -112,13 +113,13 @@ final class WebPageHost {
     private let resources: ArchiveResourceMap
     private let onLocation: (ReadingPosition) -> Void
     var session: ReaderPositionSession?
-    private let onReady: () -> Void
+    private let onReady: (String) -> Void
     private let probe: WebProbe?
     private var reader: OpaquePointer?
 
     init(stack: OpaquePointer, resources: ArchiveResourceMap, probe: WebProbe?,
          restoring: ReadingPosition?, session: ReaderPositionSession?, onLocation: @escaping (ReadingPosition) -> Void,
-         onReady: @escaping () -> Void) {
+         onReady: @escaping (String) -> Void) {
         self.onLocation = onLocation
         self.session = session
         self.resources = resources
@@ -149,7 +150,7 @@ final class WebPageHost {
                     host.session?.moved(position)
                     return
                 }
-                if body.event == nil { host.onReady() }
+                if body.event == nil { host.onReady(body.excerpt ?? "") }
                 host.probe?.received(body)
             }
         }, { owner, uri in

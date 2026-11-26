@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 struct AiProviderResult: Sendable {
     var reply: String
@@ -25,10 +26,6 @@ final class GeminiClient {
         guard AiProvider.gemini.isAvailableOnCurrentPlatform else {
             throw AiClientError.message("Gemini is unavailable on iPhone and iPad.")
         }
-        let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
-        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(encodedModel):streamGenerateContent?alt=sse") else {
-            throw AiClientError.message("Invalid Gemini model name.")
-        }
 
         // Implicit caching (no cache_control breakpoints): send the fused prompt.
         var userParts: [[String: Any]] = [["text": prompt.joined]]
@@ -48,12 +45,8 @@ final class GeminiClient {
                 contents: contents,
                 generationConfig: generationConfig
             )
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let request = try ChatEndpoint.gemini.request(
+                model: model, key: apiKey, body: JSONSerialization.data(withJSONObject: body))
 
             var text = ""
             var calls: [[String: Any]] = []

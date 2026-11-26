@@ -5,10 +5,7 @@ import UniformTypeIdentifiers
 
 // AI assistant state — port of src/stores/ai-store.ts (see macos/specs/SPECS-ai.md).
 
-enum AiRole: String, Codable, Sendable {
-    case user
-    case assistant
-}
+typealias AiRole = ConversationText.Role
 
 enum AiProvider: String, Codable, Sendable, CaseIterable, Identifiable {
     case gemini
@@ -122,10 +119,11 @@ extension AiMessage {
     /// call sites build `AiMessage` field-by-field).
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        role = try container.decode(AiRole.self, forKey: .role)
-        content = try container.decode(String.self, forKey: .content)
-        createdAt = try container.decode(String.self, forKey: .createdAt)
+        let text = try ConversationText(from: decoder)
+        id = text.id
+        role = text.role
+        content = text.content
+        createdAt = text.createdAt
         usage = try container.decodeIfPresent(AiUsage.self, forKey: .usage)
         // `try?` on the array too: a `references` value that isn't even an array
         // (hand-edited file, future format) degrades to "no references" rather
@@ -390,15 +388,15 @@ extension AiPageImageSnapshot: Equatable {
 
 struct AiSettings: Codable, Equatable, Sendable {
     var provider: AiProvider = .defaultProvider
-    var model: String = "gemini-3.1-flash-lite-preview"
+    var model: String = ChatEndpoint.gemini.defaultModel
     var apiKey: String = ""
-    var openaiModel: String = "gpt-5.5"
+    var openaiModel: String = ChatEndpoint.openai.defaultModel
     var openaiApiKey: String = ""
     var openrouterModel: String = ""
     var openrouterApiKey: String = ""
-    var opencodeModel: String = "claude-opus-4-8"
+    var opencodeModel: String = ChatEndpoint.opencode.defaultModel
     var opencodeApiKey: String = ""
-    var opencodeGoModel: String = "glm-5.2"
+    var opencodeGoModel: String = ChatEndpoint.opencodeGo.defaultModel
     var opencodeGoApiKey: String = ""
     /// Model ids the user has pinned to the top of the model selector.
     var pinnedModels: [String] = []
@@ -1607,10 +1605,7 @@ final class AiStore {
 extension AiMessage {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(role, forKey: .role)
-        try container.encode(content, forKey: .content)
-        try container.encode(createdAt, forKey: .createdAt)
+        try ConversationText(id: id, role: role, content: content, createdAt: createdAt).encode(to: encoder)
         try container.encodeIfPresent(usage, forKey: .usage)
         try container.encode(references, forKey: .references)
         try container.encodeIfPresent(toolSummaries, forKey: .toolSummaries)

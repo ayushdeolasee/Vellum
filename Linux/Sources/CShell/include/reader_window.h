@@ -9,6 +9,7 @@ typedef struct ReaderWindow ReaderWindow;
 typedef struct ReaderSettings ReaderSettings;
 typedef enum {
     READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE, READER_SEARCH,
+    READER_CHAT_TOGGLE, READER_CHAT_SEND, READER_CHAT_STOP, READER_CHAT_RETRY, READER_CHAT_DRAFT,
     READER_SETTINGS_DONE, READER_CHOOSE_LIBRARY, READER_REOPEN_LIBRARY,
     READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY, READER_CLOSE_REQUEST, READER_TOGGLE_EDITING
 } ReaderEvent;
@@ -27,11 +28,12 @@ typedef struct ScratchpadPanel ScratchpadPanel;
 ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *reader);
 void reader_set_close_pending(ReaderWindow *reader, bool pending);
 typedef void (*ReaderLeaveReply)(void *context, bool discard);
+void reader_confirm_leave(ReaderWindow *reader, bool scratchpad, ReaderLeaveReply reply, void *context);
+void reader_confirm_chat_close(ReaderWindow *reader, ReaderLeaveReply reply, void *context);
 typedef void (*ReaderRecoveryReply)(void *context, int choice);
 void reader_confirm_recovered(ReaderWindow *reader, ReaderRecoveryReply reply, void *context);
 void reader_notice(ReaderWindow *reader, const char *message);
 void reader_article_location(ReaderWindow *reader, int page, int percent);
-void reader_confirm_leave(ReaderWindow *reader, bool scratchpad, ReaderLeaveReply reply, void *context);
 void reader_commit_close(ReaderWindow *reader);
 void reader_finish_close(ReaderWindow *reader);
 void reader_enable_search(ReaderWindow *reader);
@@ -57,3 +59,5 @@ void reader_settings_set_editing(ReaderSettings *settings, bool enabled, bool av
 void reader_show_status(ReaderWindow *reader, const char *message);
 void reader_settings_set_key(ReaderSettings *settings, const char *message, bool busy, bool removable);
 bool reader_settings_key_is_open(ReaderSettings *settings);
+
+#include "reader_chat.h"

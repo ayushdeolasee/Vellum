@@ -29,6 +29,12 @@ final class ArchiveCompatibilityTests: XCTestCase {
         XCTAssertEqual(meta.sha256, ArchiveCodec.sha256Hex(asset.1))
         let pages = try source.readCapped("text/pages.json", cap: 1024)
         XCTAssertEqual(manifest.hashes.pageText, ArchiveCodec.sha256Hex(pages))
+        XCTAssertTrue(try ArchiveCodec.articleExcerpt(in: original, matching: manifest.hashes).contains("Harbor café 東京"))
+        let tampered = try MiniZip.write(entries: [
+            MiniZip.Entry(name: "manifest.json", data: JSONEncoder().encode(manifest), stored: true),
+            MiniZip.Entry(name: "text/pages.json", data: Data("[]".utf8), stored: true)
+        ])
+        XCTAssertThrowsError(try ArchiveCodec.articleExcerpt(in: tampered, matching: manifest.hashes))
         let ink = try XCTUnwrap(decoded.inkJSON)
         XCTAssertEqual(ink, try source.readCapped("ink.json", cap: 4096))
         XCTAssertEqual(manifest.hashes.ink, ArchiveCodec.sha256Hex(ink))

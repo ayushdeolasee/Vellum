@@ -16,9 +16,6 @@ final class OpenAIClient {
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
-        guard let url = URL(string: "https://api.openai.com/v1/responses") else {
-            throw AiClientError.message("Invalid OpenAI endpoint.")
-        }
         // Responses API caching is keyed by prompt_cache_key + prefix, not
         // cache_control parts, so send the fused prompt as a single text part.
         let content = try Self.inputContent(model: model, prompt: prompt, images: images)
@@ -55,12 +52,8 @@ final class OpenAIClient {
             if let reasoningEffort {
                 body["reasoning"] = ["effort": reasoningEffort]
             }
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let request = try ChatEndpoint.openai.request(
+                model: model, key: apiKey, body: JSONSerialization.data(withJSONObject: body))
 
             let turn = try await Self.consumeTurn(request, onEvent: onEvent)
 

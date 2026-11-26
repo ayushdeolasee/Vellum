@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 /// OpenRouter chat client. Uses the OpenAI-compatible **Chat Completions** API
 /// (not the Responses API `OpenAIClient` targets). Image and tool support are
@@ -30,9 +31,6 @@ final class OpenRouterClient {
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
-        guard let url = URL(string: "https://openrouter.ai/api/v1/chat/completions") else {
-            throw AiClientError.message("Invalid OpenRouter endpoint.")
-        }
 
         var messages = Self.initialMessages(systemPrompt: systemPrompt, prompt: prompt, images: images)
         var actionResults: [String] = []
@@ -47,14 +45,8 @@ final class OpenRouterClient {
                 allowTools: allowTools,
                 sessionId: sessionIdAtStart
             )
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            request.setValue("Vellum", forHTTPHeaderField: "X-Title")
-            request.setValue("https://vellum.app", forHTTPHeaderField: "HTTP-Referer")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let request = try ChatEndpoint.openrouter.request(
+                model: model, key: apiKey, body: JSONSerialization.data(withJSONObject: body))
 
             var text = ""
             var toolAccumulators: [Int: ToolCallAccumulator] = [:]

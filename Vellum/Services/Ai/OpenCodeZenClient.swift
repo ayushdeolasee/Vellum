@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 /// OpenCode chat client, shared by the two OpenCode gateways:
 ///
@@ -19,10 +20,10 @@ final class OpenCodeClient {
         case zen
         case go
 
-        var endpoint: String {
+        var endpoint: ChatEndpoint {
             switch self {
-            case .zen: "https://opencode.ai/zen/v1/chat/completions"
-            case .go: "https://opencode.ai/zen/go/v1/chat/completions"
+            case .zen: .opencode
+            case .go: .opencodeGo
             }
         }
 
@@ -57,9 +58,6 @@ final class OpenCodeClient {
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
-        guard let url = URL(string: gateway.endpoint) else {
-            throw AiClientError.message("Invalid \(gateway.name) endpoint.")
-        }
 
         // cache_control breakpoints only help Anthropic-family models, and the
         // Zen gateway is the only path here that can reach one. Zen can't be
@@ -140,12 +138,8 @@ final class OpenCodeClient {
                     body["reasoning_effort"] = effort == "minimal" ? "low" : effort
                 }
             }
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let request = try gateway.endpoint.request(
+                model: model, key: apiKey, body: JSONSerialization.data(withJSONObject: body))
 
             var text = ""
             var toolAccumulators: [Int: ToolCallAccumulator] = [:]

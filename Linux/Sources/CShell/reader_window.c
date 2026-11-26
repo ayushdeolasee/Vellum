@@ -1,4 +1,5 @@
 #include "reader_settings.h"
+#include "reader_chat_private.h"
 
 struct ReaderWindow {
     GtkWindow *window;
@@ -10,6 +11,7 @@ struct ReaderWindow {
     GtkWidget *paging, *body, *settings_button, *notice;
     ReaderSettings *settings;
     ScratchpadPanel *scratchpad;
+    ReaderChatPanel *chat;
     ReaderCallback callback;
     void *context;
     GCancellable *leave_dialog;
@@ -19,6 +21,12 @@ struct ReaderWindow {
 static void notify(ReaderWindow *r, ReaderEvent event, int entry) {
     g_assert(shell_on_gtk_thread());
     r->callback(r, event, entry, NULL, r->context);
+}
+
+ReaderChatPanel *reader_chat_panel(ReaderWindow *r) { return r->chat; }
+
+static void chat_event(ReaderWindow *r, ReaderEvent event) {
+    if (!r->closing) notify(r, event, -1);
 }
 
 static void selected(GtkListBox *list, GtkListBoxRow *row, ReaderWindow *r) {
@@ -98,14 +106,12 @@ static void leave_answered(GObject *source, GAsyncResult *result, gpointer data)
     else request->reply(request->context, answer == 1);
 }
 
-void reader_confirm_leave(ReaderWindow *r, bool scratchpad, ReaderLeaveReply reply, void *context) {
+static void confirm_leave(ReaderWindow *r, const char *title, const char *detail, const char *action,
+                          ReaderLeaveReply reply, void *context) {
     if (r->closing || r->leave_dialog) { reply(context, false); return; }
-    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("%s", scratchpad
-        ? "Some scratchpad changes could not be saved." : "Your reading position could not be saved.");
-    gtk_alert_dialog_set_detail(dialog, scratchpad
-        ? "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk."
-        : "You can stay and retry, or continue with the last saved position.");
-    const char *buttons[] = {"Stay Here", scratchpad ? "Discard Unsaved Drafts" : "Continue Without Saving Position", NULL};
+    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("%s", title);
+    gtk_alert_dialog_set_detail(dialog, detail);
+    const char *buttons[] = {"Stay Here", action, NULL};
     gtk_alert_dialog_set_buttons(dialog, buttons);
     gtk_alert_dialog_set_cancel_button(dialog, 0);
     gtk_alert_dialog_set_default_button(dialog, 0);
@@ -113,6 +119,19 @@ void reader_confirm_leave(ReaderWindow *r, bool scratchpad, ReaderLeaveReply rep
     *request = (LeaveRequest){r, reply, context};
     r->leave_dialog = g_cancellable_new();
     gtk_alert_dialog_choose(dialog, r->window, r->leave_dialog, leave_answered, request);
+}
+
+void reader_confirm_leave(ReaderWindow *r, bool scratchpad, ReaderLeaveReply reply, void *context) {
+    confirm_leave(r, scratchpad ? "Some scratchpad changes could not be saved." : "Your reading position could not be saved.",
+        scratchpad ? "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk."
+                   : "You can stay and retry, or continue with the last saved position.",
+        scratchpad ? "Discard Unsaved Drafts" : "Continue Without Saving Position", reply, context);
+}
+
+void reader_confirm_chat_close(ReaderWindow *r, ReaderLeaveReply reply, void *context) {
+    confirm_leave(r, "Could not keep a local copy of your chat.",
+        "Stay to copy or retry unsaved chat. Closing may lose drafts and messages from this session.",
+        "Close Without Recovery", reply, context);
 }
 
 void reader_confirm_recovered(ReaderWindow *r, ReaderRecoveryReply reply, void *context) {
@@ -310,6 +329,7 @@ static void show_settings(GSimpleAction *action, GVariant *parameter, ReaderWind
     gtk_widget_set_visible(r->title, FALSE);
     gtk_widget_set_visible(r->paging, FALSE);
     gtk_widget_set_visible(r->settings_button, FALSE);
+    reader_chat_show_toggle(r->chat, FALSE);
     gtk_window_set_title(r->window, "Vellum Settings");
 }
 
@@ -322,6 +342,8 @@ static void settings_event(ReaderWindow *r, ReaderEvent event, int index, const 
         gtk_widget_set_visible(r->title, TRUE);
         gtk_widget_set_visible(r->paging, TRUE);
         gtk_widget_set_visible(r->settings_button, TRUE);
+        reader_chat_show_toggle(r->chat, TRUE);
+        notify(r, READER_SETTINGS_DONE, -1);
         gtk_window_set_title(r->window, gtk_label_get_text(GTK_LABEL(r->title)));
     } else {
         r->callback(r, event, index, text, r->context);
@@ -436,6 +458,7 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_picture_set_content_fit(GTK_PICTURE(r->picture), GTK_CONTENT_FIT_CONTAIN);
     gtk_stack_add_child(reader_content_stack(r), r->picture);
     gtk_box_append(GTK_BOX(body), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+    r->chat = reader_chat_install(GTK_HEADER_BAR(header), GTK_BOX(body), r, chat_event);
     r->status = gtk_label_new(NULL);
     gtk_widget_set_margin_top(r->status, 5);
     gtk_widget_set_margin_bottom(r->status, 5);

@@ -6,10 +6,12 @@ import VellumCore
 public struct ArchiveResourceMap: Sendable {
     public let documentURL: URL
     public let hasHandwriting: Bool
+    public let hashes: ManifestHashes
     private let snapshot: Data
     private let assets: [String: Data]
 
     public init(archive: DecodedWebArchive, documentToken: UUID, hasInkSidecar: Bool = false) {
+        hashes = archive.manifest.hashes
         documentURL = URL(string: "vellum-web://archive/\(documentToken.uuidString)/index.html")!
         hasHandwriting = archive.inkJSON != nil || hasInkSidecar
         snapshot = Data(archive.snapshotHtml.utf8)
