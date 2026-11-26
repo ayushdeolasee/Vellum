@@ -850,6 +850,29 @@ final class WebInkPersistenceTests: XCTestCase {
             accuracy: 0.01)
     }
 
+    func testFailedBoundSidecarCanBeRetriedAtSameURL() async throws {
+        let url = "https://example.com/retry-ink"
+        let key = WebLibrary.pageKey(url)
+        let path = WebInkStore.inkPath(forKey: key)
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("damaged".utf8).write(to: path)
+        let controller = makeController()
+        let web = WKWebView()
+        let overlay = controller.attachOverlay(to: web)
+        let failed = try XCTUnwrap(controller.documentOpened(url: url))
+        await failed.value
+        XCTAssertTrue(controller.documentLoadFailed)
+        XCTAssertTrue(overlay.isHidden)
+
+        let repaired = WebInkRecord.snapshot(of: sampleDrawing(), url: url, layout: layout)
+        try WebInkStore.writeRecord(repaired, to: path)
+        let retry = try XCTUnwrap(controller.documentOpened(url: url))
+        await retry.value
+        XCTAssertFalse(controller.documentLoadFailed)
+        XCTAssertFalse(overlay.isHidden)
+        XCTAssertEqual(overlay.canvas.drawing.strokes.count, 1)
+    }
+
     /// URL equality is insufficient for A → B → A: the first A load can finish
     /// after the second A becomes current. Only the newest open generation may
     /// seed the overlay.
@@ -918,7 +941,9 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertEqual(overlay.canvas.drawing.bounds.minY, try secondARecord.validatedMergedDrawing().bounds.minY, accuracy: 0.01)
         XCTAssertNil(loaders[3].seededBaseline, "a failed release barrier must not seed an empty replacement")
 
-        controller.documentOpened(url: "https://example.com/a")
+        guard controller.documentOpened(url: "https://example.com/a") == nil else {
+            return XCTFail("Returning to the retained canvas must not start another asynchronous load")
+        }
         XCTAssertFalse(overlay.isHidden, "returning to A must reveal its retained drawing")
         XCTAssertEqual(overlay.canvas.drawing.bounds.minY, try secondARecord.validatedMergedDrawing().bounds.minY, accuracy: 0.01)
 
