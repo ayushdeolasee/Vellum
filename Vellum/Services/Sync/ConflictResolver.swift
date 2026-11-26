@@ -1,89 +1,13 @@
 import Foundation
+import OSLog
+import VellumCore
 
-/// The injected merge hook. `reading` hands the resolver each version's bytes,
-/// so merge policy stays a function over `Data` and never has to import
-/// `NSFileVersion`.
-protocol ConflictResolver: Sendable {
-    func resolve(
-        _ event: ConflictEvent,
-        reading: @Sendable (ConflictVersion) async throws -> Data
-    ) async throws -> ConflictResolution
-}
+typealias ConflictResolver = VellumCore.ConflictResolver
+typealias PreserveLosersConflictResolver = VellumCore.PreserveLosersConflictResolver
 
-/// The default shipping policy. Keeps the current version, copies every losing
-/// version aside to `<dir>/conflicts/<name>.<versionID>.<ext>`, and reports
-/// them archived so the caller can mark them resolved.
-///
-/// Web sidecars merge user-owned fields and annotations. Unknown JSON and every
-/// other file type keep the conservative policy: preserve each losing version
-/// verbatim before marking the conflict resolved.
-struct PreserveLosersConflictResolver: ConflictResolver {
-    /// Where a losing version's bytes are copied. Injected so the container can
-    /// route the copy back through coordination instead of writing behind it.
-    let archive: @Sendable (URL, Data) async throws -> Void
-
-    init(archive: @escaping @Sendable (URL, Data) async throws -> Void = PreserveLosersConflictResolver.writeAtomically) {
-        self.archive = archive
-    }
-
-    func resolve(
-        _ event: ConflictEvent,
-        reading: @Sendable (ConflictVersion) async throws -> Data
-    ) async throws -> ConflictResolution {
-        if isWebRecord(event.url),
-           let merged = try await ConflictMerge.mergeWebRecord(event, reading: reading) {
-            try await archive(event.url, merged)
-            return .merged(event.url)
-        }
-        if event.url.lastPathComponent == "conversations.json" {
-            switch try await ConflictMerge.mergeConversations(event, reading: reading) {
-            case .merged(let data):
-                try await archive(event.url, data)
-                return .merged(event.url)
-            case .deferred: return .deferred
-            case .preserve: break
-            }
-        }
-        if event.url.lastPathComponent == "meta.json",
-           let merged = try await ConflictMerge.mergeMeta(event, reading: reading) {
-            try await archive(event.url, merged)
-            return .merged(event.url)
-        }
-        if event.url.deletingLastPathComponent().lastPathComponent == "positions" {
-            NSLog("[Vellum] Position conflict at %@: one device record was written by multiple peers; preserving every version", event.url.path)
-        }
-
-        var archived: [URL] = []
-        for version in event.losingVersions {
-            let data = try await reading(version)
-            let destination = Self.archiveURL(for: event.url, version: version)
-            try await archive(destination, data)
-            archived.append(destination)
-        }
-        return .keptCurrent(archivedLosers: archived)
-    }
-
-    private func isWebRecord(_ url: URL) -> Bool {
-        return url.pathExtension == "json" && !url.lastPathComponent.hasSuffix(".ink.json")
-            && url.deletingLastPathComponent().lastPathComponent == "records"
-    }
-
-    static func archiveURL(for url: URL, version: ConflictVersion) -> URL {
-        let directory = url.deletingLastPathComponent()
-            .appendingPathComponent("conflicts", isDirectory: true)
-        let stem = url.deletingPathExtension().lastPathComponent
-        let ext = url.pathExtension
-        let id = sanitized(version.id)
-        let name = ext.isEmpty ? "\(stem).\(id)" : "\(stem).\(id).\(ext)"
-        return directory.appendingPathComponent(name)
-    }
-
-    /// A version identifier is opaque and may contain path separators.
-    private static func sanitized(_ id: String) -> String {
-        let allowed = id.map { character -> Character in
-            character.isLetter || character.isNumber || character == "-" ? character : "-"
-        }
-        return String(allowed)
+extension PreserveLosersConflictResolver {
+    init(archive: @escaping @Sendable (URL, Data) async throws -> Void = Self.writeAtomically) {
+        self.init(merge: ConflictMerge.decide, archive: archive)
     }
 
     /// Fallback used when nobody injects a writer: the same tmp+rename the rest
@@ -111,6 +35,32 @@ struct PreserveLosersConflictResolver: ConflictResolver {
 
 /// Typed Apple merge policies shared by coordinated and shared-folder recovery.
 enum ConflictMerge {
+    private static let logger = Logger(subsystem: "com.ayushdeolasee.vellum", category: "Storage")
+
+    static func decide(_ event: ConflictEvent, reading: PreserveLosersConflictResolver.Reader) async throws
+        -> PreserveLosersConflictResolver.Decision {
+        let url = event.url
+        if url.pathExtension == "json", !url.lastPathComponent.hasSuffix(".ink.json"),
+           url.deletingLastPathComponent().lastPathComponent == "records",
+           let data = try await mergeWebRecord(event, reading: reading) {
+            return .merged(data)
+        }
+        if url.lastPathComponent == "conversations.json" {
+            switch try await mergeConversations(event, reading: reading) {
+            case .merged(let bytes): return .merged(bytes)
+            case .preserve: return .preserve
+            case .deferred: return .deferred
+            }
+        }
+        if url.lastPathComponent == "meta.json", let data = try await mergeMeta(event, reading: reading) {
+            return .merged(data)
+        }
+        if url.deletingLastPathComponent().lastPathComponent == "positions" {
+            logger.notice("Multiple peers modified one device position record; preserving every version.")
+        }
+        return .preserve
+    }
+
     static func mergeWebRecord(
         _ event: ConflictEvent,
         reading: @Sendable (ConflictVersion) async throws -> Data

@@ -171,6 +171,8 @@ targets:
       - path: Tests/AiPromptContextTests.swift
       - path: Tests/MarkdownParserTests.swift
       - path: Tests/StorageMigrationRecoveryTests.swift
+      - path: Tests/ConflictMergeTests.swift
+      - path: Tests/SyncedContainerConflictTests.swift
       - path: Tests/SyncedFolderStorageTests.swift
       - path: Tests/TestSupport/StorageIsolationTrait.swift
       - path: Tests/TestSupport/FakeSyncedContainer.swift

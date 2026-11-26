@@ -1,0 +1,4 @@
+module CFolderSync [system] {
+    header "shim.h"
+    export *
+}

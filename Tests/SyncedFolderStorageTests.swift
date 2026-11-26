@@ -89,5 +89,43 @@ struct SyncedFolderStorageTests {
             await coordinator.stop()
         }
     }
+
+    @Test("The default shared-folder backend recovers a PDF conflict through the coordinator")
+    func liveFolderBackend() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let shared = root.appendingPathComponent("shared", isDirectory: true)
+        let pdfs = shared.appendingPathComponent("PDFs", isDirectory: true)
+        try fm.createDirectory(at: pdfs, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let canonical = pdfs.appendingPathComponent("book.pdf")
+        let sibling = pdfs.appendingPathComponent("book.sync-conflict-20260122-151234-PEER.pdf")
+        try Data([1]).write(to: canonical)
+        try Data([2]).write(to: sibling)
+        let suite = "vellum.shared-folder-tests.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try await AppDefaults.withDefaults(defaults) {
+            WebStorageSettings.selectSyncedFolder(path: shared.path, bookmark: Data())
+            let coordinator = StorageCoordinator(
+                storeDir: root.appendingPathComponent("local/web"),
+                rootResolver: { Issue.record("Unexpected ubiquity lookup"); return nil },
+                conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+            await coordinator.start()
+            do {
+                #expect(await coordinator.currentStatus().effectiveMode == .syncedFolder)
+                let deadline = ContinuousClock.now + .seconds(5)
+                while await coordinator.archivedConflicts().isEmpty, ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                let archived = try #require(await coordinator.archivedConflicts().first)
+                #expect(archived.originalURL.standardizedFileURL == canonical.standardizedFileURL)
+                #expect(try Data(contentsOf: archived.archiveURL) == Data([2]))
+                #expect(try Data(contentsOf: canonical) == Data([1]))
+                #expect(!fm.fileExists(atPath: sibling.path))
+            } catch { await coordinator.stop(); throw error }
+            await coordinator.stop()
+        }
+    }
 }
 #endif
