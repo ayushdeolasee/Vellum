@@ -7,7 +7,9 @@ import VellumCore
 final class ReaderController {
     private let root: URL
     private var store: ReadOnlyLibraryFileStore?
-    private var entries: [LibraryFileEntry] = []
+    private var entries: [LibrarySearchEntry] = []
+    private var selectedEntry: Int?
+    private var searchWork: Task<Void, Never>?
     private var selection: URL?
     private var bytes: Data?
     private var pdfTitle: String?
@@ -29,11 +31,11 @@ final class ReaderController {
         guard shell_install_pump(SHELL_AUTO, serviceSwiftMainQueue) >= 0 else { return 1 }
         defer { shell_remove_pump() }
         let status = withExtendedLifetime(self) {
-            reader_run({ window, event, row, context in
+            reader_run({ window, event, entry, context in
                 precondition(shell_on_gtk_thread())
                 MainActor.assumeIsolated {
                     let owner = Unmanaged<ReaderController>.fromOpaque(context!).takeUnretainedValue()
-                    owner.handle(event, row: Int(row), window: window!)
+                    owner.handle(event, entry: Int(entry), window: window!)
                 }
             }, Unmanaged.passUnretained(self).toOpaque())
         }
@@ -58,22 +60,23 @@ final class ReaderController {
         generation == token && !Task.isCancelled
     }
 
-    private func handle(_ event: ReaderEvent, row: Int, window: OpaquePointer) {
+    private func handle(_ event: ReaderEvent, entry: Int, window: OpaquePointer) {
         switch event {
         case READER_OPEN:
             replaceWork { token in
                 do {
                     let root = try await RootDirectory.open(self.root)
                     let store = ReadOnlyLibraryFileStore(root: root)
-                    let entries = try await LibraryCatalog.documents(in: store)
+                    let (entries, catalog) = try await LibraryCatalog.searchEntries(in: store)
                     guard self.isCurrent(token) else { return }
                     self.store = store
-                    self.metadataCatalog = nil
+                    self.metadataCatalog = catalog
                     self.entries = entries
-                    for entry in entries { reader_add_row(window, entry.name) }
+                    self.showRows(entries.indices, window: window)
                     if entries.isEmpty {
                         reader_set_message(window, "Vellum", "No documents in this library.")
                     } else {
+                        reader_enable_search(window)
                         reader_select_row(window, 0)
                     }
                 } catch {
@@ -82,8 +85,9 @@ final class ReaderController {
                 }
             }
         case READER_SELECT:
-            guard entries.indices.contains(row) else { return }
-            selection = entries[row].url
+            guard entries.indices.contains(entry), entry != selectedEntry else { return }
+            selectedEntry = entry
+            selection = entries[entry].file.url
             bytes = nil
             pdfTitle = nil
             pageCount = 0
@@ -98,14 +102,48 @@ final class ReaderController {
             if pageIndex > 0 { showPage(pageIndex - 1, window: window) }
         case READER_NEXT:
             if pageIndex + 1 < pageCount { showPage(pageIndex + 1, window: window) }
+        case READER_SEARCH:
+            updateSearch(String(cString: reader_search_query(window)), window: window)
         case READER_CLOSE:
             webPage = nil
+            let search = searchWork
+            search?.cancel()
             replaceWork { _ in
+                await search?.value
                 await PdfiumActor.shared.shutdown()
                 reader_finish_close(window)
             }
         default:
             preconditionFailure("Unknown reader event")
+        }
+    }
+
+    private func updateSearch(_ query: String, window: OpaquePointer) {
+        let prior = searchWork
+        prior?.cancel()
+        reader_clear_rows(window)
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            showRows(entries.indices, window: window)
+            return
+        }
+
+        let entries = self.entries
+        searchWork = Task {
+            // Join cancelled requests so rapid edits leave only one ranking pass running.
+            await prior?.value
+            guard !Task.isCancelled,
+                  let matches = try? await LibraryCatalog.matches(in: entries, query: query),
+                  !Task.isCancelled else { return }
+            showRows(matches, window: window)
+            if matches.isEmpty { reader_show_no_matches(window) }
+        }
+    }
+
+    private func showRows(_ indexes: some Sequence<Int>, window: OpaquePointer) {
+        for (row, index) in indexes.enumerated() {
+            let entry = entries[index]
+            reader_add_row(window, Int32(index), entry.title, entry.file.name)
+            if index == selectedEntry { reader_select_row(window, Int32(row)) }
         }
     }
 
