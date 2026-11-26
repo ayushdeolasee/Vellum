@@ -378,7 +378,11 @@ public struct PdfDictSource {
     }
 
     public func name(forKey key: String) -> String? {
-        guard let raw = rawValue(forKey: key), raw.first == UInt8(ascii: "/") else { return nil }
+        rawValue(forKey: key).flatMap(Self.decodeName)
+    }
+
+    static func decodeName(_ raw: [UInt8]) -> String? {
+        guard raw.first == UInt8(ascii: "/") else { return nil }
         return String(decoding: PdfSyntax.nameBytes(raw.dropFirst()), as: UTF8.self)
     }
 

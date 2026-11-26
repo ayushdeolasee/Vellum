@@ -118,6 +118,7 @@
 		1B939C33E9BD594B1B0F2F2D /* SyncedContainerFakeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B731E162E5BC19099ACCB0A2 /* SyncedContainerFakeTests.swift */; };
 		1C3EB3556F9B859C436AA764 /* HomeSearchRanker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D1A270BA1DE40AC978F462 /* HomeSearchRanker.swift */; };
 		1CA0CA499FAE094D68A15E35 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 027E09C0BD7A98F4590A5878 /* ContentView.swift */; };
+		1CF019B7AD8A276C49C87E63 /* PdfAnnotationExchangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11607CFB1D61FC997682EE1C /* PdfAnnotationExchangeTests.swift */; };
 		1D41D8DEFA64F5F433006BB2 /* HighlightSwatchButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A23802792908CA275A878C /* HighlightSwatchButton.swift */; };
 		1E750C58FABE8CA593BEE95E /* AiPanel_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0317C551D2245591754B389C /* AiPanel_iOS.swift */; };
 		1E7BFBF158342C3E70EAB718 /* PdfChrome_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE14F1472A7451AF57FD04ED /* PdfChrome_iOS.swift */; };
@@ -211,6 +212,7 @@
 		3DA6CF8CCF2666634EC157D8 /* AiStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = E201F2530645C6348ECC59AA /* AiStreaming.swift */; };
 		3DB291A451AD1F97C1A85EED /* RetentionLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = D47206539C63AB91217C0F80 /* RetentionLedger.swift */; };
 		3DE787695903724FCA8795A7 /* DictionarySheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 851DDDAC19BBA2010AC50609 /* DictionarySheet_iOS.swift */; };
+		3DEBF3DDB421046B9292475B /* PdfAnnotationExchangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11607CFB1D61FC997682EE1C /* PdfAnnotationExchangeTests.swift */; };
 		3E033DAAAD3349E353641CD0 /* WebStorageLocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30CC2363C63B98CDE69C7B5A /* WebStorageLocationTests.swift */; };
 		3E706409E2D0039C0100A7B6 /* InkOverlayProvider_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 438D3DD29145D25F74DF89C8 /* InkOverlayProvider_iOS.swift */; };
 		3EA8E32DDDFE39367F6812C8 /* Untitled.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8F4E0214AE68A33C5052709 /* Untitled.icon */; };
@@ -891,6 +893,7 @@
 		0F475713A06234E44D7BF506 /* PdfFixturesSanityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfFixturesSanityTests.swift; sourceTree = "<group>"; };
 		0FDE9E4FAA9229184B3BDC7F /* LiveTabViewerContract_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabViewerContract_iOS.swift; sourceTree = "<group>"; };
 		107A9FB8BC038245B98313FB /* VellumCapture.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = VellumCapture.js; sourceTree = "<group>"; };
+		11607CFB1D61FC997682EE1C /* PdfAnnotationExchangeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAnnotationExchangeTests.swift; sourceTree = "<group>"; };
 		133E806CD6AA201171367931 /* VellumWidgetSnapshotPublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumWidgetSnapshotPublisher.swift; sourceTree = "<group>"; };
 		13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCacheTests.swift; sourceTree = "<group>"; };
 		14B753184F67511D027B50AA /* ExternalLibraryFilteringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalLibraryFilteringTests.swift; sourceTree = "<group>"; };
@@ -1590,6 +1593,7 @@
 				13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */,
 				2296945CE1660D607D4F253B /* PageTextExtractionGateTests.swift */,
 				524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */,
+				11607CFB1D61FC997682EE1C /* PdfAnnotationExchangeTests.swift */,
 				39FB41AFFBD563DF4888B0E8 /* PdfKitZoomModeTests.swift */,
 				A5003641A54B311693588C6C /* PdfPersistenceTests.swift */,
 				6B040C2212CD7AB6A499ED27 /* PdfSearchTests.swift */,
@@ -2912,6 +2916,7 @@
 				5E4689891BF4419809DD57AF /* HomeDropTests.swift in Sources */,
 				D5B2CDAC6898F29FDAB0BC1C /* MarkdownParserTests.swift in Sources */,
 				E74B34B7449691A9CDDE76C0 /* PageTextCacheTests.swift in Sources */,
+				3DEBF3DDB421046B9292475B /* PdfAnnotationExchangeTests.swift in Sources */,
 				71D16B45A78CFAA1DF540797 /* PdfFixtureBuilder.swift in Sources */,
 				DDDF1A419B658BFCB4F630C1 /* PdfFixturesSanityTests.swift in Sources */,
 				EDEA6E3022E09A620D3BC395 /* PdfSearchTests.swift in Sources */,
@@ -3265,6 +3270,7 @@
 				91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */,
 				114C5F995D5A05DB62C0BF54 /* PageTextExtractionGateTests.swift in Sources */,
 				2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */,
+				1CF019B7AD8A276C49C87E63 /* PdfAnnotationExchangeTests.swift in Sources */,
 				0AC6D4AF613C4EAF59CF26F2 /* PdfFixtureBuilder.swift in Sources */,
 				CF0C188A66E876B6548E520A /* PdfFixturesSanityTests.swift in Sources */,
 				941B8E8B32DFC4D83B1D9D06 /* PdfKitZoomModeTests.swift in Sources */,

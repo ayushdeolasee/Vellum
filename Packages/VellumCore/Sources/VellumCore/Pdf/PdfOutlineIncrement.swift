@@ -269,6 +269,11 @@ public enum PdfOutlineIncrement {
 
     /// Object number of the 1-based page, walking the /Pages tree depth-first.
     public static func pageObjectNumber(in file: ClassicPdfFile, catalog: PdfDictSource, pageNumber: Int) -> Int? {
+        firstPage(in: file, catalog: catalog) { index, _, _ in index == pageNumber }
+    }
+
+    static func firstPage(in file: ClassicPdfFile, catalog: PdfDictSource,
+                          matching predicate: (Int, Int, PdfDictSource) throws -> Bool) rethrows -> Int? {
         guard let pagesNumber = catalog.reference(forKey: "Pages") else { return nil }
         var counter = 0
         var visited: Set<Int> = []
@@ -277,7 +282,7 @@ public enum PdfOutlineIncrement {
             guard visited.insert(number).inserted, let node = file.objectSource(number) else { continue }
             if node.name(forKey: "Type") == "Page" {
                 counter += 1
-                if counter == pageNumber { return number }
+                if try predicate(counter, number, node) { return number }
             } else if let kids = file.resolvedValue(forKey: "Kids", in: node),
                       let references = PdfArraySource.references(inArray: kids) {
                 pending.append(contentsOf: references.reversed())
