@@ -36,7 +36,7 @@ public struct ScratchpadStorage: Sendable {
             switch self {
             case .invalidNote: "The scratchpad is not valid UTF-8 text."
             case .oversizedNote: "The scratchpad exceeds the 200,000-character limit."
-            case .unsupportedImage: "Choose a supported image inside the fixture library."
+            case .unsupportedImage: "Choose a supported image inside the library folder."
             case .changedOnDisk: "The saved note changed on disk. Your draft is still here."
             case .unavailableImage: "The image could not be saved intact. Your draft is still here."
             }
@@ -108,7 +108,7 @@ public struct ScratchpadStorage: Sendable {
     public func prepareImage(_ url: URL) async throws -> Image {
         let ext = url.pathExtension.lowercased()
         guard canEdit, let importDirectory, Self.formats.contains(ext),
-              url.deletingLastPathComponent().path == importDirectory.path,
+              url.pathComponents.starts(with: importDirectory.pathComponents),
               let data = try await files.root.readRegularFile(url, byteLimit: Self.imageBytes)
         else { throw Failure.unsupportedImage }
         let id = UUID().uuidString.lowercased()

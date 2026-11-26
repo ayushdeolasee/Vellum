@@ -36,7 +36,10 @@ final class ReaderPositionSession {
         timer?.cancel()
         timer = nil
         while true {
-            if let write { try await write.value }
+            if let write {
+                try await write.value
+                continue
+            }
             guard let value = latest, value != saved else { return }
             let next = Task {
                 defer { self.write = nil }
