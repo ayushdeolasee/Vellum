@@ -123,13 +123,16 @@ struct PositionMergeTests {
         let t0 = PositionFixtures.date("2026-08-02T09:00:00.000000+00:00")
         try await storage.write(
             PositionFixtures.record(.mac, writtenAt: t0, documents: [key: .init(openedAt: t0)]))
-        try Data("{ not json at all".utf8).write(
-            to: root.appendingPathComponent(PositionLayout.fileName(for: PositionFixtures.phone.id)))
+        let name = PositionLayout.fileName(for: PositionFixtures.phone.id)
+        let corrupt = Data("{ not json at all".utf8)
+        try corrupt.write(to: root.appendingPathComponent(name))
 
         let records = await storage.loadAll()
         let merged = PositionMerge.merge(records)
 
         #expect(records.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
+        #expect(try Data(contentsOf: storage.quarantineDir.appendingPathComponent(name)) == corrupt)
         #expect(merged[key]?.openedAt?.device == PositionFixtures.mac.stub)
     }
 
