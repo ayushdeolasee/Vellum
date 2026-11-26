@@ -138,6 +138,7 @@ final class PortableStrokeTests: XCTestCase {
         let payload = try fixture("portable-shifted", "zlib", in: "Ink").base64EncodedString()
         var wire = try XCTUnwrap(PortableStroke.decodePDFPayload(payload).first)
         let rebuilt = try PKStroke(wire)
+        XCTAssertTrue(try wire.describes(rebuilt))
         let reopened = try XCTUnwrap(PKDrawing(data: PKDrawing(strokes: [rebuilt]).dataRepresentation()).strokes.first)
         XCTAssertEqual(reopened.transform, CGAffineTransform(translationX: 20, y: 0))
         XCTAssertEqual(reopened.mask?.cgPath, original.mask?.cgPath)
