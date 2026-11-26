@@ -61,7 +61,7 @@ public enum SharedPDFIdentity {
            PdfEditEligibility.classify(original) == .editable,
            let bytes = try? PdfInfoIncrement.setMetadataIncrement(normalizedData: original, key: "doc_id", value: id),
            bytes.count > original.count, bytes.starts(with: original),
-           PdfEditEligibility.classify(bytes) == .editable, stamp(in: bytes, readerID: readID(bytes)) == id {
+           (try? PdfEditEligibility.validateOutput(bytes)) != nil, stamp(in: bytes, readerID: readID(bytes)) == id {
             return (bytes, id)
         }
         return (original, DocumentIdentity.byteHash(original))
