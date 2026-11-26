@@ -6,6 +6,13 @@ import VellumCore
 
 @Suite(.serialized, .isolatedStorage)
 struct InkCapabilityAdvertisingTests {
+    // The real folder backend can be exercised before a watcher scan without
+    // timing an OS notification against the position write.
+    private struct SilentWatcher: FolderDirectoryWatching {
+        func update(directories: Set<URL>, notify: @escaping @Sendable () -> Void) {}
+        func stop() {}
+    }
+
     @Test("Only eligible shared storage advertises the hosted app build and binds new position bytes",
           arguments: [false, true])
     func advertisesHandwritingCapability(eligible: Bool) async throws {
@@ -65,6 +72,77 @@ struct InkCapabilityAdvertisingTests {
             await localCoordinator.start()
             await localCoordinator.stop()
             #expect(!FileManager.default.fileExists(atPath: InkCapabilityStore.directory(in: local).path))
+        }
+    }
+
+    @Test("Raw or unattributed capability conflicts preserve the occupied files")
+    func rawConflictsBlockCapabilityAdvertising() async throws {
+        try await withFixture { shared, local in
+            let build = try #require(StorageCoordinator.liveInkCapabilityBuild)
+            let device = DeviceIdentity.current()
+            let files = LocalFolderFileStore(root: shared)
+            let folder = FolderSyncedContainer(root: shared, store: files, watcher: SilentWatcher(),
+                                               rescanInterval: .seconds(3600))
+            let directory = InkCapabilityStore.directory(in: shared)
+            let canonical = directory.appendingPathComponent(device.id.rawValue + ".json")
+            let sibling = directory.appendingPathComponent(
+                device.id.rawValue + ".sync-conflict-20261126-120000-PEER.json")
+            let archive = directory.appendingPathComponent("conflicts", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString + ".json")
+            let occupied = Data("preserve this conflict".utf8)
+            try await files.replace(sibling, with: occupied)
+            let coordinator = StorageCoordinator(
+                storeDir: local, modeProvider: { .syncedFolder }, syncedFolderRootResolver: { shared },
+                folderContainerFactory: StorageCoordinator.sharedFolderActivation { _ in
+                    await folder.resume()
+                    return folder
+                },
+                conflictArchiveRegistry: .init(load: { [] }, save: { _ in }),
+                inkCapabilityBuild: build)
+            let positions = CoordinatedPositionStorage(coordinator: coordinator)
+            let record = PositionDeviceRecord(deviceID: device.id, deviceName: device.name,
+                                              devicePlatform: device.platform, writtenAt: .now)
+            await coordinator.start()
+            do {
+                try #require(await coordinator.currentStatus().effectiveMode == .syncedFolder)
+                #expect(try await files.read(canonical) == nil)
+                #expect(try await files.read(sibling) == occupied)
+
+                try await files.remove(sibling)
+                try await positions.write(record)
+                let original = try #require(try await files.read(canonical))
+                try await files.replace(sibling, with: occupied)
+                let visible = try await folder.list(directory)
+                #expect(visible.map(\.name) == [canonical.lastPathComponent])
+                #expect(visible.first?.hasUnresolvedConflicts == false)
+                var updated = record
+                updated.deviceName += " updated"
+                try await positions.write(updated)
+                #expect(try await files.read(canonical) == original)
+                #expect(try await files.read(sibling) == occupied)
+
+                try await files.remove(sibling)
+                try await files.replace(archive, with: occupied)
+                try await positions.write(updated)
+                #expect(try await files.read(canonical) == original)
+                #expect(try await files.read(archive) == occupied)
+                try await files.remove(canonical)
+                try await positions.write(updated)
+                #expect(try await files.read(canonical) == nil)
+                #expect(try await files.read(archive) == occupied)
+
+                try await files.remove(archive)
+                try await positions.write(updated)
+                let refreshed = try #require(try await files.read(canonical))
+                let fields = try JSONDecoder().decode([String: JSONValue].self, from: refreshed)
+                #expect(fields["app_build"] == .string(build))
+                #expect(fields["position_sha256"] == .string(DocumentIdentity.byteHash(
+                    try PositionCoding.encoder.encode(updated))))
+            } catch {
+                await coordinator.stop()
+                throw error
+            }
+            await coordinator.stop()
         }
     }
 

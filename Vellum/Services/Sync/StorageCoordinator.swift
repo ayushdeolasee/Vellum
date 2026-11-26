@@ -1050,16 +1050,9 @@ actor StorageCoordinator {
     nonisolated func advertiseInkCapability(in context: StorageContext, for device: DeviceID) async {
         guard let inkCapabilityBuild, RuntimeProfile.current.syncEnabled,
               case .coordinated(let container, let layout) = context,
-              layout.backend == .syncedFolder else { return }
+              layout.backend == .syncedFolder,
+              let folder = container as? FolderSyncedContainer else { return }
         do {
-            let directory = InkCapabilityStore.directory(in: layout.rootDir)
-            let items = try await container.list(directory)
-            guard !items.contains(where: { $0.name == device.rawValue + ".json" && $0.hasUnresolvedConflicts })
-            else { return }
-            let archived = try await container.list(
-                directory.appendingPathComponent("conflicts", isDirectory: true),
-                matching: SyncedItemFilter(namePrefix: device.rawValue + "."))
-            guard archived.isEmpty else { return }
             try await InkCapabilityStore.advertise(in: layout.rootDir, device: device,
                 appBuild: inkCapabilityBuild, read: { url, limit in
                     do {
@@ -1070,6 +1063,8 @@ actor StorageCoordinator {
                     } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
                         return nil
                     }
+                }, canPublish: {
+                    try await folder.permitsInkCapabilityAdvertisement()
                 }, replace: { url, bytes, expected in
                     try await container.replace(url, with: bytes, ifCurrent: expected)
                 })
