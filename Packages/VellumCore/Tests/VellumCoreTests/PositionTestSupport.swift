@@ -1,6 +1,6 @@
 import Foundation
 
-@testable import Vellum
+import VellumCore
 
 /// Shared fixtures for the position-store suites. Device ids are fixed and
 /// ordered (`aaaa…` < `bbbb…` < `cccc…`) so the tie-break rule can be asserted
