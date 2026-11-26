@@ -1,0 +1,5 @@
+module CPdfium [system] {
+    header "shim.h"
+    link "pdfium"
+    export *
+}
