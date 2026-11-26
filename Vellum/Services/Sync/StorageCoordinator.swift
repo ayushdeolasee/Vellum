@@ -163,6 +163,7 @@ actor StorageCoordinator {
     }
 
     private let storeDir: URL
+    private let inkCapabilityBuild: String?
     private let modeProvider: @Sendable () -> WebStorageMode?
     private let effectiveModeProvider: @Sendable () -> WebStorageMode
     private struct ResolvedConfiguration: Sendable {
@@ -239,9 +240,11 @@ actor StorageCoordinator {
             StorageCoordinator.sharedFolderActivation { layout in
                 await SharedFolderContainerFactory.make(root: layout.rootDir)
             },
-        conflictArchiveRegistry: ConflictArchiveRegistry = .live
+        conflictArchiveRegistry: ConflictArchiveRegistry = .live,
+        inkCapabilityBuild: String? = nil
     ) {
         self.storeDir = storeDir
+        self.inkCapabilityBuild = inkCapabilityBuild
         self.modeProvider = modeProvider
         self.effectiveModeProvider = effectiveModeProvider
         self.rootResolver = rootResolver
@@ -250,6 +253,18 @@ actor StorageCoordinator {
         self.folderContainerFactory = folderContainerFactory
         self.conflictArchiveRegistry = conflictArchiveRegistry
         self.layout = .local(storeDir: storeDir)
+    }
+
+    /// Only the app targets carrying I9's handwriting merge opt into advertising.
+    static var liveInkCapabilityBuild: String? {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+              !version.isEmpty, !build.isEmpty else { return nil }
+        #if os(macOS)
+        return "macOS/\(version) (\(build))"
+        #else
+        return "iOS/\(version) (\(build))"
+        #endif
     }
 
     static func sharedFolderActivation(
@@ -654,6 +669,7 @@ actor StorageCoordinator {
         lifecycle = .starting
         let configuration = await resolveConfiguration(chosenMode: modeProvider())
         install(configuration)
+        await refreshInkCapability()
         await rediscoverArchivedConflicts()
     }
 
@@ -785,6 +801,7 @@ actor StorageCoordinator {
         acceptsCoordinatedOperations = true
         acceptsConflictResolution = true
         lifecycle = .active
+        await refreshInkCapability()
         await rediscoverArchivedConflicts()
         launchConflictDrainIfNeeded()
     }
@@ -903,6 +920,7 @@ actor StorageCoordinator {
             await container.suspend()
         }
         install(next)
+        await refreshInkCapability()
         await rediscoverArchivedConflicts()
     }
 
@@ -974,6 +992,7 @@ actor StorageCoordinator {
                 await container.suspend()
             }
             install(next)
+            await refreshInkCapability()
             await rediscoverArchivedConflicts()
         } else {
             lifecycle = .active
@@ -1016,6 +1035,44 @@ actor StorageCoordinator {
             acceptsConflictResolution = false
             containerIsSuspended = false
             lifecycle = .active
+        }
+    }
+
+    private func refreshInkCapability() async {
+        guard inkCapabilityBuild != nil, layout.backend == .syncedFolder else { return }
+        try? await withStorageContext { context in
+            await self.advertiseInkCapability(in: context, for: DeviceIdentity.current().id)
+        }
+    }
+
+    /// Called within admitted storage work, including the position save that
+    /// just changed the bytes bound to this device's advertisement.
+    nonisolated func advertiseInkCapability(in context: StorageContext, for device: DeviceID) async {
+        guard let inkCapabilityBuild, RuntimeProfile.current.syncEnabled,
+              case .coordinated(let container, let layout) = context,
+              layout.backend == .syncedFolder,
+              let folder = container as? FolderSyncedContainer else { return }
+        do {
+            try await InkCapabilityStore.advertise(in: layout.rootDir, device: device,
+                appBuild: inkCapabilityBuild, read: { url, limit in
+                    do {
+                        return try await container.read(url) { bytes in
+                            guard bytes.count <= limit else { throw LibraryFileError.unavailable }
+                            return bytes
+                        }
+                    } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                        return nil
+                    }
+                }, canPublish: {
+                    try await folder.permitsInkCapabilityAdvertisement()
+                }, replace: { url, bytes, expected in
+                    try await container.replace(url, with: bytes, ifCurrent: expected)
+                })
+        } catch {
+            // The ordinary library stays usable. Linux treats an absent or
+            // unverified advertisement as incompatible.
+            Logger(subsystem: Bundle.main.bundleIdentifier ?? "Vellum", category: "Storage")
+                .error("Could not advertise shared handwriting capability: \(error.localizedDescription, privacy: .private)")
         }
     }
 

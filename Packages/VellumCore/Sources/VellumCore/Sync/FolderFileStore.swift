@@ -4,9 +4,16 @@ import CFolderSync
 /// Extra primitives a folder backend needs. A filtered library listing can
 /// never be used for discovery, and a separate read + write cannot implement CAS.
 public protocol FolderFileStore: LibraryFileStore {
+    func occupiedNames(in directory: URL) throws -> [String]
     func contents(of directory: URL) throws -> [FolderEntry]
     func replace(_ url: URL, with data: Data, ifCurrent expected: Data?) async throws -> Bool
     func archiveSibling(_ sibling: URL, expected: Data, to archive: URL) async throws -> URL?
+}
+
+public extension FolderFileStore {
+    func occupiedNames(in directory: URL) throws -> [String] {
+        try contents(of: directory).map { $0.url.lastPathComponent }
+    }
 }
 
 public struct FolderEntry: Sendable {
@@ -56,6 +63,14 @@ public struct LocalFolderFileStore: FolderFileStore {
     }
 
     public func read(_ url: URL) async throws -> Data? { try bytes(checked(url)) }
+
+    // Include directories, broken symlinks and special files as occupied names
+    // without following or opening them during archive placement.
+    public func occupiedNames(in directory: URL) throws -> [String] {
+        let path = try checked(directory, allowRoot: true)
+        do { return try fm.contentsOfDirectory(atPath: path.path) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+    }
 
     public func contents(of directory: URL) throws -> [FolderEntry] {
         let dir = try checked(directory, allowRoot: true)

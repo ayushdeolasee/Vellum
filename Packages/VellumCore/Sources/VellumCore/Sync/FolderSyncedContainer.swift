@@ -56,6 +56,16 @@ public actor FolderSyncedContainer: SyncedContainer {
         }.filter(filter.matches)
     }
 
+    /// Bypass the browsing filter and watcher snapshot for this write check.
+    /// An orphan sibling is evidence even when no canonical version exists.
+    public func permitsInkCapabilityAdvertisement() throws -> Bool {
+        guard changes != nil else { throw SyncedContainerError.unavailable }
+        let directory = InkCapabilityStore.directory(in: root)
+        let liveNames = try store.occupiedNames(in: directory)
+        let recovery = try store.occupiedNames(in: directory.appendingPathComponent("conflicts", isDirectory: true))
+        return !InkCapabilityStore.hasPublicationConflict(liveNames: liveNames, hasRecovery: !recovery.isEmpty)
+    }
+
     public func resume() async {
         guard changes == nil else { return }
         generation += 1
