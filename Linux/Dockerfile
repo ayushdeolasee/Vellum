@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config ca-certificates curl git python3 time \
     libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
     libsecret-1-dev zlib1g-dev weston dbus dbus-daemon at-spi2-core python3-pyatspi python3-pil \
-    fonts-dejavu-core libgl1-mesa-dri \
+    fonts-dejavu-core fonts-noto-cjk libgl1-mesa-dri \
  && rm -rf /var/lib/apt/lists/*
 
 ARG PDFIUM_TAG=chromium/8179
