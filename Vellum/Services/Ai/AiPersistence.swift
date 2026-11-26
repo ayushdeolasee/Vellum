@@ -230,8 +230,19 @@ enum AiPersistence {
         guard canClearConversation(for: document) else { return false }
         let key = DocumentIdentity.storageKey(for: document)
         if let coordinator {
-            await migrateToCurrentStorageKeyIfNeeded(document: document, key: key, coordinator: coordinator)
-        } else { migrateToCurrentStorageKeyIfNeeded(document: document, key: key) }
+            return (try? await DocumentDataStore.withSidecarWriteAdmission(
+                forKey: key, document: document, coordinator: coordinator
+            ) {
+                try await migrateToCurrentStorageKeyIfNeeded(document: document, key: key, coordinator: coordinator)
+                return await recordAdmittedClear(document: document, key: key, coordinator: coordinator)
+            }) ?? false
+        }
+        migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
+        return await recordAdmittedClear(document: document, key: key, coordinator: nil)
+    }
+
+    @MainActor private static func recordAdmittedClear(document: DocumentInfo, key: String,
+                                                       coordinator: StorageCoordinator?) async -> Bool {
         guard canClearConversation(for: document) else { return false }
         do {
             _ = try await Task.detached {
@@ -333,19 +344,29 @@ enum AiPersistence {
         let id = UUID()
         let task = Task { @MainActor in
             defer { loadingConversations[id] = nil }
-            return await loadConversation(document: document, key: key, coordinator: coordinator)
+            coordinators[key] = coordinator
+            documents[key] = document
+            if document.docId?.isEmpty == false, DocumentIdentity.sha256Hex(document.pdfPath) != key,
+               let flush = pendingFlush { await flush.value }
+            do {
+                return try await DocumentDataStore.withSidecarWriteAdmission(
+                    forKey: key, document: document, coordinator: coordinator
+                ) {
+                    try await loadAdmittedConversation(document: document, key: key, coordinator: coordinator)
+                }
+            } catch {
+                unavailableKeys.insert(key)
+                return []
+            }
         }
         loadingConversations[id] = task
         return await task.value
     }
 
-    @MainActor private static func loadConversation(
+    @MainActor private static func loadAdmittedConversation(
         document: DocumentInfo, key: String, coordinator: StorageCoordinator
-    ) async -> [AiMessage] {
-        coordinators[key] = coordinator
-        documents[key] = document
-        await migrateToCurrentStorageKeyIfNeeded(
-            document: document, key: key, coordinator: coordinator)
+    ) async throws -> [AiMessage] {
+        try await migrateToCurrentStorageKeyIfNeeded(document: document, key: key, coordinator: coordinator)
         if let cached = cache[key], unavailableKeys.contains(key) == false { return cached }
         let intent: ConversationOperationJournal.Intent?
         do { intent = try await Task.detached { try ConversationOperationJournal.read(key) }.value }
@@ -355,7 +376,7 @@ enum AiPersistence {
         // turn into a blind replacement merely because readiness later flips.
         let pendingLocal = unavailableKeys.contains(key) ? cache[key] : nil
 
-        let data: Data?
+        var data: Data?
         do {
             data = try await DocumentDataStore.loadConversationsData(
                 forKey: key, coordinator: coordinator)
@@ -378,17 +399,16 @@ enum AiPersistence {
         }
         if applyClearIntent(intent, data: data, key: key) { return [] }
 
-        guard let data, !data.isEmpty else {
-            // Preserve the lazy UserDefaults migration without stepping outside
-            // the coordinated boundary for its destination write.
-            if let migrated = await migrateLegacyIfNeeded(
-                document: document, key: key, coordinator: coordinator)
-            {
-                return acceptAuthoritativeConversation(
-                    migrated, pendingLocal: pendingLocal, key: key)
+        if data == nil {
+            do {
+                data = try await migrateLegacyIfNeeded(document: document, key: key, coordinator: coordinator)
+            } catch {
+                unavailableKeys.insert(key)
+                return []
             }
-            return acceptAuthoritativeConversation(
-                [], pendingLocal: pendingLocal, key: key)
+        }
+        guard let data, !data.isEmpty else {
+            return acceptAuthoritativeConversation([], pendingLocal: pendingLocal, key: key)
         }
         guard let decoded = decodeMessages(data) else {
             undecodableKeys.insert(key)
@@ -873,15 +893,15 @@ enum AiPersistence {
         document: DocumentInfo,
         key: String,
         coordinator: StorageCoordinator
-    ) async {
+    ) async throws {
         guard let docId = document.docId, !docId.isEmpty else { return }
         let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
         guard pathKey != key else { return }
-        if let flush = pendingFlush { await flush.value }
+        guard await DocumentDataStore.rekey(from: pathKey, to: key, coordinator: coordinator) else {
+            throw LibraryFileError.retryable
+        }
         migrateCachedConversation(from: pathKey, to: key)
         documents[key] = document
-        _ = await DocumentDataStore.rekey(
-            from: pathKey, to: key, coordinator: coordinator)
     }
 
     static func makeMessage(
@@ -918,31 +938,40 @@ enum AiPersistence {
         document: DocumentInfo,
         key: String,
         coordinator: StorageCoordinator
-    ) async -> [AiMessage]? {
-        let legacyKey = document.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !legacyKey.isEmpty else { return nil }
-        var entries = readConversations()
-        var index = entries.firstIndex(where: { $0.key == legacyKey })
-        if index == nil, document.kind == .pdf {
-            let filename = (legacyKey as NSString).lastPathComponent
-            if filename.lowercased().hasSuffix(".pdf") {
-                index = entries.firstIndex {
-                    ($0.key as NSString).lastPathComponent == filename
-                }
-            }
+    ) async throws -> Data? {
+        let path = document.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, let source = AppDefaults.current.string(forKey: conversationsKey) else { return nil }
+        let entries = readConversations()
+        let name = (path as NSString).lastPathComponent
+        let entry = entries.first { $0.key == path } ?? entries.first {
+            document.kind == .pdf && name.lowercased().hasSuffix(".pdf") && ($0.key as NSString).lastPathComponent == name
         }
-        guard let index else { return nil }
-        let messages = entries[index].messages
+        guard let entry else { return nil }
+        let data = try JSONEncoder().encode(entry.messages)
+        let result = try await DocumentDataStore.createLegacyConversationIfAbsent(
+            forKey: key, data: data, exactPath: entry.key == path, coordinator: coordinator)
+        if result.created { removeMigratedEntry(entry.key, from: source) }
+        return result.bytes
+    }
+
+    /// Other loads can migrate entries while publication is suspended. Retire
+    /// only the value we copied, preserving the current blob's remaining values and order.
+    @MainActor private static func removeMigratedEntry(_ key: String, from source: String) {
+        guard let current = AppDefaults.current.string(forKey: conversationsKey),
+              let old = try? JSONSerialization.jsonObject(with: Data(source.utf8)) as? [String: Any],
+              let entries = try? JSONSerialization.jsonObject(with: Data(current.utf8)) as? [String: Any],
+              let migrated = old[key] as? NSArray, migrated.isEqual(entries[key])
+        else { return }
+        let order = topLevelObjectKeys(in: current)
+        guard Set(order) == Set(entries.keys), order.count == entries.count else { return }
         do {
-            let data = try JSONEncoder().encode(messages)
-            try await DocumentDataStore.saveConversationsData(
-                forKey: key, data: data, coordinator: coordinator)
-        } catch {
-            return nil
-        }
-        entries.remove(at: index)
-        writeConversations(entries)
-        return messages
+            let pairs = try order.filter { $0 != key }.map { name in
+                let field = try JSONEncoder().encode(name)
+                let value = try JSONSerialization.data(withJSONObject: entries[name]!, options: .fragmentsAllowed)
+                return String(decoding: field, as: UTF8.self) + ":" + String(decoding: value, as: UTF8.self)
+            }
+            AppDefaults.current.set("{" + pairs.joined(separator: ",") + "}", forKey: conversationsKey)
+        } catch { return }
     }
 
     /// Fold this document's entry out of the legacy path-keyed blob into its

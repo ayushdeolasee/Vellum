@@ -459,6 +459,34 @@ enum DocumentDataStore {
         if let operation { try ConversationOperationJournal.finish(key, id: operation) }
     }
 
+    /// A peer may create the transcript after a cold load saw it missing.
+    /// Only a successful exclusive creation transfers ownership from legacy preferences.
+    static func createLegacyConversationIfAbsent(
+        forKey key: String, data: Data, exactPath: Bool, coordinator: StorageCoordinator
+    ) async throws -> (created: Bool, bytes: Data?) {
+        try await withAccess(coordinator: coordinator) { access in
+            // Filename recovery belongs to private app-container relocation.
+            guard exactPath || access.sharedPDFs == nil else { return (false, nil) }
+            let name = "conversations.json"
+            if let current = try await readData(forKey: key, relativeName: name, access: access) {
+                return (false, current)
+            }
+            guard try ConversationOperationJournal.read(key) == nil else { throw LibraryFileError.retryable }
+            let url = documentDir(forKey: key, root: access.documentsRoot).appendingPathComponent(name)
+            let created: Bool
+            if let coordinated = access.store as? CoordinatedLibraryFileStore {
+                created = try await coordinated.container.replace(url, with: data, ifCurrent: nil)
+            } else {
+                created = try await LocalFolderFileStore(root: access.documentsRoot).replace(url, with: data, ifCurrent: nil)
+            }
+            if created { return (true, data) }
+            guard let winner = try await readData(forKey: key, relativeName: name, access: access) else {
+                throw LibraryFileError.retryable
+            }
+            return (false, winner)
+        }
+    }
+
     static func saveConversationsData(
         forKey key: String, data: Data, coordinator: StorageCoordinator
     ) async throws {
