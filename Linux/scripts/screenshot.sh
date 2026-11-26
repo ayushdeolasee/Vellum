@@ -16,6 +16,13 @@ mkdir -m 700 -p "$XDG_PICTURES_DIR"
 app=/build/linux/debug/vellum-linux
 [[ -x $app ]] || { echo "build vellum-linux with --scratch-path /build/linux -c debug first" >&2; exit 1; }
 
+# First check dispatch order deterministically across stalls without depending on Weston timing.
+linux_dir=$(cd "$(dirname "$0")/.." && pwd)
+cc -O0 -g -rdynamic -I"$linux_dir/Sources/CShell/include" \
+  "$linux_dir/Tests/CShellPump/scheduling.c" "$linux_dir/Sources/CShell/loop.c" \
+  $(pkg-config --cflags --libs glib-2.0) -ldl -o "$tmp/check-scheduling"
+timeout -k 1 8 "$tmp/check-scheduling" >&2
+
 run_case() (
   set -e
   pump=$1 load=$2
