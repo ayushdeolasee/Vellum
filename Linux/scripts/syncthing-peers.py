@@ -218,13 +218,13 @@ def run(stage, build_container, package, live):
                     return
                 # No bind mount: replace the staging tree with the exact writer
                 # output, including the removal of resolved conflict siblings.
+                if verify_only:
+                    # docker cp on macOS needs writable staging directories to
+                    # unpack their children. The guarded verifier already exited.
+                    docker("exec", build_container, "chmod", "-R", "u+w", target)
                 shutil.rmtree(peer.library)
                 peer.library.mkdir()
                 docker("cp", build_container + ":" + target + "/.", peer.library)
-                if verify_only:
-                    for directory in [peer.library, *peer.library.rglob("*")]:
-                        if directory.is_dir():
-                            directory.chmod(0o700)
 
         phase(mac, "prepare")
         phase(linux, "prepare")
