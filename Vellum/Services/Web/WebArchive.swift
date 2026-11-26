@@ -292,7 +292,9 @@ enum WebArchive {
         let path = WebLibrary.archiveDir(forKey: key).appendingPathComponent("manifest.json")
         let file: FileHandle
         do { file = try FileHandle(forReadingFrom: path) }
-        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return nil }
+        catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return nil
+        }
         defer { try? file.close() }
         let data = try file.read(upToCount: ArchiveCodec.maxManifestBytes + 1) ?? Data()
         guard data.count <= ArchiveCodec.maxManifestBytes else {

@@ -76,7 +76,8 @@ extension ArchiveExchangeTests {
         ink.clusters[0].bounds.unknownFields["unit"] = .string("px")
         ink.clusters[0].anchor?.unknownFields["direction"] = .string("right")
         ink.clusters[0].anchor?.rect.unknownFields["offset"] = .int(5)
-        let input = root.appendingPathComponent("in.vellumweb")
+        let key = WebLibrary.pageKey(try WebUrl.normalize(manifest.url))
+        let input = WebLibrary.managedArchivePath(forKey: key)
         let pages = try WebArchive.encodePagesJson([])
         manifest.hashes.pageText = WebArchive.sha256Hex(pages)
         let asset = try XCTUnwrap(archive.assets.first)
@@ -84,8 +85,13 @@ extension ArchiveExchangeTests {
             assets: [.init(name: asset.0, url: manifest.assets[0].url,
                            contentType: manifest.assets[0].contentType, bytes: asset.1)],
             pagesJson: pages, annotations: archive.annotations, inkJson: JSONEncoder().encode(ink))
+        // A peer's managed archive can arrive before this device has installed a snapshot.
+        let previousManifest = try await WebLibraryStorage().previousManifest(forKey: key)
+        XCTAssertEqual(previousManifest?.unknownFields, manifest.unknownFields)
+        XCTAssertEqual(previousManifest?.hashes.unknownFields, manifest.hashes.unknownFields)
+        XCTAssertEqual(previousManifest?.assets.first?.unknownFields, manifest.assets[0].unknownFields)
         let session = try await WebSessionBackend().openVellumwebFile(path: input.path, sessionId: "test")
-        let key = WebLibrary.pageKey(session.url)
+        try FileManager.default.removeItem(at: input) // Exercise the installed copy on re-export.
         let original = try XCTUnwrap(WebInkStore.loadRecord(forKey: key))
         let fresh = WebInkRecord.snapshot(of: try original.validatedMergedDrawing(), url: session.url,
             layout: .init(contentWidth: 100, docHeight: 500), anchorFor: { _ in original.clusters[0].anchor })
