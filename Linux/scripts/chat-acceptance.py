@@ -42,14 +42,18 @@ if writable:
     pdf.write_bytes(original + info + trailer.encode())
 saved_file, = [p for p in root.glob(".vellum/documents/*/conversations.json") if b"Apple history" in p.read_bytes()]
 original_history = saved_file.read_bytes()
+second_root = root / "Second library"
+second_root.mkdir()
+shutil.copytree(root / "PDFs", second_root / "PDFs")
 
 
-def manifest():
+def manifest(root=root):
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
             for p in root.rglob("*")}
 
 
 before = manifest()
+second_before = manifest(second_root)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -92,6 +96,8 @@ class Handler(BaseHTTPRequestHandler):
                 assert "Visible Safari fact" in prompt and "Hidden fixture text" not in prompt
             else:
                 assert "Left column" in prompt and "First line of evidence" in prompt and "Apple history" not in prompt
+            if question == "Second library?":
+                assert "Library?" not in prompt and "Close?" not in prompt
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Transfer-Encoding", "chunked")
@@ -106,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             emit(chunk)
             started.set()
-            if question in ("Switch?", "Stop?", "Reopen?", "Close?"):
+            if question in ("Switch?", "Stop?", "Reopen?", "Library?", "Close?"):
                 self.connection.settimeout(12)
                 # A socket close is the evidence of transport cancellation.
                 assert self.rfile.read(1) == b""
@@ -116,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
-            if question not in ("Switch?", "Stop?", "Reopen?", "Close?"):
+            if question not in ("Switch?", "Stop?", "Reopen?", "Library?", "Close?"):
                 errors.append("Unexpected disconnect")
         except Exception as e:
             errors.append(repr(e))
@@ -198,14 +204,15 @@ def reply(question):
              "opencode": "OpenCode Zen", "opencodeGo": "OpenCode Go"}[provider]
     damaged = question == "Safari?"
     notice = "Saved history could not be read. " if damaged else ""
-    destination = "New messages save to this library." if writable and not damaged else "New messages stay in this session."
+    saves = writable and not damaged and question != "Second library?"
+    destination = "New messages save to this library." if saves else "New messages stay in this session."
     get(f"{notice}Send shares document text and recent chat with {title}. {destination}")
     wait(finished.is_set, "provider finished the response")
 
 
-def select(label):
+def select(label, role="list item"):
     elem = get(label)
-    while elem.getRoleName() != "list item":
+    while elem.getRoleName() != role:
         elem = elem.parent
     assert elem.parent.querySelection().selectChild(elem.getIndexInParent())
 
@@ -287,6 +294,19 @@ def exercise():
                      "returned to PDF")
                 send("Close?")
                 first_delta("Close?")
+            if provider == "opencode":
+                send("Library?")
+                first_delta("Library?")
+                click("Settings")
+                click("Choose Folder…")
+                select("Second library", role="table row")
+                click("Choose")
+                wait(finished.is_set, "choosing another library cancels transport")
+                wait(lambda: has_status(str(second_root)), "second library opens")
+                click("Done")
+                wait(lambda: has_status("New messages stay in this session.") and not transcript(),
+                     "same PDF identity opens with independent history and permissions")
+                reply("Second library?")
             if provider == "opencodeGo":
                 subprocess.run(["gdbus", "call", "--session", "--dest", "org.freedesktop.secrets",
                                 "--object-path", "/org/freedesktop/secrets", "--method",
@@ -329,6 +349,7 @@ weston = subprocess.Popen(["weston", "--no-config", "--backend=headless", "--ren
 try:
     wait(lambda: (runtime / "chat").exists(), "Wayland display")
     exercise()
+    assert manifest(second_root) == second_before
     if not writable:
         assert manifest() == before
         print("Default read-only root: identical paths and SHA-256 digests", flush=True)
