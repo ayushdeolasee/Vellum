@@ -54,6 +54,12 @@ final class PdfClassicStructure {
     private var objectStreams: [Int: [(number: Int, value: Value, source: ArraySlice<UInt8>)]] = [:]
     private var compressed: [Int: (stream: Int, index: Int)] = [:]
     private(set) var compressedSources: [Int: ArraySlice<UInt8>] = [:]
+    private struct LengthSection {
+        let previous: Int?
+        let rows: [Int: PdfXrefRow]
+    }
+    private var lengthSections: [LengthSection]?
+    private var indirectLengths: [Int: (number: Int, length: Int)] = [:]
     private(set) var latestTrailer = PdfDictSource([])
     private(set) var usesXrefStreams = false
 
@@ -111,15 +117,23 @@ final class PdfClassicStructure {
                 let bodyEnd = i
                 skipSpace()
                 streams.removeValue(forKey: number)
+                indirectLengths.removeValue(forKey: number)
                 objectStreams.removeValue(forKey: number)
                 if consumeWord("stream") {
                     guard let dict = body.dictionary else { throw Reason.malformed }
-                    guard let length = dict["Length"]?.integer, length >= 0,
+                    var count = dict["Length"]?.integer
+                    if !forEditing, count == nil, let ref = dict["Length"]?.reference,
+                       dict["Type"]?.name != "XRef" {
+                        let length = try readIndirectLength(ref)
+                        indirectLengths[number] = (ref, length)
+                        count = length
+                    }
+                    guard let length = count, length >= 0,
                           consume("\r\n") || consume("\n"), length <= bytes.count - i
                     else { throw Reason.malformed }
                     let payload = i..<(i + length)
                     i += length
-                    try keyword("endstream")
+                    try endStream()
                     objects[number] = .stream
                     switch dict["Type"]?.name {
                     case "XRef":
@@ -334,6 +348,13 @@ final class PdfClassicStructure {
             } while n != 0 && !visitedFree.contains(n)
             visitedFree.formUnion(chain)
         }
+        // The xref lookahead only proposed a length. The physical walk must
+        // independently reach the referenced integer as a live object at this
+        // revision, including when its definition follows the stream payload.
+        for (number, length) in indirectLengths {
+            try charge()
+            if streams[number] != nil, objects[length.number]?.integer != length.length { throw Reason.malformed }
+        }
         guard forEditing else { return }
         if table, let stream {
             // Historical xref dictionaries are trailers, not ordinary inbound
@@ -343,6 +364,82 @@ final class PdfClassicStructure {
         }
         guard usesXrefStreams || objectStreams.isEmpty else { throw Reason.unsupportedXref }
         try validate(trailer: trailer, streamDictionaries: streams.values, streamTrailer: !table)
+    }
+
+    /// Only needed for a read-only file with an indirect /Length. Read xref
+    /// entries from their declared offsets, never by scanning a stream payload.
+    /// The subsequent physical walk validates the hints and revision links.
+    private func readIndirectLength(_ number: Int) throws -> Int {
+        let cursor = i
+        defer { i = cursor }
+        if lengthSections == nil { lengthSections = try indexForLengths() }
+        guard let sections = lengthSections,
+              let current = sections.firstIndex(where: { $0.previous == previousXref }) else { throw Reason.malformed }
+        for section in sections[current...] {
+            try charge()
+            guard let row = section.rows[number] else { continue }
+            guard case .direct(let offset, 0) = row, bytes.indices.contains(offset) else { throw Reason.malformed }
+            i = offset
+            guard try unsigned() == number, try unsigned() == 0 else { throw Reason.malformed }
+            try keyword("obj")
+            let length = try unsigned()
+            try keyword("endobj")
+            try budgetComparison(length: i - offset, passes: 1)
+            return length
+        }
+        throw Reason.malformed
+    }
+
+    private func indexForLengths() throws -> [LengthSection] {
+        guard let marker = bytes.suffix(1024).lastRange(of: Array("startxref".utf8)) else { throw Reason.malformed }
+        i = marker.upperBound
+        var offset = try unsigned()
+        var sections: [LengthSection] = []
+        while true {
+            guard sections.count < 64, bytes.indices.contains(offset) else { throw Reason.malformed }
+            i = offset
+            var rows: [Int: PdfXrefRow]
+            let trailer: [String: Value]
+            if starts("xref") {
+                rows = try classicRows()
+                try keyword("trailer")
+                guard let dictionary = try value().dictionary else { throw Reason.malformed }
+                trailer = dictionary
+                if let entry = trailer["XRefStm"] {
+                    guard let supplement = entry.integer, (0..<offset).contains(supplement) else { throw Reason.malformed }
+                    let stream = try indexedStream(at: supplement)
+                    rows.merge(stream.rows) { _, row in row }
+                }
+            } else {
+                (rows, trailer) = try indexedStream(at: offset)
+            }
+            if trailer["Encrypt"] != nil { throw Reason.encrypted }
+            let previous = trailer["Prev"]?.integer
+            sections.append(LengthSection(previous: previous, rows: rows))
+            guard trailer["Prev"] != nil else { return sections }
+            guard let previous, (0..<offset).contains(previous) else { throw Reason.malformed }
+            offset = previous
+        }
+    }
+
+    private func indexedStream(at offset: Int) throws -> (rows: [Int: PdfXrefRow], trailer: [String: Value]) {
+        i = offset
+        _ = try unsigned()
+        guard try unsigned() == 0 else { throw Reason.nonzeroGeneration }
+        try keyword("obj")
+        guard let dictionary = try value().dictionary, dictionary["Type"]?.name == "XRef",
+              let length = dictionary["Length"]?.integer, length >= 0 else { throw Reason.malformed }
+        if dictionary["Encrypt"] != nil { throw Reason.encrypted }
+        try keyword("stream")
+        guard consume("\r\n") || consume("\n"), length <= bytes.count - i else { throw Reason.malformed }
+        let payload = bytes[i..<(i + length)]
+        i += length
+        try endStream()
+        try keyword("endobj")
+        let decoded = try decoder.decode(payload, dictionary: dictionary)
+        let rows = try PdfStreamDecoder.rows(decoded, dictionary: dictionary, limit: objectLimit)
+        try charge(rows.count)
+        return (rows, dictionary)
     }
 
     private func budgetComparison(length: Int, passes: Int) throws {
@@ -379,6 +476,13 @@ final class PdfClassicStructure {
             while i < bytes.count, bytes[i] != 10, bytes[i] != 13 { i += 1 }
             skipSpace()
         }
+    }
+
+    private func endStream() throws {
+        // /Length excludes at most the optional EOL before endstream. Skipping
+        // general PDF whitespace here could hide an incorrect length in binary data.
+        _ = consume("\r\n") || consume("\n") || consume("\r")
+        guard consumeWord("endstream") else { throw Reason.malformed }
     }
 
     private func keyword(_ word: String) throws {

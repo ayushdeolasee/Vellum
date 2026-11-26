@@ -155,6 +155,45 @@ final class PdfXrefStreamTests: XCTestCase {
         XCTAssertThrowsError(try decode(png + [0], predictor: 15, columns: 2))
     }
 
+    func testReadOnlyIdentityChecksForwardIndirectLengthsAgainstPhysicalObjects() throws {
+        let base = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("resume-stream-string"))
+        let source = PdfClassicStructure(base)
+        try source.inspect()
+        var trailer = source.latestTrailer
+        let marker = try XCTUnwrap(base.range(of: Data("startxref\n".utf8), options: .backwards))
+        let previous = try XCTUnwrap(Int(String(decoding: base[marker.upperBound...].prefix(while: PdfBytes.isDigit), as: UTF8.self)))
+        let first = try XCTUnwrap(trailer.integer(forKey: "Size"))
+        for key in ["Filter", "DecodeParms"] { trailer.removeEntry(forKey: key) }
+        trailer.setInteger(forKey: "Prev", to: previous)
+        trailer.setInteger(forKey: "Size", to: first + 3)
+        trailer.setInteger(forKey: "Length", to: 18)
+        trailer.setValue(forKey: "W", raw: Array("[1 4 1]".utf8))
+        trailer.setValue(forKey: "Index", raw: Array("[\(first) 3]".utf8))
+        var bytes = base
+        bytes.append(contentsOf: "\(first) 0 obj\n<< /Length \(first + 1) 0 R >>\nstream\n".utf8)
+        // This opaque content makes the file larger than the classic identity window.
+        let count = 8 * 1024 * 1024
+        bytes.append(Data(repeating: 0, count: count))
+        bytes.append(contentsOf: "\nendstream\nendobj\n".utf8)
+        let lengthObject = bytes.count
+        bytes.append(contentsOf: "\(first + 1) 0 obj\n\(count)\nendobj\n".utf8)
+        let xref = bytes.count
+        bytes.append(contentsOf: "\(first + 2) 0 obj\n".utf8)
+        bytes.append(contentsOf: trailer.sourceBytes)
+        bytes.append(contentsOf: "\nstream\n".utf8)
+        for offset in [base.count, lengthObject, xref] {
+            bytes.append(1)
+            withUnsafeBytes(of: UInt32(offset).bigEndian) { bytes.append(contentsOf: $0) }
+            bytes.append(0)
+        }
+        bytes.append(contentsOf: "\nendstream\nendobj\nstartxref\n\(xref)\n%%EOF\n".utf8)
+        XCTAssertEqual(identity(bytes), stamp)
+        XCTAssertNotEqual(PdfEditEligibility.classify(bytes), .editable)
+        let length = try XCTUnwrap(bytes.range(of: Data(String(count).utf8), options: .backwards))
+        bytes[length.lowerBound] = 49
+        XCTAssertNil(identity(bytes))
+    }
+
     func testRowWidthsAndObjectIdentity() throws {
         let dict: [String: PdfStructuralValue] = [
             "Size": .integer(10), "W": .array([.integer(0), .integer(2), .integer(0)]),
