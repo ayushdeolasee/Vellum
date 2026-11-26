@@ -144,7 +144,6 @@ GtkStack *reader_content_stack(ReaderWindow *r) {
 
 PdfAnnotations *reader_pdf_annotations(ReaderWindow *r) { return r->annotations; }
 
-void reader_pdf_editable(ReaderWindow *r) { gtk_label_set_text(GTK_LABEL(r->status), "PDF open · Editing enabled"); }
 ReaderSettings *reader_settings(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread());
     return r->settings;

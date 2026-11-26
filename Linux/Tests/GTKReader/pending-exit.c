@@ -9,6 +9,7 @@
 static GMutex mutex;
 static GCond gate;
 static gboolean released;
+static gboolean exit_scheduled;
 static int page_finished;
 static GtkApplication *retained_app;
 static gulong app_handlers[3];
@@ -25,7 +26,7 @@ static void verify_disconnected(void) {
 static gboolean release_worker(gpointer unused) {
     g_mutex_lock(&mutex);
     released = TRUE;
-    g_cond_signal(&gate);
+    g_cond_broadcast(&gate);
     g_mutex_unlock(&mutex);
     return G_SOURCE_REMOVE;
 }
@@ -55,7 +56,10 @@ FPDF_PAGE FPDF_LoadPage(FPDF_DOCUMENT doc, int index) {
     FPDF_PAGE (*load)(FPDF_DOCUMENT, int) = dlsym(RTLD_NEXT, "FPDF_LoadPage");
     g_assert(load && !g_main_context_is_owner(g_main_context_default()));
     g_mutex_lock(&mutex);
-    g_idle_add(request_exit, NULL);
+    if (!exit_scheduled) {
+        exit_scheduled = TRUE;
+        g_idle_add(request_exit, NULL);
+    }
     while (!released) g_cond_wait(&gate, &mutex);
     g_mutex_unlock(&mutex);
     FPDF_PAGE page = load(doc, index);

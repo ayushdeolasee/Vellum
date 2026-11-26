@@ -1,4 +1,4 @@
-"""In the offline Colima dev image: python3 Linux/Tests/GTKReader/annotation-reopen.py /build/linux/debug/vellum-linux"""
+"""In the offline arm64 GTK test image with Xvfb: python3 Linux/Tests/GTKReader/annotation-reopen.py /build/linux/debug/vellum-linux"""
 import hashlib
 import json
 import os
@@ -91,10 +91,13 @@ def run(binary, tmp):
             widget("label", "Page 2 of 4")
             activate("Annotations")
             if first:
-                widget("text", "Annotation comment").queryEditableText().setTextContents(comment)
+                wait(lambda: widget("push button", "Add note").getState().contains(at.STATE_SENSITIVE), "editable page")
+                assert widget("text", "Annotation comment").queryEditableText().setTextContents(comment)
+                assert text("Annotation comment") == comment
                 activate("Add note")
                 widget("label", restriction)
                 saved = (pdfs / "A.pdf").read_bytes()
+                assert comment.encode() in saved[len(original):]
                 assert saved.startswith(original) and saved.count(b"startxref") == 64
                 assert hashlib.sha256(original).hexdigest().encode() in saved[len(original):]
             else:
@@ -108,7 +111,8 @@ def run(binary, tmp):
                 activate("Scratchpad", "toggle button")
                 select("B.pdf")
                 widget("frame", "Ambiguous ID")
-                widget("text", "Annotation comment").queryEditableText().setTextContents("Leave original intact")
+                wait(lambda: widget("push button", "Add note").getState().contains(at.STATE_SENSITIVE), "page B")
+                assert widget("text", "Annotation comment").queryEditableText().setTextContents("Leave original intact")
                 activate("Add note")
                 widget("label", "Could not save the annotation. PDF already has /VellumDocId")
                 assert (pdfs / "B.pdf").read_bytes() == ambiguous
@@ -128,20 +132,21 @@ def run(binary, tmp):
 if __name__ == "__main__":
     if len(sys.argv) == 2:
         with tempfile.TemporaryDirectory() as directory:
-            env = dict(os.environ, HOME=directory, XDG_RUNTIME_DIR=directory, WAYLAND_DISPLAY="annotation-test",
-                       GDK_BACKEND="wayland", GTK_A11Y="atspi", GSK_RENDERER="cairo", GSETTINGS_BACKEND="memory")
+            env = dict(os.environ, HOME=directory, XDG_RUNTIME_DIR=directory,
+                       GDK_BACKEND="x11", GTK_A11Y="atspi", GSK_RENDERER="cairo", GSETTINGS_BACKEND="memory")
             for suffix in ["CONFIG", "DATA", "CACHE", "STATE"]:
                 env[f"XDG_{suffix}_HOME"] = f"{directory}/{suffix.lower()}"
             subprocess.run(["dbus-run-session", "--", sys.executable, __file__, sys.argv[1], directory], env=env, check=True)
     else:
         tmp = Path(sys.argv[2])
-        weston = subprocess.Popen(["weston", "--no-config", "--backend=headless", "--renderer=pixman",
-                                   "--shell=desktop-shell.so", "--width=1100", "--height=760",
-                                   "--socket=annotation-test", "--idle-time=0"],
-                                  stderr=subprocess.DEVNULL)
+        # Use a private display with an input seat so GTK can map keyboard-accessible popovers.
+        display = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "1100x760x24", "-nolisten", "tcp"],
+                                   stdout=subprocess.PIPE, text=True, stderr=subprocess.DEVNULL)
         try:
-            wait(lambda: (tmp / "annotation-test").is_socket(), "private Weston socket")
+            number = display.stdout.readline().strip()
+            assert number.isdigit(), "Xvfb failed to start"
+            os.environ["DISPLAY"] = ":" + number
             run(sys.argv[1], tmp)
         finally:
-            weston.terminate()
-            weston.wait(timeout=5)
+            display.terminate()
+            display.wait(timeout=5)
