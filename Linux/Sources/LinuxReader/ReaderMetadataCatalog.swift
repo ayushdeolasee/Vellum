@@ -60,12 +60,17 @@ public struct ReaderMetadataCatalog: Sendable {
 
     /// Apple opens an archive by normalizing manifest.url. Neither canonical_url, the
     /// archive filename nor text from a sidecar is used as a path or a second identity.
-    @concurrent
     public func web(manifest: ArchiveManifest, fallbackTitle: String) async throws -> ReaderDocumentMetadata {
+        try await Self.web(manifest: manifest, fallbackTitle: fallbackTitle, catalog: self)
+    }
+
+    @concurrent
+    static func web(manifest: ArchiveManifest, fallbackTitle: String,
+                    catalog: Self?) async throws -> ReaderDocumentMetadata {
         try Task.checkCancellation()
         let key = Self.webKey(manifest.url)
         var record: WebPageRecord?
-        if let key {
+        if let key, let store = catalog?.store {
             let url = store.root.url.appendingPathComponent(".vellum/records/\(key.hash).json", isDirectory: false)
             if let bytes = try? await store.read(url),
                let decoded = try? JSONDecoder().decode(WebPageRecord.self, from: bytes),
@@ -74,7 +79,7 @@ public struct ReaderMetadataCatalog: Sendable {
             }
         }
         try Task.checkCancellation()
-        let peer = key.flatMap { peers[$0] }
+        let peer = key.flatMap { catalog?.peers[$0] }
         let recordTitle = Self.title(record?.title)
         let archiveTitle = Self.title(manifest.title)
         let manualRecord = record?.titleIsUserDefined == true ? recordTitle : nil
@@ -86,7 +91,7 @@ public struct ReaderMetadataCatalog: Sendable {
             ?? Self.legacyPosition(page: record?.lastPage, count: record?.pageCount)
             ?? Self.legacyPosition(page: manifest.lastPage, count: manifest.pageCount)
         return ReaderDocumentMetadata(storageKey: key?.hash, displayTitle: displayTitle, position: position,
-                                      hasInkSidecar: key.map { inkKeys.contains($0) } ?? false)
+                                      hasInkSidecar: key.flatMap { catalog?.inkKeys.contains($0) } ?? false)
     }
 
     /// Pass the existing stamp from this PDF, if known. A relocated path, basename,
