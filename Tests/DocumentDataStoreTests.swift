@@ -78,6 +78,21 @@ final class DocumentDataStoreTests: XCTestCase {
         XCTAssertTrue(exists(DocumentDataStore.metaPath(forKey: key)))
     }
 
+    func testTouchPreservesFutureMetadata() async throws {
+        let doc = pdfDocument(path: "/new.pdf", docId: UUID().uuidString.lowercased())
+        let key = DocumentIdentity.storageKey(for: doc)
+        let meta = DocumentDataStore.Meta(unknownFields: ["future": .array([.null, .int(Int.max)])],
+            version: 1, kind: "pdf", title: nil, lastKnownPath: "/old.pdf", lastOpened: "then")
+        let coordinator = StorageCoordinator(storeDir: root, modeProvider: { .local })
+        try DocumentDataStore.restoreMeta(meta, forKey: key)
+        try DocumentDataStore.touch(document: doc, force: true)
+        XCTAssertEqual(DocumentDataStore.loadMeta(forKey: key)?.unknownFields, meta.unknownFields)
+        try await DocumentDataStore.touch(document: doc, force: true, coordinator: coordinator)
+        let reloaded = try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)
+        XCTAssertEqual(reloaded?.unknownFields, meta.unknownFields)
+        XCTAssertEqual(reloaded?.lastKnownPath, "/new.pdf")
+    }
+
     // MARK: - Rekey
 
     /// Data written into the path-hash fallback folder (pre-stamp) moves wholesale
@@ -177,6 +192,9 @@ final class DocumentDataStoreTests: XCTestCase {
         let srcDoc = DocumentInfo(kind: .pdf, pdfPath: "/tmp/src.pdf", title: "STALE",
                                   pageCount: 1, lastPage: 1, docId: pathKey)
         try DocumentDataStore.touch(document: srcDoc, force: true)
+        var sourceMeta = try XCTUnwrap(DocumentDataStore.loadMeta(forKey: pathKey))
+        sourceMeta.unknownFields["source"] = .null
+        try DocumentDataStore.restoreMeta(sourceMeta, forKey: pathKey)
         XCTAssertFalse(DocumentDataStore.hasDataFiles(forKey: pathKey), "source is meta-only")
 
         DocumentDataStore.rekey(from: pathKey, to: docId)
@@ -184,6 +202,7 @@ final class DocumentDataStoreTests: XCTestCase {
         XCTAssertFalse(exists(DocumentDataStore.documentDir(forKey: pathKey)),
                        "meta-only source folder must collapse")
         XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: docId), "real note")
+        XCTAssertEqual(DocumentDataStore.loadMeta(forKey: docId)?.unknownFields["source"], .null)
         XCTAssertEqual(DocumentDataStore.loadMeta(forKey: docId)?.title, dstTitleBefore,
                        "destination meta wins; the stale source meta is dropped")
     }

@@ -246,3 +246,41 @@ private final class GatedPositionStorage: PositionStorage, @unchecked Sendable {
         lock.withLock { records[record.deviceID] = record }
     }
 }
+
+extension PositionResumeTests {
+    @Test("Position events retain nested fields before and after first hydration")
+    func hydrateAndFlushFutureFields() async throws {
+        let now = PositionFixtures.date("2026-08-02T09:00:00Z")
+        let storage = InMemoryPositionStorage()
+        let extras: [String: PositionJSON] = ["future": .object(["data": .array([.null, .int(Int.max)])])]
+        var entry = PositionDeviceRecord.DocumentEntry(
+            readingPosition: .init(at: now, value: .init(page: 1)),
+            title: .init(at: now, value: "Old"),
+            openState: .init(at: now, value: .init(isOpen: true)),
+            unknownFields: extras)
+        entry.readingPosition?.unknownFields = extras
+        entry.readingPosition?.value.unknownFields = extras
+        entry.title?.unknownFields = extras
+        entry.openState?.unknownFields = extras
+        entry.openState?.value.unknownFields = extras
+        var seed = PositionFixtures.record(.phone, writtenAt: now, documents: [book: entry])
+        seed.unknownFields = extras
+        storage.seed(seed)
+        let store = makeStore(storage, clock: ManualPositionClock(now))
+        for page in 2...3 {
+            await store.record(.opened(title: "New", tabOrdinal: nil), for: book)
+            await store.record(.moved(.init(page: page)), for: book)
+            await store.record(.closed, for: book)
+            await store.flush()
+            let saved = try #require(await storage.loadAll().first)
+            let doc = try #require(saved.documents[book])
+            #expect(doc.readingPosition?.value.page == page)
+            #expect(doc.title?.value == "New")
+            #expect(doc.openState?.value.isOpen == false)
+            #expect([saved.unknownFields, doc.unknownFields, doc.title?.unknownFields,
+                     doc.openState?.unknownFields, doc.openState?.value.unknownFields,
+                     doc.readingPosition?.unknownFields, doc.readingPosition?.value.unknownFields]
+                .allSatisfy { $0 == extras })
+        }
+    }
+}

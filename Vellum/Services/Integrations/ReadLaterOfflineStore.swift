@@ -105,7 +105,8 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
             snapshotHtml: captured.html,
             pagesJson: pagesJson,
             assets: captured.assets,
-            assetsSkipped: captured.skipped)
+            assetsSkipped: captured.skipped,
+            previous: try await storage.previousManifest(forKey: key))
         let assets = captured.assets.map { ($0.name, $0.bytes) }
         let snapshotHtml = captured.html
         try await Task.detached(priority: .utility) {

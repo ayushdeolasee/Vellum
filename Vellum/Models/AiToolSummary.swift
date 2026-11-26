@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 /// A compact, persisted account of one document tool used to produce an AI reply.
 ///
@@ -6,7 +7,11 @@ import Foundation
 /// never stored here. Sources retain only a short excerpt and an optional page
 /// locator so the transcript stays readable and can offer an explicit jump.
 struct AiToolSummary: Codable, Equatable, Identifiable, Sendable {
+    var unknownFields: [String: JSONValue] = [:]
+
     struct Source: Codable, Equatable, Identifiable, Sendable {
+        var unknownFields: [String: JSONValue] = [:]
+
         var id: String
         var page: Int?
         var excerpt: String
@@ -333,5 +338,53 @@ extension AiMessage {
     ) -> String {
         let actions = summaries.map { "- \($0.title)" }.joined(separator: "\n")
         return "\(answer)\n\nActions:\n\(actions)"
+    }
+}
+
+extension AiToolSummary {
+    private enum CodingKeys: String, CodingKey {
+        case id, title, detail, sources, destinationPage
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail)
+        sources = try container.decode([Source].self, forKey: .sources)
+        destinationPage = try container.decodeIfPresent(Int.self, forKey: .destinationPage)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(detail, forKey: .detail)
+        try container.encode(sources, forKey: .sources)
+        try container.encodeIfPresent(destinationPage, forKey: .destinationPage)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension AiToolSummary.Source {
+    private enum CodingKeys: String, CodingKey {
+        case id, page, excerpt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        page = try container.decodeIfPresent(Int.self, forKey: .page)
+        excerpt = try container.decode(String.self, forKey: .excerpt)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(page, forKey: .page)
+        try container.encode(excerpt, forKey: .excerpt)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }

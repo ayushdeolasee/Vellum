@@ -2,12 +2,13 @@ import Dispatch
 import Foundation
 import Synchronization
 import Testing
+import VellumCore
 @testable import LinuxReader
 
 @Suite(.serialized)
 struct PdfiumTests {
     // P7 owns the shared corpus. dev-shell stages Packages alongside Linux.
-    private func fixture(_ name: String) throws -> Data {
+    func fixture(_ name: String) throws -> Data {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let directory = repo.appendingPathComponent("Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf")
@@ -17,6 +18,37 @@ struct PdfiumTests {
     private func bgra(_ image: PdfiumBitmap, _ x: Int, _ y: Int) -> [UInt8] {
         let offset = y * image.bytesPerRow + x * 4
         return Array(image.pixels[offset..<(offset + 4)])
+    }
+
+    @Test func openingInfoRequiresACanonicalStringInTheCurrentInfoDictionary() async throws {
+        let original = try fixture("rotated-all-angles")
+        let id = "01234567-89ab-cdef-0123-456789abcdef"
+        let stamped = try PdfInfoIncrement.setMetadataIncrement(normalizedData: original, key: "doc_id", value: id)
+        let opened = try await PdfiumDocument.openingInfo(in: stamped)
+        #expect(opened.pageCount == 4 && opened.stableIdentifier == id)
+
+        // Keep the xref offsets intact. PDFium returns the same metadata text for
+        // this PDF Name, but Apple requires a String.
+        var name = stamped
+        let literal = try #require(stamped.range(of: Data("(\(id))".utf8)))
+        name.replaceSubrange(literal, with: Data("/\(id) ".utf8))
+        let invalid = try PdfInfoIncrement.setMetadataIncrement(
+            normalizedData: original, key: "doc_id", value: id.uppercased())
+        let classic = try ClassicPdfFile(data: original)
+        func withInfo(_ entries: String) -> Data {
+            var increment = PdfIncrement(file: classic)
+            let number = increment.allocateObjectNumber()
+            increment.setObject(number, source: Array("<< \(entries) >>".utf8))
+            return increment.appended(infoNumber: number)
+        }
+        let hex = id.utf8.map { String(format: "%02x", $0) }.joined()
+        let escaped = withInfo("/Vellum#44ocId <\(hex)>")
+        #expect(try await PdfiumDocument.openingInfo(in: escaped).stableIdentifier == id)
+        let ambiguous = withInfo("/VellumDocId (\(id)) /Vellum#44ocId /\(id)")
+        for bytes in [original, name, invalid, ambiguous] {
+            let opened = try await PdfiumDocument.openingInfo(in: bytes)
+            #expect(opened.pageCount == 4 && opened.stableIdentifier == nil)
+        }
     }
 
     @Test func readsCorpusAndOwnsResultsAcrossJobs() async throws {

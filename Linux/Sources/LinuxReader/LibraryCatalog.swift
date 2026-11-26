@@ -29,23 +29,34 @@ public enum LibraryCatalog {
     }
 
     @concurrent
-    public static func searchEntries(in store: ReadOnlyLibraryFileStore,
-                                     metadata: ReaderMetadataCatalog) async throws -> [LibrarySearchEntry] {
+    public static func searchEntries(in store: ReadOnlyLibraryFileStore) async throws
+        -> (entries: [LibrarySearchEntry], metadata: ReaderMetadataCatalog?) {
+        let files = try await documents(in: store)
+        // PDF-only libraries keep the reader's lazy metadata load. Mixed
+        // libraries can reuse the snapshot already needed for archive titles.
+        let metadata = files.contains(where: isArchive)
+            ? try? await ReaderMetadataCatalog.load(in: store)
+            : nil
         var entries: [LibrarySearchEntry] = []
-        for file in try await documents(in: store) {
+        for file in files {
             try Task.checkCancellation()
             var title = file.name
-            if file.url.pathExtension.lowercased() == "vellumweb",
+            if isArchive(file),
                let bytes = try? await store.read(file.url),
                let manifest = try? ArchiveCodec.readManifest(data: bytes) {
                 // Use the reader's title precedence. Only the manifest is decoded here.
-                title = try await metadata.web(manifest: manifest, fallbackTitle: file.name).displayTitle
+                title = try await metadata?.web(manifest: manifest, fallbackTitle: file.name).displayTitle
+                    ?? ReaderMetadataCatalog.title(manifest.title) ?? file.name
             }
             entries.append(LibrarySearchEntry(file: file, title: title, haystack: HomeSearchHaystack(
                 title: title, name: file.name, location: "")))
         }
         try Task.checkCancellation()
-        return entries
+        return (entries, metadata)
+    }
+
+    private static func isArchive(_ file: LibraryFileEntry) -> Bool {
+        file.url.pathExtension.lowercased() == "vellumweb"
     }
 
     /// Return indexes into the original catalog, which remain stable across query changes.

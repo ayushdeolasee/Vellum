@@ -1,5 +1,6 @@
 import CPdfiumJob
 import Foundation
+import VellumCore
 
 public enum PdfiumError: Error, Equatable {
     case invalidDocument, passwordRequired, unsupportedSecurity, invalidPage
@@ -28,16 +29,36 @@ public struct PdfiumCharBox: Sendable {
     /// Unrotated PDF user space. Generated separators can have zero-area boxes.
     public let left, bottom, right, top: Double
     public let isGenerated: Bool
+    let selectionBounds: AnnotationRect
+    let baseline: Double
+    let isDiscretionaryHyphen: Bool
 }
 
 public struct PdfiumPageText: Sendable {
     public let text: String
     public let chars: [PdfiumCharBox]
+    public let geometry: PageGeometry
 }
 
 /// Operations accept the bytes read by the root-confined store, and zero-based page indices.
 public enum PdfiumDocument {
     public static let maxInputBytes = Int(PDF_MAX_INPUT_BYTES)
+
+    /// Selection only. A PDF Name can have the same PDFium text as a String,
+    /// so require the typed value from the original bytes to agree.
+    public static func openingInfo(in bytes: Data, password: String? = nil) async throws
+        -> (pageCount: Int, stableIdentifier: String?) {
+        try await job(PDF_OPEN_INFO, bytes, 0, password, .onDemand) { out in
+            let id = withUnsafeBytes(of: out.document_id) { raw in
+                String(decoding: raw.bindMemory(to: UInt16.self).prefix(out.document_id_units), as: UTF16.self)
+            }
+            guard DocumentIdentity.isCanonicalKey(id),
+                  ClassicPdfFile.currentInfoText(forKey: "VellumDocId", in: bytes) == id else {
+                return (Int(out.pages), nil)
+            }
+            return (Int(out.pages), id)
+        }
+    }
 
     public static func pageInfo(in bytes: Data, at index: Int, password: String? = nil,
                                 priority: PdfiumActor.Priority = .onDemand) async throws -> PdfiumPageInfo {
@@ -71,7 +92,12 @@ public enum PdfiumDocument {
                 func append(_ unit: UInt16) {
                     boxes.append(PdfiumCharBox(utf16Index: units.count, codeUnit: unit, left: c.left,
                                                bottom: c.bottom, right: c.right, top: c.top,
-                                               isGenerated: c.generated))
+                                               isGenerated: c.generated,
+                                               selectionBounds: AnnotationRect(
+                                                   x: c.selection_left, y: c.selection_bottom,
+                                                   width: c.selection_right - c.selection_left,
+                                                   height: c.selection_top - c.selection_bottom),
+                                               baseline: c.origin_y, isDiscretionaryHyphen: c.discretionary_hyphen))
                     units.append(unit)
                 }
                 // PDFium may supply UTF-16 surrogate units or a full scalar.
@@ -85,7 +111,28 @@ public enum PdfiumDocument {
                 default: append(0xfffd)
                 }
             }
-            return PdfiumPageText(text: String(decoding: units, as: UTF16.self), chars: boxes)
+            // Use the same effective page box and scale as PDFium rendering.
+            let geometry = PageGeometry(left: out.visible_left, bottom: out.visible_bottom,
+                                        width: out.visible_right - out.visible_left,
+                                        height: out.visible_top - out.visible_bottom,
+                                        rotation: Int(out.rotation), userUnit: 1)
+            return PdfiumPageText(text: String(decoding: units, as: UTF16.self), chars: boxes, geometry: geometry)
+        }
+    }
+
+    /// Extract and arrange text from the same validated bytes used for rendering.
+    public static func readText(in bytes: Data, at index: Int, password: String? = nil,
+                                priority: PdfiumActor.Priority = .onDemand) async throws -> ExtractedPageText {
+        let raw = try await extractText(in: bytes, at: index, password: password, priority: priority)
+        let layout = Task.detached(priority: priority == .onDemand ? .userInitiated : .utility) {
+            try PdfTextReadingOrder.sort(raw)
+        }
+        return try await withTaskCancellationHandler {
+            let page = try await layout.value
+            try Task.checkCancellation()
+            return page
+        } onCancel: {
+            layout.cancel()
         }
     }
 

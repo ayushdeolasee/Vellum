@@ -1,0 +1,29 @@
+{
+  "fixture" : "pdf-ink-rotated.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 240,
+        "width" : 320,
+        "x" : 0,
+        "y" : 0
+      },
+      "displayHeight" : 320,
+      "displayWidth" : 240,
+      "drags" : [
+
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 0,
+      "pdfkitText" : "",
+      "probes" : [
+        {
+          "query" : "missing quote"
+        }
+      ],
+      "rotation" : 90
+    }
+  ],
+  "pdfSHA256" : "2c9915ac4eb1eb9fc8a5a30a23bdb013bef995f747f81f765f7d85c30b2edd0a",
+  "version" : 1
+}

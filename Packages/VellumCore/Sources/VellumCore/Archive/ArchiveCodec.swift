@@ -7,6 +7,8 @@ import Foundation
 // kept for size parity but readers accept any method.
 
 public struct ManifestHashes: Codable, Sendable {
+    public var unknownFields: [String: JSONValue] = [:]
+
     /// "sha256:<hex>" of snapshot/index.html bytes.
     public var snapshotHtml: String
     /// "sha256:<hex>" of text/pages.json bytes.
@@ -36,6 +38,8 @@ public struct ManifestHashes: Codable, Sendable {
 }
 
 public struct ManifestAsset: Codable, Sendable {
+    public var unknownFields: [String: JSONValue] = [:]
+
     public var path: String
     public var url: String
     public var contentType: String
@@ -60,6 +64,8 @@ public struct ManifestAsset: Codable, Sendable {
 }
 
 public struct ArchiveManifest: Codable, Sendable {
+    public var unknownFields: [String: JSONValue] = [:]
+
     public var format: String
     public var version: Int
     public var url: String
@@ -132,6 +138,7 @@ public struct ArchiveManifest: Codable, Sendable {
         hashes = try container.decode(ManifestHashes.self, forKey: .hashes)
         assets = try container.decodeIfPresent([ManifestAsset].self, forKey: .assets) ?? []
         assetsSkipped = try container.decodeIfPresent(Int.self, forKey: .assetsSkipped) ?? 0
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
     }
 }
 
@@ -384,5 +391,68 @@ public enum ArchiveCodec {
             assets: assets,
             annotations: annotations,
             inkJSON: inkJSON)
+    }
+}
+
+extension ManifestHashes {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        snapshotHtml = try container.decode(String.self, forKey: .snapshotHtml)
+        pageText = try container.decode(String.self, forKey: .pageText)
+        annotations = try container.decodeIfPresent(String.self, forKey: .annotations)
+        ink = try container.decodeIfPresent(String.self, forKey: .ink)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(snapshotHtml, forKey: .snapshotHtml)
+        try container.encode(pageText, forKey: .pageText)
+        try container.encodeIfPresent(annotations, forKey: .annotations)
+        try container.encodeIfPresent(ink, forKey: .ink)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension ManifestAsset {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        path = try container.decode(String.self, forKey: .path)
+        url = try container.decode(String.self, forKey: .url)
+        contentType = try container.decode(String.self, forKey: .contentType)
+        bytes = try container.decode(Int.self, forKey: .bytes)
+        sha256 = try container.decodeIfPresent(String.self, forKey: .sha256)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encode(url, forKey: .url)
+        try container.encode(contentType, forKey: .contentType)
+        try container.encode(bytes, forKey: .bytes)
+        try container.encodeIfPresent(sha256, forKey: .sha256)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension ArchiveManifest {
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(format, forKey: .format)
+        try container.encode(version, forKey: .version)
+        try container.encode(url, forKey: .url)
+        try container.encode(canonicalUrl, forKey: .canonicalUrl)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(titleIsUserDefined, forKey: .titleIsUserDefined)
+        try container.encode(capturedAt, forKey: .capturedAt)
+        try container.encode(generator, forKey: .generator)
+        try container.encode(loadingPolicy, forKey: .loadingPolicy)
+        try container.encodeIfPresent(pageCount, forKey: .pageCount)
+        try container.encodeIfPresent(lastPage, forKey: .lastPage)
+        try container.encode(hashes, forKey: .hashes)
+        try container.encode(assets, forKey: .assets)
+        try container.encode(assetsSkipped, forKey: .assetsSkipped)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }

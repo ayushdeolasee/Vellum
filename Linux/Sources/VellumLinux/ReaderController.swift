@@ -12,6 +12,7 @@ final class ReaderController {
     private var searchWork: Task<Void, Never>?
     private var selection: URL?
     private var bytes: Data?
+    private var pdfTitle: String?
     private var pageIndex = 0
     private var pageCount = 0
     private var generation = 0
@@ -66,8 +67,7 @@ final class ReaderController {
                 do {
                     let root = try await RootDirectory.open(self.root)
                     let store = ReadOnlyLibraryFileStore(root: root)
-                    let catalog = try await ReaderMetadataCatalog.load(in: store)
-                    let entries = try await LibraryCatalog.searchEntries(in: store, metadata: catalog)
+                    let (entries, catalog) = try await LibraryCatalog.searchEntries(in: store)
                     guard self.isCurrent(token) else { return }
                     self.store = store
                     self.metadataCatalog = catalog
@@ -89,6 +89,7 @@ final class ReaderController {
             selectedEntry = entry
             selection = entries[entry].file.url
             bytes = nil
+            pdfTitle = nil
             pageCount = 0
             pageIndex = 0
             webPage = nil
@@ -146,12 +147,21 @@ final class ReaderController {
         }
     }
 
+    private func catalog(in store: ReadOnlyLibraryFileStore, token: Int) async throws -> ReaderMetadataCatalog {
+        if let metadataCatalog { return metadataCatalog }
+        let loaded = try await ReaderMetadataCatalog.load(in: store)
+        guard isCurrent(token) else { throw CancellationError() }
+        metadataCatalog = loaded
+        return loaded
+    }
+
     private func showArchive(_ file: URL, window: OpaquePointer) {
-        guard let store, let metadataCatalog else { return }
+        guard let store else { return }
         let title = file.lastPathComponent
         reader_set_message(window, title, "Opening offline archive…")
         replaceWork { token in
             do {
+                let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
@@ -168,12 +178,15 @@ final class ReaderController {
         }
     }
 
-    private func showPage(_ index: Int, window: OpaquePointer) {
+    private func showPage(_ requestedIndex: Int, window: OpaquePointer) {
         guard let file = selection, let store else { return }
-        let title = file.lastPathComponent
-        pageIndex = index
-        reader_page_message(window, title, "Loading page \(index + 1)…", Int32(index + 1), Int32(pageCount))
+        let loadingTitle = pdfTitle ?? file.lastPathComponent
+        pageIndex = requestedIndex
+        let message = bytes == nil ? "Opening PDF…" : "Loading page \(requestedIndex + 1)…"
+        reader_page_message(window, loadingTitle, message, Int32(requestedIndex + 1), Int32(pageCount))
         replaceWork { token in
+            var index = requestedIndex
+            var title = loadingTitle
             do {
                 let data: Data
                 if let cached = self.bytes {
@@ -183,6 +196,20 @@ final class ReaderController {
                         throw CocoaError(.fileNoSuchFile)
                     }
                     guard self.isCurrent(token) else { return }
+                    let opening = try await PdfiumDocument.openingInfo(in: loaded)
+                    guard self.isCurrent(token) else { return }
+                    if let id = opening.stableIdentifier,
+                       let catalog = try? await self.catalog(in: store, token: token) {
+                        let saved = catalog.pdf(stableIdentifier: id, fallbackTitle: title)
+                        title = saved.displayTitle
+                        if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
+                            index = page - 1
+                        }
+                    }
+                    guard self.isCurrent(token) else { return }
+                    self.pageCount = opening.pageCount
+                    self.pdfTitle = title
+                    self.pageIndex = index
                     self.bytes = loaded
                     data = loaded
                 }

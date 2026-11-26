@@ -2,13 +2,8 @@ import Foundation
 import PencilKit
 import VellumCore
 
-// Durable storage for Apple Pencil ink on web pages (WEB-INK-PLAN decisions 5
-// and 6): a separate `<key>.ink.json` sidecar next to the page record — NOT a
-// field inside `WebPageRecord`, because the macOS app re-encodes `<key>.json`
-// with its own Codable model on every annotation edit and Codable silently
-// drops unknown fields, so an `ink` field added only on iPad would be deleted
-// by the Mac the next time it touched a synced record. A separate file the Mac
-// never opens is immune.
+// Apple Pencil ink uses a separate `<key>.ink.json` sidecar so page
+// annotation edits and drawing snapshots do not replace each other's data.
 //
 // Everything persisted is normalized to zoom-1 CSS-pixel document space
 // (decision 3). Clusters are DERIVED data: at save time strokes are grouped
@@ -19,6 +14,8 @@ import VellumCore
 
 /// The `<key>.ink.json` sidecar contents. Snake_case JSON, platform-neutral.
 struct WebInkRecord: Codable, Equatable, Sendable {
+    var unknownFields: [String: JSONValue] = [:]
+
     /// Version 3 captures only a completed, generation-matched Pencil drawing
     /// against a generation-matched DOM layout. Version 2 added line-aware
     /// clusters and horizontal-span scoring, but an in-flight capture could
@@ -30,6 +27,8 @@ struct WebInkRecord: Codable, Equatable, Sendable {
     /// decision 8): ink is known-correct when the current layout width matches;
     /// a mismatch still renders best-effort.
     struct Layout: Codable, Equatable, Sendable {
+        var unknownFields: [String: JSONValue] = [:]
+
         /// Document content width in zoom-1 CSS px.
         var contentWidth: Double
         /// Full document height in zoom-1 CSS px.
@@ -43,6 +42,8 @@ struct WebInkRecord: Codable, Equatable, Sendable {
 
     /// A rectangle in zoom-1 CSS-pixel document space.
     struct Bounds: Codable, Equatable, Sendable {
+        var unknownFields: [String: JSONValue] = [:]
+
         var x: Double
         var y: Double
         var w: Double
@@ -66,6 +67,8 @@ struct WebInkRecord: Codable, Equatable, Sendable {
     /// decode for forward compatibility; without them re-resolution degrades
     /// to raw-offset validation, which still survives pure layout reflow.
     struct Anchor: Codable, Equatable, Sendable {
+        var unknownFields: [String: JSONValue] = [:]
+
         var startOffset: Int
         var endOffset: Int?
         var text: String?
@@ -95,6 +98,8 @@ struct WebInkRecord: Codable, Equatable, Sendable {
     /// maps to (0,0)) — Phase 3 re-anchoring translates whole clusters without
     /// rewriting stroke data.
     struct Cluster: Equatable, Sendable {
+        var unknownFields: [String: JSONValue] = [:]
+
         /// STABLE, content-derived identity (see `WebInkRecord.clusterId`), NOT
         /// a per-save random UUID: two independently-written copies of the same
         /// page's ink must land on the same ids so `mergeInk`/`adoptInkFile`'s
@@ -134,6 +139,7 @@ extension WebInkRecord.Cluster: Codable {
         drawing = try container.decode(Data.self, forKey: .drawing)
         bounds = try container.decode(WebInkRecord.Bounds.self, forKey: .bounds)
         anchor = try container.decodeIfPresent(WebInkRecord.Anchor.self, forKey: .anchor)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
     }
 
     /// Custom encode so an MVP cluster writes an explicit `"anchor": null`
@@ -142,6 +148,7 @@ extension WebInkRecord.Cluster: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(drawing, forKey: .drawing)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
         try container.encode(bounds, forKey: .bounds)
         if let anchor {
             try container.encode(anchor, forKey: .anchor)
@@ -373,6 +380,10 @@ enum WebInkStore {
         } catch {
             throw SessionServiceError.io("Failed to create web store dir: \(error.localizedDescription)")
         }
+        var record = record
+        if let previous = loadRecord(at: path) {
+            carryUnknownFields(into: &record, from: [previous], reclustered: true)
+        }
         let json: Data
         do {
             json = try WebLibrary.jsonEncoderPretty.encode(record)
@@ -497,7 +508,63 @@ enum WebInkStore {
                 }
                 .max { $0.0 < $1.0 }?.1
             })
+        carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
         result.updatedAt = WebLibrary.rfc3339Now()
+        return result
+    }
+
+    /// Snapshotting rebuilds bounds and can change a cluster's derived id.
+    /// Carry extras only onto surviving clusters, by id or shared stroke.
+    /// Source order defines precedence when two old clusters coalesce.
+    static func carryUnknownFields(
+        into result: inout WebInkRecord, from sources: [WebInkRecord], reclustered: Bool = false
+    ) {
+        for source in sources.reversed() {
+            result.unknownFields.merge(source.unknownFields) { _, previous in previous }
+            result.layout.unknownFields.merge(source.layout.unknownFields) { _, previous in previous }
+            let annotated = source.clusters.filter {
+                !$0.unknownFields.isEmpty || !$0.bounds.unknownFields.isEmpty
+                    || $0.anchor?.unknownFields.isEmpty == false || $0.anchor?.rect.unknownFields.isEmpty == false
+            }
+            guard !annotated.isEmpty else { continue }
+            let byID = Dictionary(grouping: annotated, by: \.id)
+            // Stable stroke identity also handles a changed id or coalesced clusters.
+            var byStroke: [StrokeIdentity: [Int]] = [:]
+            if reclustered {
+                for (index, cluster) in annotated.enumerated() {
+                    for id in strokeIDs(in: cluster) { byStroke[id, default: []].append(index) }
+                }
+            }
+            for index in result.clusters.indices {
+                let cluster = result.clusters[index]
+                let sameID = byID[cluster.id] ?? []
+                var matches = sameID
+                if !byStroke.isEmpty {
+                    let shared = Set(strokeIDs(in: cluster).flatMap { byStroke[$0] ?? [] })
+                    matches += shared.sorted().map { annotated[$0] }.filter { $0.id != cluster.id }
+                }
+                for old in matches.reversed() {
+                    result.clusters[index].unknownFields.merge(old.unknownFields) { _, previous in previous }
+                    result.clusters[index].bounds.unknownFields.merge(old.bounds.unknownFields) { _, previous in previous }
+                    if let anchor = old.anchor {
+                        result.clusters[index].anchor?.unknownFields.merge(anchor.unknownFields) { _, previous in previous }
+                        result.clusters[index].anchor?.rect.unknownFields.merge(anchor.rect.unknownFields) { _, previous in previous }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func strokeIDs(in cluster: WebInkRecord.Cluster) -> [StrokeIdentity] {
+        guard let local = try? PKDrawing(data: cluster.drawing) else { return [] }
+        return local.transformed(using: CGAffineTransform(
+            translationX: cluster.bounds.x, y: cluster.bounds.y)).strokes.map(strokeIdentity)
+    }
+
+    /// Relocation keeps the newest whole canvas, including its deletions.
+    static func relocationSnapshot(current: WebInkRecord, incoming: WebInkRecord) -> WebInkRecord {
+        var result = WebArchive.newerThan(incoming.updatedAt, current.updatedAt) ? incoming : current
+        carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
         return result
     }
 
@@ -593,6 +660,7 @@ enum WebInkStore {
                 .max { $0.0 < $1.0 }?.1
             })
         result.version = min(current.version, incoming.version)
+        carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
         result.updatedAt = metadata.updatedAt
         return result
     }
@@ -689,8 +757,9 @@ enum WebInkStore {
                 // Unreadable source: leave it in place for inspection.
                 return false
             }
-            if WebArchive.newerThan(src.updatedAt, dest.updatedAt) {
-                guard (try? writeRecord(src, to: destination)) != nil else { return false }
+            let merged = relocationSnapshot(current: dest, incoming: src)
+            if merged != dest {
+                guard (try? writeRecord(merged, to: destination)) != nil else { return false }
             }
             try? fm.removeItem(at: source)
             return true
@@ -750,5 +819,93 @@ actor WebInkIO {
             record.saved = true
             record.savedAt = record.savedAt ?? WebLibrary.rfc3339Now()
         }
+    }
+}
+
+extension WebInkRecord {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        url = try container.decode(String.self, forKey: .url)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        layout = try container.decode(Layout.self, forKey: .layout)
+        clusters = try container.decode([Cluster].self, forKey: .clusters)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(url, forKey: .url)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(layout, forKey: .layout)
+        try container.encode(clusters, forKey: .clusters)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension WebInkRecord.Layout {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        contentWidth = try container.decode(Double.self, forKey: .contentWidth)
+        docHeight = try container.decode(Double.self, forKey: .docHeight)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(contentWidth, forKey: .contentWidth)
+        try container.encode(docHeight, forKey: .docHeight)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension WebInkRecord.Bounds {
+    private enum CodingKeys: String, CodingKey {
+        case x, y, w, h
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        x = try container.decode(Double.self, forKey: .x)
+        y = try container.decode(Double.self, forKey: .y)
+        w = try container.decode(Double.self, forKey: .w)
+        h = try container.decode(Double.self, forKey: .h)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+        try container.encode(w, forKey: .w)
+        try container.encode(h, forKey: .h)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension WebInkRecord.Anchor {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        startOffset = try container.decode(Int.self, forKey: .startOffset)
+        endOffset = try container.decodeIfPresent(Int.self, forKey: .endOffset)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        prefix = try container.decodeIfPresent(String.self, forKey: .prefix)
+        suffix = try container.decodeIfPresent(String.self, forKey: .suffix)
+        rect = try container.decode(WebInkRecord.Bounds.self, forKey: .rect)
+        page = try container.decodeIfPresent(Int.self, forKey: .page)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(startOffset, forKey: .startOffset)
+        try container.encodeIfPresent(endOffset, forKey: .endOffset)
+        try container.encodeIfPresent(text, forKey: .text)
+        try container.encodeIfPresent(prefix, forKey: .prefix)
+        try container.encodeIfPresent(suffix, forKey: .suffix)
+        try container.encode(rect, forKey: .rect)
+        try container.encodeIfPresent(page, forKey: .page)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }

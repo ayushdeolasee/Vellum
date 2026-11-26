@@ -251,11 +251,12 @@ enum WebArchive {
         snapshotHtml: String,
         pagesJson: Data,
         assets: [CapturedAsset],
-        assetsSkipped: Int
+        assetsSkipped: Int,
+        previous: ArchiveManifest? = nil
     ) -> ArchiveManifest {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "0.1.0"
-        return ArchiveManifest(
+        var manifest = ArchiveManifest(
             format: formatName,
             version: formatVersion,
             url: url,
@@ -283,6 +284,21 @@ enum WebArchive {
             },
             assetsSkipped: assetsSkipped
         )
+        if let previous { manifest.inheritUnknownFields(from: previous) }
+        return manifest
+    }
+
+    static func installedManifest(forKey key: String) throws -> ArchiveManifest? {
+        let path = WebLibrary.archiveDir(forKey: key).appendingPathComponent("manifest.json")
+        let file: FileHandle
+        do { file = try FileHandle(forReadingFrom: path) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return nil }
+        defer { try? file.close() }
+        let data = try file.read(upToCount: ArchiveCodec.maxManifestBytes + 1) ?? Data()
+        guard data.count <= ArchiveCodec.maxManifestBytes else {
+            throw SessionServiceError.invalidDocument("Installed web manifest exceeds its size limit")
+        }
+        return try JSONDecoder().decode(ArchiveManifest.self, from: data)
     }
 
     static func encodePagesJson(_ pages: [WebPageText]) throws -> Data {
@@ -515,8 +531,25 @@ enum WebArchive {
         var changed = 0
         for annotation in incoming {
             if let index = existing.firstIndex(where: { $0.id == annotation.id }) {
-                if newerThan(annotation.updatedAt, existing[index].updatedAt) {
-                    existing[index] = annotation
+                let current = existing[index]
+                let newer = newerThan(annotation.updatedAt, current.updatedAt)
+                var merged = newer ? annotation : current
+                merged.unknownFields = current.unknownFields
+                merged.unknownFields.fillMissing(from: annotation.unknownFields)
+                if var position = merged.positionData {
+                    // Preserve current extras on collisions even when newer
+                    // known geometry came from the incoming annotation.
+                    if let old = current.positionData, let other = annotation.positionData {
+                        position.unknownFields = old.unknownFields
+                        for index in position.rects.indices.prefix(old.rects.count) {
+                            position.rects[index].unknownFields = old.rects[index].unknownFields
+                        }
+                        position.inheritUnknownFields(from: other)
+                    }
+                    merged.positionData = position
+                }
+                if merged != current {
+                    existing[index] = merged
                     changed += 1
                 }
             } else {
@@ -573,6 +606,9 @@ enum WebArchive {
             // snapshotting a fully-current record.
             current.version = min(current.version, incoming.version)
         }
+        if let original = existing {
+            WebInkStore.carryUnknownFields(into: &current, from: [original, incoming])
+        }
         existing = current
         return changed
     }
@@ -596,4 +632,26 @@ enum WebArchive {
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
+}
+
+extension ArchiveManifest {
+    mutating func inheritUnknownFields(from previous: ArchiveManifest) {
+        unknownFields.fillMissing(from: previous.unknownFields)
+        hashes.unknownFields.fillMissing(from: previous.hashes.unknownFields)
+        for index in assets.indices {
+            let asset = assets[index]
+            // A live capture can rename an asset. Offline captures retain
+            // its installed path, but do not have a source URL.
+            let prior = previous.assets.first { old in
+                if asset.url.isEmpty { return old.path == asset.path }
+                if !old.url.isEmpty { return old.url == asset.url }
+                // An offline export has no source URL. A live capture can
+                // identify that same asset by its installed path and digest.
+                return old.path == asset.path && old.sha256 != nil && old.sha256 == asset.sha256
+            }
+            if let prior {
+                assets[index].unknownFields.fillMissing(from: prior.unknownFields)
+            }
+        }
+    }
 }
