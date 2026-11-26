@@ -153,12 +153,13 @@ final class ReaderController {
 
     private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
         guard !closing, transition == nil else { return }
-        if positionSession == nil && (!flushDrafts || scratchpad == nil) { proceed(); return }
+        if positionSession == nil && scratchpad?.pendingSave == nil && (!flushDrafts || scratchpad == nil) { proceed(); return }
         reader_set_close_pending(window, true)
         let rendering = work
         transition = Task {
             await rendering?.value
             do {
+                await scratchpad?.pendingSave?.value
                 try await flushPosition()
                 if flushDrafts, await scratchpad?.flush() == false {
                     throw LibraryFileError.io("A scratchpad draft could not be saved.")

@@ -211,6 +211,8 @@ final class ScratchpadPane {
         }
     }
 
+    var pendingSave: Task<Void, Never>? { save }
+
     // Call with input paused. A failed save keeps every unsaved draft in this pane.
     func flush() async -> Bool {
         await attach?.value

@@ -322,6 +322,7 @@ public struct PositionDeviceRecord: Hashable, Sendable, Codable {
     public var devicePlatform: String
     public var writtenAt: Date
     public var documents: [DocumentKey: DocumentEntry]
+    private var unrecognizedDocuments: [String: PositionJSON] = [:]
     public var unknownFields: [String: PositionJSON] = [:]
 
     /// The version parsed out of the file name this record was read from.
@@ -369,12 +370,16 @@ public struct PositionDeviceRecord: Hashable, Sendable, Codable {
         deviceName = try container.decodeIfPresent(String.self, forKey: .deviceName) ?? ""
         devicePlatform = try container.decodeIfPresent(String.self, forKey: .devicePlatform) ?? ""
         writtenAt = try container.decode(Date.self, forKey: .writtenAt)
-        let raw = try container.decodeIfPresent([String: DocumentEntry].self, forKey: .documents) ?? [:]
-        // A key from a future namespace is skipped, not fatal: the rest of the
-        // file is still this device's authoritative history.
-        documents = raw.reduce(into: [:]) { result, pair in
-            guard let key = DocumentKey(rawValue: pair.key) else { return }
-            result[key] = pair.value
+        documents = [:]
+        if container.contains(.documents), try !container.decodeNil(forKey: .documents) {
+            let entries = try container.nestedContainer(keyedBy: JSONValue.AnyKey.self, forKey: .documents)
+            for name in entries.allKeys {
+                if let key = DocumentKey(rawValue: name.stringValue) {
+                    documents[key] = try entries.decode(DocumentEntry.self, forKey: name)
+                } else {
+                    unrecognizedDocuments[name.stringValue] = try entries.decode(PositionJSON.self, forKey: name)
+                }
+            }
         }
         unknownFields = try PositionJSON.unknownFields(
             in: decoder, excluding: CodingKeys.self)
@@ -388,9 +393,9 @@ public struct PositionDeviceRecord: Hashable, Sendable, Codable {
         try container.encode(deviceName, forKey: .deviceName)
         try container.encode(devicePlatform, forKey: .devicePlatform)
         try container.encode(writtenAt, forKey: .writtenAt)
-        var byRawKey: [String: DocumentEntry] = [:]
-        for (key, entry) in documents { byRawKey[key.rawValue] = entry }
-        try container.encode(byRawKey, forKey: .documents)
+        var entries = container.nestedContainer(keyedBy: JSONValue.AnyKey.self, forKey: .documents)
+        for (key, entry) in documents { try entries.encode(entry, forKey: .init(key.rawValue)) }
+        for (name, value) in unrecognizedDocuments { try entries.encode(value, forKey: .init(name)) }
         try PositionJSON.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 

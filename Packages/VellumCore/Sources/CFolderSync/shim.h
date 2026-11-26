@@ -8,8 +8,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-static inline int vellum_open_subdirectory(int parent, const char *name) {
-    struct open_how how = { .flags = O_DIRECTORY | O_RDONLY | O_CLOEXEC,
+static inline int vellum_open_beneath(int parent, const char *name, int flags) {
+    struct open_how how = { .flags = (unsigned int)flags | O_CLOEXEC,
         .resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV };
     return syscall(SYS_openat2, parent, name, &how, sizeof(how));
 }
