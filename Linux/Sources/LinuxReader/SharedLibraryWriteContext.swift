@@ -18,6 +18,10 @@ public actor SharedLibraryWriteContext {
         let device = try await LibraryIO.run { _ in
             try DeviceIdentityProvider.linux(name: ProcessInfo.processInfo.hostName).current()
         }
+        return try await prepare(root: root, device: device)
+    }
+
+    static func prepare(root: RootDirectory, device: DeviceIdentity) async throws -> SharedLibraryWriteContext {
         let context = SharedLibraryWriteContext(root: root, device: device)
         let ignore = root.url.appendingPathComponent(".stignore", isDirectory: false)
         let original = try await root.readRegularFile(ignore, byteLimit: 1024 * 1024)
@@ -51,7 +55,7 @@ public actor SharedLibraryWriteContext {
     }
 
     @concurrent
-    public func savePosition(_ position: ReadingPosition, for key: DocumentKey) async throws {
+    public func savePosition(_ position: ReadingPosition, for key: DocumentKey, at timestamp: Date = .now) async throws {
         let device = self.device
         let dir = root.url.appendingPathComponent(".vellum/positions", isDirectory: true)
         let file = try PositionLayout.fileURL(in: dir, for: device.id)
@@ -67,14 +71,14 @@ public actor SharedLibraryWriteContext {
                                               devicePlatform: device.platform, writtenAt: .now)
             }
             var entry = record.documents[key] ?? .init()
+            if let latest = entry.readingPosition?.at, latest >= timestamp { return }
             var value = position
             value.unknownFields = entry.readingPosition?.value.unknownFields ?? [:]
-            let now = max(Date.now, (entry.readingPosition?.at ?? .distantPast).addingTimeInterval(0.001))
-            var field = Stamped(at: now, value: value)
+            var field = Stamped(at: timestamp, value: value)
             field.unknownFields = entry.readingPosition?.unknownFields ?? [:]
             entry.readingPosition = field
             record.documents[key] = entry
-            record.writtenAt = max(record.writtenAt, now)
+            record.writtenAt = max(record.writtenAt, timestamp)
             record.trimToMostRecent()
             let bytes = try PositionCoding.encoder.encode(record)
             if try await replace(file, with: bytes, ifCurrent: original) { return }
