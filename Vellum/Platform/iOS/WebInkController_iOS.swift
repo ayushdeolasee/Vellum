@@ -162,6 +162,9 @@ final class WebInkController_iOS: InkPaletteHost {
     /// once-per-document guard for `documentOpened` (init re-reports on
     /// hydration and soft navigation).
     @ObservationIgnored private var loadedUrl: String?
+    // Belongs to the retained canvas. A later URL can fail admission before
+    // binding its persister, while this drawing remains ready to show.
+    @ObservationIgnored private var retainedCanvasReady = false
     @ObservationIgnored private var liveDocumentUrl: String?
     @ObservationIgnored private var openingUrl: String?
     private(set) var isDocumentLoading = false
@@ -266,6 +269,7 @@ final class WebInkController_iOS: InkPaletteHost {
         isActive = false
         flushPendingInk()
         loadedUrl = nil
+        retainedCanvasReady = false
         liveDocumentUrl = nil
         openingUrl = nil
         isDocumentLoading = false
@@ -317,7 +321,7 @@ final class WebInkController_iOS: InkPaletteHost {
         let url = (try? WebUrl.normalize(rawURL)) ?? rawURL
         documentWillNavigate(to: url)
         guard url != openingUrl else { return nil }
-        if url == loadedUrl, !documentLoadFailed {
+        if url == loadedUrl, retainedCanvasReady {
             // Returning to the still-retained document supersedes an incoming
             // load that has not passed its release barrier yet.
             if openingUrl != nil {
@@ -376,18 +380,23 @@ final class WebInkController_iOS: InkPaletteHost {
             }
             self.pendingLoadedRecord = nil
             self.loadedUrl = url
+            self.retainedCanvasReady = false
             self.readOnlyInk = false
             self.resetAnchorState()
             self.persistence = persister
-            let record: WebInkRecord
+            let loaded: WebInkRecord?
             do {
-                guard let loaded = try await persister.loadRecord() else { return }
-                record = loaded
+                loaded = try await persister.loadRecord()
             } catch {
                 guard self.openGeneration == generation else { return }
                 self.documentLoadFailed = true
                 self.app?.error = "Saved handwriting could not be opened. Its data has been preserved."
                 Self.log.error("Unable to load saved handwriting: \(error.localizedDescription)")
+                return
+            }
+            guard self.openGeneration == generation else { return }
+            guard let record = loaded else {
+                self.retainedCanvasReady = true
                 return
             }
             let canEdit = await Task.detached(priority: .userInitiated) {
@@ -396,6 +405,7 @@ final class WebInkController_iOS: InkPaletteHost {
             guard self.openGeneration == generation,
                   self.loadedUrl == url,
                   self.persistence === persister else { return }
+            self.retainedCanvasReady = true
             self.readOnlyInk = !canEdit
             if canEdit { persister.seedBaseline(record) }
             self.pendingLoadedRecord = record
@@ -411,6 +421,7 @@ final class WebInkController_iOS: InkPaletteHost {
         guard let record = pendingLoadedRecord, let overlay else { return }
         pendingLoadedRecord = nil
         guard let restored = try? record.validatedMergedDrawing() else {
+            retainedCanvasReady = false
             documentLoadFailed = true
             return
         }
