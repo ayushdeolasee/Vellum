@@ -395,17 +395,7 @@ struct WebStorageLayout: Equatable, Sendable {
 /// on the next archive write — the index is a convenience, not a source of
 /// truth, so losing it (e.g. an iCloud conflict) is never data loss.
 enum WebArchiveIndex {
-    struct Contents: Codable {
-        var unknownFields: [String: JSONValue] = [:]
-
-        var version: Int
-        var entries: [String: String]
-
-        init() {
-            version = 1
-            entries = [:]
-        }
-    }
+    typealias Contents = WebArchiveIndexContents
 
     private static let lock = NSLock()
 
@@ -468,40 +458,8 @@ enum WebArchiveIndex {
         save(contents, at: path)
     }
 
-    /// Filesystem-safe display name: strip path separators and control chars,
-    /// collapse whitespace, trim leading dots (hidden files), cap the length.
-    /// Falls back to the URL's host+path when the title is empty.
     static func sanitizedBaseName(title: String?, url: String) -> String {
-        var source = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if source.isEmpty {
-            // Lenient Foundation URL parsing can yield a path but no host —
-            // never emit a dangling "host — " / "— tail" fragment.
-            let parsed = URL(string: url)
-            let host = parsed?.host ?? ""
-            let tail = parsed?.path.split(separator: "/").last.map(String.init) ?? ""
-            switch (host.isEmpty, tail.isEmpty) {
-            case (false, false): source = "\(host) — \(tail)"
-            case (false, true): source = host
-            case (true, _): source = tail
-            }
-        }
-        if source.isEmpty { source = "Web Page" }
-        var cleaned = ""
-        for scalar in source.unicodeScalars {
-            if scalar == "/" || scalar == ":" || scalar == "\\" {
-                cleaned.append("-")
-            } else if scalar.properties.generalCategory == .control {
-                continue
-            } else {
-                cleaned.unicodeScalars.append(scalar)
-            }
-        }
-        cleaned = cleaned.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        while cleaned.hasPrefix(".") { cleaned.removeFirst() }
-        if cleaned.count > 80 {
-            cleaned = String(cleaned.prefix(80)).trimmingCharacters(in: .whitespaces)
-        }
-        return cleaned.isEmpty ? "Web Page" : cleaned
+        WebArchiveNaming.sanitizedBaseName(title: title, url: url)
     }
 }
 
@@ -1722,25 +1680,5 @@ enum WebStorageMigrator {
             // elsewhere via `adoptRecordFile`).
             _ = rmdir(dir.path)
         }
-    }
-}
-
-extension WebArchiveIndex.Contents {
-    private enum CodingKeys: String, CodingKey {
-        case version, entries
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = try container.decode(Int.self, forKey: .version)
-        entries = try container.decode([String:String].self, forKey: .entries)
-        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(version, forKey: .version)
-        try container.encode(entries, forKey: .entries)
-        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }
