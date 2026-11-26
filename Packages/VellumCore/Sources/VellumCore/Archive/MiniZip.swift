@@ -313,9 +313,9 @@ public struct MiniZip {
         }
     }
 
-    private static func inflate(_ input: Data, cap: Int) throws -> Data {
+    static func inflate(_ input: Data, cap: Int, windowBits: Int32 = -15) throws -> Data {
         var stream = z_stream()
-        guard inflateInit2_(&stream, -15, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK
+        guard inflateInit2_(&stream, windowBits, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK
         else { throw CodecError() }
         defer { inflateEnd(&stream) }
         return try process(input, stream: &stream, cap: cap) {

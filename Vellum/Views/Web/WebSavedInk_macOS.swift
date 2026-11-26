@@ -29,8 +29,7 @@ enum WebSavedInkRenderer {
             guard bounds.x.isFinite, bounds.y.isFinite,
                   bounds.w.isFinite, bounds.h.isFinite,
                   bounds.w > 0, bounds.h > 0,
-                  let drawing = try? PKDrawing(data: cluster.drawing),
-                  !drawing.strokes.isEmpty else { continue }
+                  let drawing = try? cluster.localDrawing() else { continue }
             // Bound each raster's memory, including unusually large freehand
             // clusters. CSS geometry stays in the original zoom-1 coordinates.
             let scale = min(2, 8192 / max(bounds.w, bounds.h),

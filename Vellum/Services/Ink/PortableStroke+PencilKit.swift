@@ -234,3 +234,14 @@ private extension PortableStrokeMask {
         return mask
     }
 }
+
+extension PKDrawing {
+    init(pdfStrokePayload: String) throws {
+        try self.init(portableStrokes: PortableStroke.decodePDFPayload(pdfStrokePayload))
+    }
+
+    init(portableStrokes: [PortableStroke]) throws {
+        guard !portableStrokes.isEmpty else { throw PortableStrokeConversionError.invalidPath }
+        self.init(strokes: try portableStrokes.map(PKStroke.init))
+    }
+}

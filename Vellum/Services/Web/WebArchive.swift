@@ -568,19 +568,25 @@ enum WebArchive {
     /// the incoming record wins it also carries in the newer layout fingerprint
     /// and `updated_at`. Returns how many clusters were added or replaced.
     @discardableResult
-    static func mergeInk(_ existing: inout WebInkRecord?, incoming: WebInkRecord) -> Int {
+    static func mergeInk(_ existing: inout WebInkRecord?, incoming: WebInkRecord) throws -> Int {
         guard var current = existing else {
+            _ = try incoming.validatedMergedDrawing()
             existing = incoming
             return incoming.clusters.count
         }
         // Real records merge by stable Pencil stroke identity. Keep the legacy
         // cluster-id path below as a compatibility fallback for malformed or
         // synthetic records whose drawing payloads cannot be decoded.
-        if let before = try? current.validatedMergedDrawing().strokes.count,
-           let merged = try? WebInkStore.additivelyMerged(current: current, incoming: incoming),
-           let after = try? merged.validatedMergedDrawing().strokes.count {
+        do {
+            let before = try current.validatedMergedDrawing().strokes.count
+            let merged = try WebInkStore.additivelyMerged(current: current, incoming: incoming)
+            let after = try merged.validatedMergedDrawing().strokes.count
             existing = merged
             return max(0, after - before)
+        } catch {
+            // The historic id-only fallback is for drawing-only records.
+            guard (current.clusters + incoming.clusters).allSatisfy({ $0.drawing != nil && $0.strokes == nil })
+            else { throw error }
         }
         let incomingNewer = newerThan(incoming.updatedAt, current.updatedAt)
         var changed = 0

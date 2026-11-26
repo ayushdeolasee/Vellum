@@ -150,7 +150,7 @@ struct MacHandwritingNavigator: View {
     }
 }
 
-private enum SavedHandwritingReader {
+enum SavedHandwritingReader {
     /// This private reader owns its PDF exclusively off-main. It uses the
     /// display snapshot and unlock credential, never the PDFView's PDFPage.
     static func pdfPages(data: Data, password: String?) throws -> [Int] {
@@ -164,8 +164,13 @@ private enum SavedHandwritingReader {
             for index in 0..<CgPdf.count(entries) {
                 guard let annotation = CgPdf.dictionaryAt(entries, index),
                       CgPdf.name(annotation, "Subtype") == "Ink" else { continue }
-                pages.append(page)
-                break
+                if CgPdf.has(annotation, "VellumInkStrokes"), CgPdf.string(annotation, "VellumInk") == nil {
+                    guard let payload = CgPdf.string(annotation, "VellumInkStrokes") else {
+                        throw SessionServiceError.invalidDocument("Invalid PDF handwriting data")
+                    }
+                    _ = try PKDrawing(pdfStrokePayload: payload)
+                }
+                if pages.last != page { pages.append(page) }
             }
         }
         return pages
@@ -184,8 +189,7 @@ private enum SavedHandwritingReader {
             guard bounds.x.isFinite, bounds.y.isFinite,
                   bounds.w.isFinite, bounds.h.isFinite,
                   bounds.w > 0, bounds.h > 0,
-                  let drawing = try? PKDrawing(data: cluster.drawing),
-                  !drawing.strokes.isEmpty else { return nil }
+                  (try? cluster.localDrawing()) != nil else { return nil }
             var result = cluster
             if let anchor = result.anchor,
                anchor.startOffset < 0 || anchor.startOffset == Int.max || !anchor.rect.y.isFinite {

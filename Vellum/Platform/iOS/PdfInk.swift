@@ -15,12 +15,19 @@ enum PdfInk {
     /// Marks a Vellum-managed ink annotation and carries the base64 PKDrawing.
     static let dataKey = PDFAnnotationKey(rawValue: "VellumInk")
 
+    static let strokesKey = PDFAnnotationKey(rawValue: "VellumInkStrokes")
+
+    static func hasPortableInk(on page: PDFPage) -> Bool {
+        page.annotations.contains { $0.type == "Ink" && $0.value(forAnnotationKey: strokesKey) != nil }
+    }
+
     // MARK: - Write: PKDrawing → native ink annotations on a page
 
     /// Replace this page's Vellum-managed ink with `drawing`. Returns the new
     /// annotations (already added to the page); pass an empty drawing to clear.
     @discardableResult
     static func apply(_ drawing: PKDrawing, to page: PDFPage) -> [PDFAnnotation] {
+        guard !hasPortableInk(on: page) else { return [] }
         removeVellumInk(from: page)
         let crop = page.bounds(for: .cropBox)
         var made: [PDFAnnotation] = []
@@ -56,6 +63,7 @@ enum PdfInk {
 
     static func isVellumInk(_ annotation: PDFAnnotation) -> Bool {
         annotation.value(forAnnotationKey: dataKey) != nil
+            || (annotation.type == "Ink" && annotation.value(forAnnotationKey: strokesKey) != nil)
     }
 
     private static func inkAnnotation(for stroke: PKStroke, crop: CGRect) -> PDFAnnotation? {
@@ -106,10 +114,15 @@ enum PdfInk {
     /// Decode the lossless PKDrawing stored for this page, if any.
     static func drawing(on page: PDFPage) -> PKDrawing? {
         for annotation in page.annotations {
-            guard let value = annotation.value(forAnnotationKey: dataKey) as? String,
-                  value != "1",
-                  let data = Data(base64Encoded: value) else { continue }
-            return try? PKDrawing(data: data)
+            guard let value = annotation.value(forAnnotationKey: dataKey) as? String, value != "1",
+                  let data = Data(base64Encoded: value), let drawing = try? PKDrawing(data: data),
+                  !drawing.strokes.isEmpty else { continue }
+            return drawing
+        }
+        for annotation in page.annotations where annotation.type == "Ink" {
+            if let value = annotation.value(forAnnotationKey: strokesKey) as? String {
+                return try? PKDrawing(pdfStrokePayload: value)
+            }
         }
         return nil
     }

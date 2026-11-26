@@ -101,7 +101,16 @@ final class InkController_iOS: InkPaletteHost {
     /// The cached canvas for a given 1-based page (via the overlay provider).
     func canvas(forPage n: Int) -> PKCanvasView? { inkProvider.canvas(forPage: n) }
     /// The canvas for the current page — undo/redo/clear target it.
-    var currentCanvas: PKCanvasView? { canvas(forPage: app?.currentPage ?? 0) }
+    var currentCanvas: PKCanvasView? {
+        guard !currentPageHasPortableInk else { return nil }
+        return canvas(forPage: app?.currentPage ?? 0)
+    }
+
+    var currentPageHasPortableInk: Bool {
+        guard let number = app?.currentPage, number >= 1,
+              let page = pdfController?.document?.page(at: number - 1) else { return false }
+        return PdfInk.hasPortableInk(on: page)
+    }
 
     func undo() { currentCanvas?.undoManager?.undo() }
     func redo() { currentCanvas?.undoManager?.redo() }
@@ -378,6 +387,7 @@ struct InkDiskWriter {
         for (page, drawing) in drawings {
             guard page >= 1, page <= document.pageCount,
                   let pdfPage = document.page(at: page - 1) else { continue }
+            guard !PdfInk.hasPortableInk(on: pdfPage) else { return false }
             PdfInk.apply(drawing, to: pdfPage)
             didApply = true
         }

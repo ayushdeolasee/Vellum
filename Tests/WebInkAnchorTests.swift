@@ -175,7 +175,7 @@ final class WebInkClusteringTests: XCTestCase {
         // drawing.
         var shifted = decoded
         shifted.clusters[0].bounds.y += 250
-        let merged = shifted.mergedDrawing()
+        let merged = try shifted.validatedMergedDrawing()
         let reClustered = WebInkClustering.clusters(of: merged)
         XCTAssertEqual(reClustered.count, 2)
         XCTAssertEqual(

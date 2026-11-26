@@ -125,3 +125,165 @@ final class PortableStrokeTests: XCTestCase {
         XCTAssertThrowsError(try PKStroke(changed), "Display intervals cannot supply a missing mask")
     }
 }
+
+final class PortableInkReaderTests: XCTestCase {
+    private func fixture(_ name: String, _ ext: String, in directory: String) throws -> Data {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: name, withExtension: ext,
+                                                           subdirectory: directory))
+        return try Data(contentsOf: url)
+    }
+
+    private func webRecord(dual: Bool = false) throws -> WebInkRecord {
+        let bytes = try fixture("web-ink-v3.ink", "json", in: "Web")
+        var record = try JSONDecoder().decode(WebInkRecord.self, from: bytes)
+        var stroke = try PortableStroke(XCTUnwrap(record.clusters[0].localDrawing().strokes.first))
+        stroke.id = "other-device/opaque-007"
+        stroke.unknownFields["brush"] = .int(17)
+        stroke.points[0].unknownFields["sample"] = .null
+        record.clusters[0].unknownFields["label"] = .string("original")
+        record.clusters[0].strokes = [stroke]
+        if !dual { record.clusters[0].drawing = nil }
+        return record
+    }
+
+    private func withStore(_ test: () async throws -> Void) async throws {
+        let previous = WebLibrary.storeDirOverride
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        WebLibrary.storeDirOverride = root
+        defer {
+            WebLibrary.storeDirOverride = previous
+            try? FileManager.default.removeItem(at: root)
+        }
+        try await test()
+    }
+
+    func testStrokesOnlyClusterLoadsAndSurvivesEditAndArchive() async throws {
+        try await withStore {
+            for dual in [false, true] {
+                let record = try webRecord(dual: dual)
+                let key = WebLibrary.pageKey(record.url)
+                try WebInkStore.writeRecord(record, to: WebInkStore.inkPath(forKey: key))
+                let reopened = try XCTUnwrap(WebInkStore.loadRecord(forKey: key))
+                let drawing = try reopened.validatedMergedDrawing()
+                XCTAssertEqual(drawing.strokes.count, 1)
+                XCTAssertEqual(drawing.bounds.minX, record.clusters[0].bounds.x, accuracy: 0.01)
+                XCTAssertEqual(drawing.bounds.minY, record.clusters[0].bounds.y, accuracy: 0.01)
+                #if os(macOS)
+                let payload = try XCTUnwrap(WebSavedInkRenderer.load(url: record.url, pageURL: record.url))
+                let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+                let image = try XCTUnwrap((object["clusters"] as? [[String: Any]])?.first?["image"] as? String)
+                XCTAssertTrue(image.hasPrefix("data:image/png;base64,iVBOR"))
+                XCTAssertEqual(SavedHandwritingReader.webClusters(url: record.url), record.clusters)
+                #endif
+
+                // A new stroke close enough to share the original anchor.
+                let first = try XCTUnwrap(drawing.strokes.first)
+                let newPath = PKStrokePath(controlPoints: Array(first.path),
+                                           creationDate: first.path.creationDate.addingTimeInterval(1))
+                let added = PKStroke(ink: first.ink, path: newPath, transform: first.transform)
+                let edited = drawing.appending(PKDrawing(strokes: [added]))
+                #if os(iOS)
+                let persister = await WebInkPersister(url: record.url)
+                await persister.seedBaseline(reopened)
+                await persister.drawingChanged(edited, layout: record.layout)
+                let saved = await persister.flushPendingInkAndWait()
+                XCTAssertTrue(saved)
+                #else
+                let snapshot = WebInkRecord.snapshot(of: edited, url: record.url, layout: record.layout)
+                _ = try WebInkStore.applySnapshot(snapshot, replacing: reopened, forKey: key)
+                #endif
+                let restored = try XCTUnwrap(WebInkStore.loadRecordForExport(forKey: key))
+                XCTAssertEqual(restored.version, 3)
+                XCTAssertEqual(try restored.validatedMergedDrawing().strokes.count, 2)
+                let original = try XCTUnwrap(restored.clusters.first { $0.strokes != nil })
+                XCTAssertEqual(original.strokes, record.clusters[0].strokes)
+                XCTAssertEqual(original.drawing, record.clusters[0].drawing)
+                XCTAssertEqual(original.unknownFields, record.clusters[0].unknownFields)
+                XCTAssertEqual(restored.clusters.filter { $0.strokes == nil }.count, 1)
+                var imported: WebInkRecord? = record
+                try WebArchive.mergeInk(&imported, incoming: restored)
+                let merged = try XCTUnwrap(imported)
+                XCTAssertEqual(try merged.validatedMergedDrawing().strokes.count, 2)
+                XCTAssertEqual(merged.clusters.compactMap(\.strokes), [try XCTUnwrap(original.strokes)])
+                let pages = try WebArchive.encodePagesJson([])
+                let html = "<p>Ink</p>"
+                let manifest = WebArchive.buildManifest(url: record.url, title: nil, pageCount: 1, lastPage: 1,
+                    loadingPolicy: "snapshot-only", snapshotHtml: html, pagesJson: pages, assets: [], assetsSkipped: 0)
+                let archive = try WebArchive.encodeArchive(manifest: manifest, snapshotHtml: html, assets: [],
+                    pagesJson: pages, annotations: [], inkJson: JSONEncoder().encode(merged))
+                XCTAssertEqual(try WebArchive.readArchive(data: archive).inkRecord, merged)
+            }
+        }
+    }
+
+    func testInvalidPortableRecordRefusesLoadAndOverwrite() async throws {
+        try await withStore {
+            let source = try webRecord()
+            var missing = source
+            missing.clusters[0].strokes = nil
+            var damaged = source
+            damaged.clusters[0].strokes?[0].visibleRanges = []
+            var empty = source
+            empty.clusters[0].strokes = []
+            let key = WebLibrary.pageKey(source.url)
+            let path = WebInkStore.inkPath(forKey: key)
+            for invalid in [missing, damaged, empty] {
+                try WebInkStore.writeRecord(invalid, to: path)
+                let bytes = try Data(contentsOf: path)
+                XCTAssertNil(WebInkStore.loadRecord(at: path))
+                XCTAssertThrowsError(try WebInkStore.loadRecordForExport(forKey: key))
+                XCTAssertThrowsError(try WebInkStore.applySnapshot(source, replacing: nil, forKey: key))
+                var original: WebInkRecord? = source
+                XCTAssertThrowsError(try WebArchive.mergeInk(&original, incoming: invalid))
+                XCTAssertEqual(original, source)
+                XCTAssertEqual(try Data(contentsOf: path), bytes)
+            }
+        }
+    }
+
+    /// The fixture keeps I0's partial erasure and native appearance, with its
+    /// drawing replaced by the zlib-compressed golden stroke on the carrier.
+    func testPortablePDFInkSurvivesUnrelatedNote() async throws {
+        let bytes = try fixture("portable-partial", "pdf", in: "Ink")
+        let document = try XCTUnwrap(PDFDocument(data: bytes))
+        let page = try XCTUnwrap(document.page(at: 0))
+        let key = PDFAnnotationKey(rawValue: "VellumInkStrokes")
+        let carrier = try XCTUnwrap(page.annotations.first)
+        let payload = try XCTUnwrap(carrier.value(forAnnotationKey: key) as? String)
+        let golden = try JSONDecoder().decode(PortableStroke.self, from: fixture("partial-stroke", "json", in: "Ink"))
+        XCTAssertEqual(try PortableStroke.decodePDFPayload(payload), [golden])
+        XCTAssertThrowsError(try PKDrawing(pdfStrokePayload: "bWFsZm9ybWVk"))
+        let drawing = try PKDrawing(pdfStrokePayload: payload)
+        XCTAssertEqual(drawing.strokes.first?.maskedPathRanges, try PKStroke(golden).maskedPathRanges)
+        #if os(macOS)
+        XCTAssertEqual(try SavedHandwritingReader.pdfPages(data: bytes, password: nil), [1])
+        #else
+        XCTAssertTrue(PdfInk.hasPortableInk(on: page))
+        XCTAssertEqual(PdfInk.drawing(on: page)?.strokes.first?.maskedPathRanges, drawing.strokes.first?.maskedPathRanges)
+        let legacy = try webRecord(dual: true)
+        carrier.setValue(try XCTUnwrap(legacy.clusters[0].drawing).base64EncodedString(), forAnnotationKey: PdfInk.dataKey)
+        XCTAssertNil(try XCTUnwrap(PdfInk.drawing(on: page)?.strokes.first).mask, "Dual pages prefer native ink")
+        #endif
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("editable.pdf")
+        try bytes.write(to: url)
+        #if os(iOS)
+        let wrote = await InkDiskWriter().write(drawings: [1: PKDrawing()], path: url.path)
+        XCTAssertFalse(wrote)
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+        #endif
+        let session = try await PdfSessionBackend().open(path: url.path, sessionId: UUID().uuidString)
+        let note = try await session.createAnnotation(.init(type: .note, pageNumber: 1, color: nil, content: "Margin",
+            positionData: PositionData(rects: [.init(x: 20, y: 20, width: 0, height: 0)], pageWidth: 320,
+                pageHeight: 240, selectedText: nil, startOffset: nil, endOffset: nil, prefix: nil, suffix: nil,
+                viewportOffset: nil)))
+        let notes = try await session.annotations(pageNumber: 1)
+        XCTAssertTrue(notes.contains { $0.id == note.id })
+        let reread = try XCTUnwrap(PDFDocument(url: url))
+        let stored = try XCTUnwrap(reread.page(at: 0)).annotations.compactMap { $0.value(forAnnotationKey: key) as? String }
+        XCTAssertEqual(stored, [payload])
+    }
+}

@@ -77,7 +77,7 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertEqual(ink.clusters.count, 1)
         let cluster = try XCTUnwrap(ink.clusters.first)
         XCTAssertFalse(try XCTUnwrap(cluster.anchor?.text).isEmpty)
-        XCTAssertEqual(try PKDrawing(data: cluster.drawing).strokes.count, 1)
+        XCTAssertEqual(try PKDrawing(data: XCTUnwrap(cluster.drawing)).strokes.count, 1)
         let restored = try ink.validatedMergedDrawing()
         XCTAssertEqual(restored.strokes.count, 1)
         XCTAssertEqual(restored.bounds.minY, cluster.bounds.y, accuracy: 0.5)
@@ -95,7 +95,7 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertFalse(record.updatedAt.isEmpty)
 
         // Cluster drawings are cluster-local: translated so bounds.origin is (0,0).
-        let local = try PKDrawing(data: record.clusters[0].drawing)
+        let local = try PKDrawing(data: XCTUnwrap(record.clusters[0].drawing))
         XCTAssertEqual(local.bounds.minX, 0, accuracy: 0.5)
         XCTAssertEqual(local.bounds.minY, 0, accuracy: 0.5)
         XCTAssertEqual(record.clusters[0].bounds.x, drawing.bounds.minX, accuracy: 0.5)
@@ -119,7 +119,7 @@ final class WebInkPersistenceTests: XCTestCase {
         // Decode → merge restores the original document-space drawing.
         let decoded = try JSONDecoder().decode(WebInkRecord.self, from: data)
         XCTAssertEqual(decoded, record)
-        let merged = decoded.mergedDrawing()
+        let merged = try decoded.validatedMergedDrawing()
         XCTAssertEqual(merged.strokes.count, drawing.strokes.count)
         XCTAssertEqual(merged.bounds.minX, drawing.bounds.minX, accuracy: 0.5)
         XCTAssertEqual(merged.bounds.minY, drawing.bounds.minY, accuracy: 0.5)
@@ -127,11 +127,11 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertEqual(merged.bounds.height, drawing.bounds.height, accuracy: 0.5)
     }
 
-    func testEmptyDrawingSnapshotsToZeroClusters() {
+    func testEmptyDrawingSnapshotsToZeroClusters() throws {
         let record = WebInkRecord.snapshot(
             of: PKDrawing(), url: "https://example.com/blank", layout: layout)
         XCTAssertTrue(record.clusters.isEmpty)
-        XCTAssertTrue(record.mergedDrawing().strokes.isEmpty)
+        XCTAssertTrue(try record.validatedMergedDrawing().strokes.isEmpty)
     }
 
     // MARK: - Zoom invariance (decision 3, viewScale model)
@@ -195,7 +195,7 @@ final class WebInkPersistenceTests: XCTestCase {
         let record = try XCTUnwrap(WebInkStore.loadRecord(forKey: key))
         XCTAssertEqual(record.url, url)
         XCTAssertEqual(record.clusters.count, 1)
-        XCTAssertEqual(record.mergedDrawing().strokes.count, 1)
+        XCTAssertEqual(try record.validatedMergedDrawing().strokes.count, 1)
         XCTAssertEqual(record.layout, layout)
     }
 
@@ -212,7 +212,7 @@ final class WebInkPersistenceTests: XCTestCase {
         await persister.flushPendingInkAndWait()
 
         let record = try XCTUnwrap(WebInkStore.loadRecord(forKey: key))
-        XCTAssertEqual(record.mergedDrawing().strokes.count, 2, "the newest edit wins")
+        XCTAssertEqual(try record.validatedMergedDrawing().strokes.count, 2, "the newest edit wins")
     }
 
     func testDebouncedWriteLandsOnItsOwn() async throws {
@@ -263,7 +263,7 @@ final class WebInkPersistenceTests: XCTestCase {
 
         let record = try XCTUnwrap(
             WebInkStore.loadRecord(forKey: WebLibrary.pageKey(url)))
-        XCTAssertEqual(record.mergedDrawing().strokes.count, 1)
+        XCTAssertEqual(try record.validatedMergedDrawing().strokes.count, 1)
     }
 
     /// A flush can suspend in I/O while PencilKit reports a newer drawing. The
@@ -288,7 +288,7 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertTrue(flushSucceeded)
         let writes = await writer.records
         XCTAssertEqual(writes.count, 2)
-        XCTAssertEqual(writes.last?.mergedDrawing().strokes.count, 2)
+        XCTAssertEqual(try writes.last?.validatedMergedDrawing().strokes.count, 2)
     }
 
     // MARK: - First stroke promotes to saved (decision 7)
@@ -423,7 +423,7 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertNotNil(imported.manifest.hashes.ink, "the manifest carries the ink sha256")
         let importedInk = try XCTUnwrap(imported.inkRecord)
         XCTAssertEqual(importedInk, record)
-        XCTAssertEqual(importedInk.mergedDrawing().strokes.count, 1)
+        XCTAssertEqual(try importedInk.validatedMergedDrawing().strokes.count, 1)
     }
 
     func testArchiveAcceptsMaximumAssetsAndRejectsInvalidDeclaredInk() throws {
@@ -521,7 +521,7 @@ final class WebInkPersistenceTests: XCTestCase {
             clusters: [cluster("a", byte: 9), cluster("c", byte: 3)])
 
         var base: WebInkRecord? = older
-        let changed = WebArchive.mergeInk(&base, incoming: newer)
+        let changed = try WebArchive.mergeInk(&base, incoming: newer)
         let merged = try XCTUnwrap(base)
         XCTAssertEqual(changed, 2, "cluster a replaced, cluster c added")
         XCTAssertEqual(Set(merged.clusters.map(\.id)), ["a", "b", "c"])
@@ -536,7 +536,7 @@ final class WebInkPersistenceTests: XCTestCase {
 
         // Symmetric: an older incoming record never overwrites newer clusters.
         var base2: WebInkRecord? = newer
-        let changed2 = WebArchive.mergeInk(&base2, incoming: older)
+        let changed2 = try WebArchive.mergeInk(&base2, incoming: older)
         XCTAssertEqual(base2?.updatedAt, newer.updatedAt)
         XCTAssertEqual(
             base2?.clusters.first(where: { $0.id == "a" })?.drawing, Data([9]),
@@ -566,7 +566,7 @@ final class WebInkPersistenceTests: XCTestCase {
 
         // Merging the second (newer) into the first must REPLACE, not append.
         var merged: WebInkRecord? = first
-        WebArchive.mergeInk(&merged, incoming: second)
+        try WebArchive.mergeInk(&merged, incoming: second)
         XCTAssertEqual(
             merged?.clusters.count, 1,
             "the same-id cluster is replaced, never doubled")
@@ -606,16 +606,16 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertNotEqual(unanchored.clusters.map(\.id), anchored.clusters.map(\.id))
 
         var merged: WebInkRecord? = unanchored
-        WebArchive.mergeInk(&merged, incoming: anchored)
+        try WebArchive.mergeInk(&merged, incoming: anchored)
         let drawingAfterMerge = try XCTUnwrap(merged).validatedMergedDrawing()
         XCTAssertEqual(drawingAfterMerge.strokes.count, drawing.strokes.count)
     }
 
-    func testMergeInkIntoNilAdoptsIncoming() {
+    func testMergeInkIntoNilAdoptsIncoming() throws {
         let incoming = WebInkRecord.snapshot(
             of: sampleDrawing(), url: "https://example.com/nil", layout: layout)
         var base: WebInkRecord?
-        let changed = WebArchive.mergeInk(&base, incoming: incoming)
+        let changed = try WebArchive.mergeInk(&base, incoming: incoming)
         XCTAssertEqual(changed, incoming.clusters.count)
         XCTAssertEqual(base, incoming)
     }
@@ -625,7 +625,7 @@ final class WebInkPersistenceTests: XCTestCase {
         let io = WebInkIO(url: url)
         let record = WebInkRecord.snapshot(of: sampleDrawing(), url: url, layout: layout)
         try await io.write(record)
-        let loaded = await io.load()
+        let loaded = try await io.load()
         XCTAssertEqual(loaded, record)
         // Atomic write left no tmp litter.
         let tmp = WebInkStore.inkPath(forKey: io.key).appendingPathExtension("tmp")
@@ -654,7 +654,7 @@ final class WebInkPersistenceTests: XCTestCase {
         _ = try await (liveWrite, archiveMerge)
 
         let stored = try XCTUnwrap(WebInkStore.loadRecord(forKey: WebLibrary.pageKey(url)))
-        XCTAssertEqual(stored.mergedDrawing().strokes.count, 3)
+        XCTAssertEqual(try stored.validatedMergedDrawing().strokes.count, 3)
     }
 
     /// Two runtimes for equivalent normalized URLs apply their own delta to the
@@ -678,7 +678,7 @@ final class WebInkPersistenceTests: XCTestCase {
 
         let key = WebLibrary.pageKey(try WebUrl.normalize(canonical))
         let shared = try XCTUnwrap(WebInkStore.loadRecord(forKey: key))
-        XCTAssertEqual(shared.mergedDrawing().strokes.count, 2)
+        XCTAssertEqual(try shared.validatedMergedDrawing().strokes.count, 2)
         XCTAssertEqual(
             shared.clusters.count, 1,
             "same-cluster concurrent additions must not fall back to cluster-level last writer wins")
@@ -688,7 +688,7 @@ final class WebInkPersistenceTests: XCTestCase {
         clearer.seedBaseline(shared)
         staleAdder.seedBaseline(shared)
         clearer.drawingChanged(PKDrawing(), layout: layout)
-        let stalePlusNew = shared.mergedDrawing().appending(
+        let stalePlusNew = try shared.validatedMergedDrawing().appending(
             sampleDrawing(offsetX: 650, offsetY: 1_700))
         staleAdder.drawingChanged(stalePlusNew, layout: layout)
         async let clearFlush = clearer.flushPendingInkAndWait()
@@ -699,7 +699,7 @@ final class WebInkPersistenceTests: XCTestCase {
 
         let afterClear = try XCTUnwrap(WebInkStore.loadRecord(forKey: key))
         XCTAssertEqual(
-            afterClear.mergedDrawing().strokes.count, 1,
+            try afterClear.validatedMergedDrawing().strokes.count, 1,
             "the new concurrent stroke survives, but stale pre-clear strokes stay deleted")
     }
 
@@ -722,14 +722,14 @@ final class WebInkPersistenceTests: XCTestCase {
             second.drawingChanged(drawing, layout: layout)
             let succeeded = await second.flushPendingInkAndWait()
             XCTAssertTrue(succeeded)
-            let stored = try XCTUnwrap(WebInkStore.loadRecord(forKey: key)).mergedDrawing()
+            let stored = try XCTUnwrap(WebInkStore.loadRecord(forKey: key)).validatedMergedDrawing()
             XCTAssertEqual(stored.strokes.count, count)
             XCTAssertEqual(stored.bounds.minX, foreign.bounds.minX, accuracy: 0.01)
         }
         first.drawingChanged(PKDrawing(), layout: layout)
         let cleared = await first.flushPendingInkAndWait()
         XCTAssertTrue(cleared)
-        XCTAssertTrue(try XCTUnwrap(WebInkStore.loadRecord(forKey: key)).mergedDrawing().strokes.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(WebInkStore.loadRecord(forKey: key)).validatedMergedDrawing().strokes.isEmpty)
     }
 
     /// An initial load delivered after an early write must merge into the
@@ -742,7 +742,7 @@ final class WebInkPersistenceTests: XCTestCase {
         try WebInkStore.saveRecord(existing, forKey: WebLibrary.pageKey(url))
 
         let persister = WebInkPersister(url: url)
-        let loaded = await persister.loadRecord()
+        let loaded = try await persister.loadRecord()
         let lateLoaded = try XCTUnwrap(loaded)
         let earlyStroke = sampleDrawing(offsetX: 500, offsetY: 1_200)
         persister.drawingChanged(earlyStroke, layout: layout)
@@ -750,7 +750,7 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertTrue(earlyWriteSucceeded)
 
         persister.seedBaseline(lateLoaded)
-        let mergedCanvas = earlyStroke.appending(lateLoaded.mergedDrawing())
+        let mergedCanvas = try earlyStroke.appending(lateLoaded.validatedMergedDrawing())
         persister.drawingChanged(mergedCanvas, layout: layout)
         let mergedWriteSucceeded = await persister.flushPendingInkAndWait()
         XCTAssertTrue(mergedWriteSucceeded)
@@ -758,7 +758,7 @@ final class WebInkPersistenceTests: XCTestCase {
         let stored = try XCTUnwrap(
             WebInkStore.loadRecord(forKey: WebLibrary.pageKey(url)))
         XCTAssertEqual(
-            stored.mergedDrawing().strokes.count, 2,
+            try stored.validatedMergedDrawing().strokes.count, 2,
             "the loaded stroke and the early stroke must each appear once")
 
         let afterWrite = WebInkPersister(url: url)
@@ -771,7 +771,7 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertTrue(afterSeedCleared)
         XCTAssertTrue(
             try XCTUnwrap(WebInkStore.loadRecord(forKey: WebLibrary.pageKey(url)))
-                .mergedDrawing().strokes.isEmpty,
+                .validatedMergedDrawing().strokes.isEmpty,
             "Clear must remove a late load even before its merged canvas writes")
         try WebInkStore.saveRecord(stored, forKey: WebLibrary.pageKey(url))
 
@@ -793,7 +793,7 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertTrue(clearSucceeded)
         XCTAssertTrue(
             try XCTUnwrap(WebInkStore.loadRecord(forKey: WebLibrary.pageKey(url)))
-                .mergedDrawing().strokes.isEmpty,
+                .validatedMergedDrawing().strokes.isEmpty,
             "Clear must remove ink observed by a load during the initial write")
     }
 
@@ -820,7 +820,7 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertEqual(overlay.canvas.drawing.strokes.count, 1)
         XCTAssertEqual(
             overlay.canvas.drawing.bounds.minY,
-            record.mergedDrawing().bounds.minY,
+            try record.validatedMergedDrawing().bounds.minY,
             accuracy: 0.01)
     }
 
@@ -848,7 +848,7 @@ final class WebInkPersistenceTests: XCTestCase {
         await secondATask.value
         XCTAssertEqual(
             overlay.canvas.drawing.bounds.minY,
-            secondARecord.mergedDrawing().bounds.minY,
+            try secondARecord.validatedMergedDrawing().bounds.minY,
             accuracy: 0.01)
 
         let staleFirstA = WebInkRecord.snapshot(
@@ -857,7 +857,7 @@ final class WebInkPersistenceTests: XCTestCase {
         await firstATask.value
         XCTAssertEqual(
             overlay.canvas.drawing.bounds.minY,
-            secondARecord.mergedDrawing().bounds.minY,
+            try secondARecord.validatedMergedDrawing().bounds.minY,
             accuracy: 0.01)
         XCTAssertNil(loaders[0].seededBaseline)
         XCTAssertEqual(loaders[2].seededBaseline, secondARecord)
@@ -889,12 +889,12 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertTrue(overlay.isHidden, "failed admission must preserve but hide the outgoing drawing")
         XCTAssertFalse(controller.isDocumentLoading)
         XCTAssertTrue(controller.persistence === loaders[2])
-        XCTAssertEqual(overlay.canvas.drawing.bounds.minY, secondARecord.mergedDrawing().bounds.minY, accuracy: 0.01)
+        XCTAssertEqual(overlay.canvas.drawing.bounds.minY, try secondARecord.validatedMergedDrawing().bounds.minY, accuracy: 0.01)
         XCTAssertNil(loaders[3].seededBaseline, "a failed release barrier must not seed an empty replacement")
 
         controller.documentOpened(url: "https://example.com/a")
         XCTAssertFalse(overlay.isHidden, "returning to A must reveal its retained drawing")
-        XCTAssertEqual(overlay.canvas.drawing.bounds.minY, secondARecord.mergedDrawing().bounds.minY, accuracy: 0.01)
+        XCTAssertEqual(overlay.canvas.drawing.bounds.minY, try secondARecord.validatedMergedDrawing().bounds.minY, accuracy: 0.01)
 
         release.flushSucceeds = true
         let retry = try XCTUnwrap(controller.documentOpened(url: blockedDocument.pdfPath))
@@ -937,7 +937,7 @@ final class WebInkPersistenceTests: XCTestCase {
         // Round-trip through the wire format and back.
         let data = try JSONEncoder().encode(record)
         let decoded = try JSONDecoder().decode(WebInkRecord.self, from: data)
-        let merged = decoded.mergedDrawing()
+        let merged = try decoded.validatedMergedDrawing()
         XCTAssertEqual(merged.strokes.count, full.strokes.count)
         XCTAssertEqual(merged.bounds.minY, full.bounds.minY, accuracy: 0.5)
         XCTAssertEqual(merged.bounds.maxY, full.bounds.maxY, accuracy: 0.5)
