@@ -178,6 +178,7 @@ targets:
       - path: Tests/ConflictMergeTests.swift
       - path: Tests/SyncedContainerConflictTests.swift
       - path: Tests/SyncedFolderStorageTests.swift
+      - path: Tests/InkCapabilityAdvertisingTests.swift
       - path: Tests/TestSupport/StorageIsolationTrait.swift
       - path: Tests/TestSupport/FakeSyncedContainer.swift
     dependencies:
