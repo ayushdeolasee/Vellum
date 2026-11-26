@@ -1,4 +1,6 @@
 import Foundation
+import OSLog
+import VellumCore
 
 /// App-level owner of storage lifecycles. Local and custom folders use direct
 /// stores. iCloud and any installed folder backend use a `SyncedContainer`
@@ -232,10 +234,10 @@ actor StorageCoordinator {
         syncedFolderRootResolver: @escaping @Sendable () async -> URL? = {
             await WebStorageSettings.resolveSyncedFolderRoot()
         },
-        // S5b installs { layout in await SharedFolderContainerFactory.make(root: layout.rootDir) } here.
-        folderContainerFactory: @escaping StorageAccess.FolderContainerFactory = { layout in
-            await SharedFolderContainerFactory.make(root: layout.rootDir)
-        },
+        folderContainerFactory: @escaping StorageAccess.FolderContainerFactory =
+            StorageCoordinator.sharedFolderActivation { layout in
+                await SharedFolderContainerFactory.make(root: layout.rootDir)
+            },
         conflictArchiveRegistry: ConflictArchiveRegistry = .live
     ) {
         self.storeDir = storeDir
@@ -247,6 +249,24 @@ actor StorageCoordinator {
         self.folderContainerFactory = folderContainerFactory
         self.conflictArchiveRegistry = conflictArchiveRegistry
         self.layout = .local(storeDir: storeDir)
+    }
+
+    static func sharedFolderActivation(
+        _ makeContainer: @escaping StorageAccess.FolderContainerFactory
+    ) -> StorageAccess.FolderContainerFactory {
+        { layout in
+            guard layout.backend == .syncedFolder else { return nil }
+            do {
+                _ = try await Task.detached(priority: .utility) {
+                    try StignoreManager.ensure(at: layout.rootDir)
+                }.value
+            } catch {
+                Logger(subsystem: Bundle.main.bundleIdentifier ?? "Vellum", category: "Storage")
+                    .error("Could not prepare shared-folder ignore rules: \(error.localizedDescription, privacy: .private)")
+                return nil
+            }
+            return await makeContainer(layout)
+        }
     }
 
     func currentStatus() -> Status {

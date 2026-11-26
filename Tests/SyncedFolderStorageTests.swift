@@ -63,6 +63,7 @@ struct SyncedFolderStorageTests {
                 conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
             await coordinator.start()
             do {
+                #expect(!fm.fileExists(atPath: shared.appendingPathComponent(".stignore").path))
                 let status = await coordinator.currentStatus()
                 #expect(status.effectiveMode == (installBackend ? .syncedFolder : .local))
                 #expect(status.availability == (installBackend
@@ -99,6 +100,9 @@ struct SyncedFolderStorageTests {
         let pdfs = shared.appendingPathComponent("PDFs", isDirectory: true)
         try fm.createDirectory(at: pdfs, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: root) }
+        let ignoreFile = shared.appendingPathComponent(".stignore")
+        let userRules = Data("// A local rule\r\n!keep-me".utf8)
+        try userRules.write(to: ignoreFile)
         let canonical = pdfs.appendingPathComponent("book.pdf")
         let sibling = pdfs.appendingPathComponent("book.sync-conflict-20260122-151234-PEER.pdf")
         try Data([1]).write(to: canonical)
@@ -115,6 +119,9 @@ struct SyncedFolderStorageTests {
             await coordinator.start()
             do {
                 #expect(await coordinator.currentStatus().effectiveMode == .syncedFolder)
+                let ignoreBytes = try Data(contentsOf: ignoreFile)
+                #expect(ignoreBytes.starts(with: userRules))
+                #expect(ignoreBytes.range(of: Data("// BEGIN VELLUM MANAGED".utf8)) != nil)
                 let deadline = ContinuousClock.now + .seconds(5)
                 while await coordinator.archivedConflicts().isEmpty, ContinuousClock.now < deadline {
                     try await Task.sleep(for: .milliseconds(25))
@@ -127,6 +134,40 @@ struct SyncedFolderStorageTests {
             } catch { await coordinator.stop(); throw error }
             await coordinator.stop()
         }
+    }
+
+    @Test("Shared-folder preparation precedes backend construction", arguments: [false, true])
+    func preparesIgnoreBeforeActivation(malformed: Bool) async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let shared = root.appendingPathComponent("shared", isDirectory: true)
+        try fm.createDirectory(at: shared, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let ignoreFile = shared.appendingPathComponent(".stignore")
+        let original = Data("// user rule\n// END VELLUM MANAGED\n".utf8)
+        if malformed { try original.write(to: ignoreFile) }
+        let fake = FakeSyncedContainer()
+        let coordinator = StorageCoordinator(
+            storeDir: root.appendingPathComponent("local/web", isDirectory: true),
+            modeProvider: { .syncedFolder },
+            syncedFolderRootResolver: { shared },
+            folderContainerFactory: StorageCoordinator.sharedFolderActivation { layout in
+                #expect(!malformed)
+                #expect(layout.rootDir == shared)
+                let bytes = try? Data(contentsOf: ignoreFile)
+                #expect(bytes?.range(of: Data("// BEGIN VELLUM MANAGED".utf8)) != nil)
+                return fake
+            },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        await coordinator.start()
+        let status = await coordinator.currentStatus()
+        await coordinator.stop()
+
+        #expect(status.effectiveMode == (malformed ? .local : .syncedFolder))
+        #expect(status.availability == (malformed
+            ? .degradedToLocal(.syncedFolderBackendUnavailable) : .coordinated))
+        if malformed { #expect(try Data(contentsOf: ignoreFile) == original) }
     }
 
     @Test("Saving away an image before an offline conflict arrives keeps its bytes recoverable")

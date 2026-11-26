@@ -41,11 +41,16 @@ public enum StignoreManager {
         "(?d)/Web Pages/.*.vellumweb.tmp-*-\(nonce)",
         "(?d)(?i)/PDFs/.*.pdf.vellum-\(nonce).tmp",
         "(?d)(?i)/PDFs/**/.*.pdf.vellum-\(nonce).tmp",
+        // The folder backend stages replacements and recovery writes beside the destination.
+        "(?d).vellum.tmp-\(nonce)",
         "(?d)/..stignore.tmp-\(nonce)",
     ]
 
     /// Call during explicit writable shared-folder activation. The root must already exist.
     /// The writer stages bytes through a private file handle. This method owns the commit.
+    /// Concurrent Vellum activations serialize. Initial creation is exclusive, and updates
+    /// recheck the existing file immediately before rename. An editor that ignores the
+    /// directory lock can still write in the interval between that check and rename.
     @discardableResult
     public static func ensure(
         at libraryRoot: URL,
