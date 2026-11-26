@@ -61,8 +61,23 @@ struct SyncedFolderStorageTests {
                 await #expect(throws: SessionServiceError.self) {
                     try await sessions.createAnnotation(sessionId: "early", input: .init(type: .note, pageNumber: 1))
                 }
+                if early.docId == stamp {
+                    await #expect(throws: DocumentAccessError.self) {
+                        try await DocumentDataStore.touch(document: early, coordinator: coordinator)
+                    }
+                    let wrong = await ScratchpadPersistence.save(forKey: stamp, document: early,
+                        schemeText: "stale draft", expectedBaseline: "", attachments: [], dirtyAttachmentNames: [],
+                        coordinator: coordinator)
+                    #expect(wrong == nil)
+                    #expect(AiPersistence.saveConversation(for: early, messages: [message], coordinator: coordinator))
+                    #expect(await AiPersistence.awaitPendingFlush() == false)
+                    #expect(!fm.fileExists(atPath: root.appendingPathComponent(".vellum/documents/" + stamp).path))
+                    AiPersistence.invalidateCachedConversation(forKey: stamp)
+                }
                 try await sessions.closeFile(sessionId: "early")
-                try await DocumentDataStore.saveScratchpad(forKey: hash, text: "legacy notes", coordinator: coordinator)
+                let notes = await ScratchpadPersistence.save(forKey: hash, document: saved, schemeText: "legacy notes",
+                    expectedBaseline: "", attachments: [], dirtyAttachmentNames: [], coordinator: coordinator)
+                #expect(notes == "legacy notes")
                 #expect(AiPersistence.saveConversation(for: saved, messages: [message], coordinator: coordinator))
                 #expect(await AiPersistence.awaitPendingFlush())
                 AiPersistence.invalidateCachedConversation(forKey: hash)
@@ -110,6 +125,12 @@ struct SyncedFolderStorageTests {
                         try await resolver.relink(key: hash, isDocIdKeyed: true, to: copy, coordinator: coordinator).get()
                     }
                     try fm.removeItem(at: copy)
+                    let external = tmp.appendingPathComponent("Foreign.pdf")
+                    try bytes.write(to: external)
+                    await #expect(throws: DocumentAccessError.self) {
+                        try await resolver.relink(key: hash, isDocIdKeyed: true, to: external, coordinator: coordinator).get()
+                    }
+                    #expect(!fm.fileExists(atPath: next.deletingLastPathComponent().appendingPathComponent("Foreign.pdf").path))
                 }
                 let metaBytes = try Data(contentsOf: metaURL)
                 let different = try PdfDocumentSession.verifiedSharedEdit(

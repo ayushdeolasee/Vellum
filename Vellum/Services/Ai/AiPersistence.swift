@@ -646,6 +646,15 @@ enum AiPersistence {
     /// when a non-empty conversation could not be written (encode or disk error),
     /// so the caller keeps the key dirty for a retry instead of losing the data.
     private static func flushConversation(_ entry: FlushEntry) async -> Bool {
+        if let document = entry.document, let coordinator = entry.coordinator {
+            return (try? await DocumentDataStore.withSidecarWriteAdmission(
+                forKey: entry.key, document: document, coordinator: coordinator
+            ) { await flushAdmittedConversation(entry) }) ?? false
+        }
+        return await flushAdmittedConversation(entry)
+    }
+
+    private static func flushAdmittedConversation(_ entry: FlushEntry) async -> Bool {
         if let coordinator = entry.coordinator {
             if let document = entry.document,
                let docId = document.docId, !docId.isEmpty {
