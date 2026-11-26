@@ -149,10 +149,7 @@ final class WebLibraryStorageTests: XCTestCase {
             conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
         await coordinator.start()
         coordinators.append(coordinator)
-        let layout = WebStorageLayout.pretty(
-            root: cloudRoot,
-            recordsInRoot: true,
-            localStoreDir: WebLibrary.storeDir)
+        let layout = WebStorageLayout.iCloud(root: cloudRoot)
         return (WebLibraryStorage(coordinator: coordinator), coordinator, container, layout)
     }
 

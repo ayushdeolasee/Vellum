@@ -24,10 +24,7 @@ struct RelocationCoordinationTests {
         #expect(probes == 1)
 
         let storeDir = root.appendingPathComponent("local")
-        let destination = WebStorageLayout.pretty(
-            root: root.appendingPathComponent("development"),
-            recordsInRoot: true,
-            localStoreDir: storeDir)
+        let destination = WebStorageLayout.iCloud(root: root.appendingPathComponent("development"))
         let coordinator = StorageCoordinator(
             storeDir: storeDir,
             modeProvider: { .icloud },
@@ -50,14 +47,8 @@ struct RelocationCoordinationTests {
         let storeDir = root.appendingPathComponent("local/web", isDirectory: true)
         let legacyRoot = root.appendingPathComponent("legacy/Vellum", isDirectory: true)
         let sharedRoot = root.appendingPathComponent("shared/Documents/Vellum", isDirectory: true)
-        let source = WebStorageLayout.pretty(
-            root: legacyRoot,
-            recordsInRoot: true,
-            localStoreDir: storeDir)
-        let destination = WebStorageLayout.pretty(
-            root: sharedRoot,
-            recordsInRoot: true,
-            localStoreDir: storeDir)
+        let source = WebStorageLayout.iCloud(root: legacyRoot)
+        let destination = WebStorageLayout.iCloud(root: sharedRoot)
         let recordURL = source.recordsDir.appendingPathComponent("legacy.json")
         let destinationRecordURL = destination.recordsDir.appendingPathComponent("legacy.json")
         var sourceRecord = WebPageRecord(url: "https://example.com/legacy")
@@ -226,14 +217,8 @@ struct RelocationCoordinationTests {
         let storeDir = root.appendingPathComponent("local/web", isDirectory: true)
         let legacyRoot = root.appendingPathComponent("legacy/Vellum", isDirectory: true)
         let sharedRoot = root.appendingPathComponent("shared/Documents/Vellum", isDirectory: true)
-        let source = WebStorageLayout.pretty(
-            root: legacyRoot,
-            recordsInRoot: true,
-            localStoreDir: storeDir)
-        let destination = WebStorageLayout.pretty(
-            root: sharedRoot,
-            recordsInRoot: true,
-            localStoreDir: storeDir)
+        let source = WebStorageLayout.iCloud(root: legacyRoot)
+        let destination = WebStorageLayout.iCloud(root: sharedRoot)
         let key = "collision"
         let sourceName = "Legacy.vellumweb"
         let destinationName = "Shared.vellumweb"
@@ -295,10 +280,7 @@ struct RelocationCoordinationTests {
 
         let cloudRoot = URL(fileURLWithPath: "/test-cloud/Vellum", isDirectory: true)
         let localStoreDir = destinationRoot.appendingPathComponent("web", isDirectory: true)
-        let source = WebStorageLayout.pretty(
-            root: cloudRoot,
-            recordsInRoot: true,
-            localStoreDir: localStoreDir)
+        let source = WebStorageLayout.iCloud(root: cloudRoot)
         let destination = WebStorageLayout.local(storeDir: localStoreDir)
         let container = FakeSyncedContainer()
         let sourceStore = CoordinatedLibraryFileStore(container: container)

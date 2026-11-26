@@ -218,6 +218,8 @@ enum ScratchpadMarkdownExporter {
             return "Scratchpad data lives in Vellum’s iCloud Drive storage and syncs through iCloud."
         case .custom:
             return "Scratchpad data stays in Application Support on this iPad. The custom folder contains offline webpages, not scratchpad notes."
+        case .syncedFolder:
+            return "Scratchpad data stays in private app storage during shared-folder setup."
         case .local:
             return "Scratchpad data stays in Application Support on this iPad and does not sync."
         }
