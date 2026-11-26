@@ -97,3 +97,187 @@ iPad + Mac + Linux edit the same page (including an erasure), and nothing is los
   Recommendation: step 2 soon, step 3 right after.
 - Is drawing on Linux a real use case (do you have a pen tablet there), or is view-only the
   long-term goal? If view-only, step 5 moves out of scope.
+
+## Work items
+
+Sizes: **S** < half a day, **M** about 1 day, **L** 2–3 days (one agent session each).
+Cross-layer IDs: `S*` shared library (layer 2), `P*` PDF (layer 3), `C*` core + shell (layer 4).
+Written in round 3; reviewed by Gemini 4 Neon and GPT 6.2 Astra.
+
+### A rule found while detailing: iPad rewrites Vellum ink on save
+`PdfInk.apply` (iPad) first calls `removeVellumInk(from: page)`, which deletes **every**
+annotation carrying a `/VellumInk` key, then re-creates them from its own `PKDrawing`. So:
+- Any ink Linux adds **with** a `/VellumInk` key is deleted the next time iPad saves that page.
+- Ink **without** the key is treated as foreign and left alone, but iPad can't edit it.
+
+Linux-written PDF ink is therefore written as tagged foreign ink (I10) until iPad learns to
+import it (I11).
+
+### Fixtures first
+
+**I0 Ink fixture set** · S · depends on: nothing
+- Goal: real iPad-made data every later item tests against. Tests today build PDFs in code
+  (`Tests/InkPersistenceTests.swift`), so these are the first committed ink fixtures.
+- New: `Tests/Ink/Fixtures/`
+  - `pdf-ink-basic.pdf`: one page, pen strokes, colours
+  - `pdf-ink-marker.pdf`: marker (highlighter) strokes, so `/CA` behaviour is visible
+  - `pdf-ink-erased.pdf`: one fully erased and one partially erased stroke
+  - `pdf-ink-rotated.pdf`: rotated page (rotated pages are a documented limitation)
+  - `web-ink-v3.ink.json` + `web-ink-v3.page.json`: a real web page's ink sidecar and record
+  - `README.md`: how each was made (device, app version, steps)
+- Made on iPad with a Debug build, exported, checked in. Small files only.
+- Acceptance: existing `InkPersistenceTests` and `WebInkPersistenceTests` load every fixture.
+
+### Step 1: view PDF ink on Linux (v1)
+
+**I1 PDF ink display on Linux** · S · depends on: P1, C5b, I0
+- Goal: iPad ink appears on Linux, read-only.
+- Rendering uses PDFium's `FPDF_ANNOT` render flag (draws annotations, synthesising an appearance
+  from `/InkList`). Colour is read from `/C` **before** rendering, because `FPDFAnnot_GetColor`
+  fails once an appearance exists.
+- Acceptance: for each `pdf-ink-*.pdf`, a Linux screenshot (Weston) matches a Mac PDFKit
+  render within a pixel-difference tolerance, ignoring stroke width (`/InkList` carries no
+  pressure). Erased strokes do not appear. The library checksum is unchanged (C5b gate).
+- Known gap recorded, not fixed: marker strokes may render opaque until I6 adds `/CA`.
+
+**I2 Web-ink badge on Linux** · S · depends on: C5cb
+- Goal: a page with `<key>.ink.json` shows "has handwriting: view on iPad/Mac" until I8.
+
+### Step 2: Apple apps learn to read portable strokes (no new writes)
+
+**I3 Portable stroke model in VellumCore** · M · depends on: C1 (package exists)
+- Goal: a PencilKit-free stroke type both platforms share.
+- New: `Packages/VellumCore/Sources/VellumCore/Ink/PortableStroke.swift`
+
+```swift
+public struct PortableStroke: Codable, Equatable, Sendable {
+    public var id: String              // stable identity, see below
+    public var ink: String             // PKInk.InkType raw value: "pen", "marker", "pencil", …
+    public var color: [Double]         // sRGB r, g, b, a
+    public var transform: [Double]     // a, b, c, d, tx, ty
+    public var createdAt: String       // RFC 3339
+    public var visibleRanges: [[Double]]  // maskedPathRanges as [lower, upper] parametric pairs
+    public var points: [PortablePoint]
+    // + unknown-field bag (S-item pattern)
+}
+public struct PortablePoint: Codable, Equatable, Sendable {
+    public var x, y, t: Double         // location, timeOffset
+    public var w, h: Double            // size
+    public var opacity, force, azimuth, altitude: Double
+}
+public enum PortableStrokeID {
+    /// sha256 of creation date + (x, y, t) of every point: the same inputs as
+    /// WebInkStore.strokeIdentity today, so ids line up with the existing merge.
+    public static func make(createdAt: String, points: [PortablePoint]) -> String
+}
+```
+- Apple adapter (app target, `Vellum/Services/Ink/PortableStroke+PencilKit.swift`):
+  `PortableStroke(_ stroke: PKStroke)` and `PKStroke(_ portable: PortableStroke)`.
+- Tests (`Tests/Ink/PortableStrokeTests.swift`): PKStroke → portable → PKStroke keeps the same
+  `strokeSignature` (float tolerance 1e-6); masked ranges survive; ids are stable across encode/decode;
+  JSON field names are snake_case and pinned by a golden file.
+
+**I4 Readers accept `strokes` and optional `drawing`** · M · depends on: I3, S3
+- Files: `Vellum/Services/Web/WebInkStore.swift`.
+  - `WebInkRecord.Cluster.drawing: Data` becomes `Data?`, and `strokes: [PortableStroke]?` is added.
+  - Decode: either may be missing, not both.
+  - `mergedDrawing()` / `validatedMergedDrawing()`: when `drawing` is nil, build the `PKDrawing` from
+    `strokes`. Never return an empty drawing for a cluster that has strokes.
+  - `loadRecord` must not return nil for a strokes-only file.
+  - Encode: re-emit both fields exactly as loaded (no silent drop), plus unknown keys.
+- PDF side (`Vellum/Platform/iOS/PdfInk.swift`, `MacHandwritingNavigator.swift`): read a new
+  `/VellumInkStrokes` key when present (format in I6). Absent → today's behaviour.
+- Tests (extend `WebInkPersistenceTests`):
+  - `testStrokesOnlyClusterLoads`
+  - `testStrokesOnlyClusterSurvivesIPadSave`: load a strokes-only file, add a stroke, save; the
+    original strokes are still present.
+  - `testUnknownClusterKeysRoundTrip`
+- Acceptance: ships in an iPad **and** Mac build before I5/I6 ship anywhere.
+
+### Step 3: iPad dual-writes portable strokes
+
+**I5 iPad dual-writes web ink** · S · depends on: I4 shipped
+- `WebInkRecord.snapshot(...)` also fills `strokes` from the live `PKDrawing`. `currentVersion`
+  stays 3, because the change is additive.
+- Erasure: fully erased strokes are dropped (matching `PdfInk.apply`); partially erased ones carry
+  `visible_ranges`.
+- Test: `testSnapshotWritesMatchingStrokes`: every stroke in `drawing` has a portable twin with
+  the same id.
+
+**I6 iPad dual-writes PDF ink + `/CA` on marker strokes** · M · depends on: I4 shipped, P4 (= C6)
+- On the first Vellum ink annotation of the page (the same one that holds `/VellumInk`), add
+  `/VellumInkStrokes`: base64 of zlib-compressed JSON `[PortableStroke]`. The others keep `"1"`.
+- Marker strokes get `/CA` from the ink colour's alpha, so other engines draw them translucent.
+- Tests (extend `InkPersistenceTests`): `testApplyWritesPortableStrokes`,
+  `testMarkerStrokeWritesCA`, and the existing erase tests unchanged.
+
+**I7 Backfill** · M · depends on: I5, I6
+- Goal: make existing ink portable without waiting for a re-save.
+- iPad-only command (Settings → Storage → "Make handwriting portable"): walks web ink sidecars and
+  PDFs with `/VellumInk`, decodes the `PKDrawing`, writes `strokes` / `/VellumInkStrokes`. It
+  never changes `drawing`. Runs through the same atomic writers and the document drain rules.
+- Reports counts (pages updated, skipped, failed). Resumable.
+- Test: backfill on fixtures, then byte-compare `drawing` unchanged and the strokes present.
+
+### Step 4: Linux shows web ink
+
+**I8 Web ink display on Linux** · M · depends on: I5 (data exists), C5c
+- Draw strokes **inside the page** as an injected SVG layer positioned in zoom-1 CSS pixels (the
+  same space the sidecar uses), so it scrolls and zooms with the content and reuses the existing
+  anchor/reflow logic.
+- Honour `visible_ranges`. Approximate pressure by varying stroke width from `force`.
+- Acceptance: screenshots of `web-ink-v3` on Linux and Mac line up within tolerance; layout-width
+  mismatch shows the existing "best-effort" behaviour.
+
+### Step 5: Linux draws (only if you want pen input on Linux, see open questions)
+
+**I9 Merge rule for three writers (spec only)** · S · depends on: nothing; must finish before I10
+- Write down, then test: identity = `PortableStroke.id`; deletions are **tombstones**
+  (`deleted_ids` with timestamps) so a stale device can't resurrect an erased stroke; partial
+  erasure = the newest `visible_ranges` wins.
+- Update `additivelyMerged` and the live baseline merge to the same rule on Apple first.
+
+**I10 Linux web + PDF ink writing** · L · depends on: I9, P5 (= C7b), C5b
+- Input: GTK4 `GtkGestureStylus` (pressure, tilt) on Wayland.
+- Web: write `strokes` only, plus tombstones.
+- PDF: new `/Ink` annotations through the Swift writer, tagged `/VellumInkOrigin (linux)` and
+  **without** `/VellumInk`, so iPad's `removeVellumInk` doesn't delete them. Each carries its own
+  portable stroke in `/VellumInkStrokes`.
+
+**I11 iPad imports Linux PDF ink** · M · depends on: I10
+- On page load, iPad folds `/VellumInkOrigin (linux)` annotations into its `PKDrawing`. On the next
+  save, `apply` writes them back as normal Vellum ink and removes the Linux-tagged copies, in one
+  atomic save.
+
+**I12 Mixed-version round trip** · M · depends on: I4–I11
+- Scripted scenario on fixtures: iPad draws → Linux adds and erases one stroke → iPad (old build
+  with only I4) saves → iPad (new build) saves → Linux reloads. No stroke lost, none resurrected.
+- This is the gate for calling Linux ink writing done.
+
+| ID | Item | Size | Depends on |
+|---|---|---|---|
+| I0 | Ink fixture set (real iPad-made PDFs + web sidecar) | S | — |
+| I1 | View PDF ink on Linux | S | P1, C5b, I0 |
+| I2 | "Has handwriting" badge for web ink | S | C5c |
+| I3 | `PortableStroke` in VellumCore + PencilKit adapter | M | C1 |
+| I4 | Apple readers accept `strokes` and optional `drawing` | M | I3, S3 |
+| I5 | iPad dual-writes web ink | S | I4 shipped |
+| I6 | iPad dual-writes PDF ink + `/CA` on marker strokes | M | I4 shipped, P4 |
+| I7 | Backfill command on iPad | M | I5, I6 |
+| I8 | Linux shows web ink | M | I5, C5c |
+| I9 | Three-writer merge rule (tombstones) | S | — |
+| I10 | Linux draws (web + PDF) | L | I9, P5, C5b |
+| I11 | iPad imports Linux PDF ink | M | I10 |
+| I12 | Mixed-version round trip | M | I4–I11 |
+
+### Dependency order
+
+```
+I0 → I1 → I2
+C1 → I3 → I4 ──(ship on iPad + Mac)──→ I5 ─┐
+                       P4 (= C6) ──→ I6 ────┼→ I7
+                                            └→ I8
+I9 → I10 → I11 → I12        (I10 also needs P5 = C7b and the S-layer write gate)
+```
+
+Minimum for "ink shows up on Linux": I0, I1, I2 (PDF ink in v1), then I3–I5 + I8 (web ink).
