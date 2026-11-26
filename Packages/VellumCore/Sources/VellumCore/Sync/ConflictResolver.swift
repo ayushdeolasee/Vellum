@@ -27,20 +27,34 @@ public struct PreserveLosersConflictResolver: ConflictResolver {
     }
 
     public func resolve(_ event: ConflictEvent, reading: Reader) async throws -> ConflictResolution {
-        switch try await merge(event, reading) {
+        let decision = try await merge(event, reading)
+        return try await Self.apply(decision, to: event, archiveOnMerge: false, replace: { data in
+            try await archive(event.url, data)
+        }, preserve: { version in
+            let destination = Self.archiveURL(for: event.url, version: version)
+            try await archive(destination, reading(version))
+            return destination
+        })
+    }
+
+    /// Folder recovery moves the actual losing inode, while iCloud archives a
+    /// coordinated NSFileVersion. Both commit only after the merge policy returns.
+    static func apply(
+        _ decision: Decision, to event: ConflictEvent, archiveOnMerge: Bool,
+        replace: (Data) async throws -> Void, preserve: (ConflictVersion) async throws -> URL
+    ) async throws -> ConflictResolution {
+        switch decision {
+        case .deferred: return .deferred
         case .merged(let bytes):
-            try await archive(event.url, bytes)
-            return .merged(event.url)
-        case .deferred:
-            return .deferred
-        case .preserve:
-            var archived: [URL] = []
-            for version in event.losingVersions {
-                let destination = Self.archiveURL(for: event.url, version: version)
-                try await archive(destination, reading(version))
-                archived.append(destination)
+            try await replace(bytes)
+            if archiveOnMerge {
+                for version in event.losingVersions { _ = try await preserve(version) }
             }
-            return .keptCurrent(archivedLosers: archived)
+            return .merged(event.url)
+        case .preserve:
+            var archives: [URL] = []
+            for version in event.losingVersions { archives.append(try await preserve(version)) }
+            return .keptCurrent(archivedLosers: archives)
         }
     }
 

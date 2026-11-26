@@ -233,7 +233,9 @@ actor StorageCoordinator {
             await WebStorageSettings.resolveSyncedFolderRoot()
         },
         // S5b installs { layout in await SharedFolderContainerFactory.make(root: layout.rootDir) } here.
-        folderContainerFactory: @escaping StorageAccess.FolderContainerFactory = { _ in nil },
+        folderContainerFactory: @escaping StorageAccess.FolderContainerFactory = { layout in
+            await SharedFolderContainerFactory.make(root: layout.rootDir)
+        },
         conflictArchiveRegistry: ConflictArchiveRegistry = .live
     ) {
         self.storeDir = storeDir
@@ -1062,7 +1064,7 @@ actor StorageCoordinator {
     private func enqueueConflict(_ event: ConflictEvent, generation: Int) {
         guard generation == storageGeneration else { return }
         let key = ConflictKey(event)
-        guard !resolvedConflictKeys.contains(key),
+        guard layout.backend == .syncedFolder || !resolvedConflictKeys.contains(key),
               pendingConflicts[key] == nil,
               inFlightConflict != key
         else { return }
@@ -1211,20 +1213,24 @@ actor StorageCoordinator {
         inFlightConflict = nil
         switch resolution {
         case .success(.deferred):
+            lastError = "Conflict resolution deferred for \(event.url.lastPathComponent)"
+            // A folder snapshot can become obsolete while resolving. Its next
+            // scan retries the live versions, including identical re-creations.
+            if layout.backend == .syncedFolder { return true }
             pendingConflicts[key] = event
             pendingOrder.append(key)
-            lastError = "Conflict resolution deferred for \(event.url.lastPathComponent)"
             notifyQuiescenceIfNeeded()
             return false
         case .success:
-            resolvedConflictKeys.insert(key)
+            if layout.backend != .syncedFolder { resolvedConflictKeys.insert(key) }
             lastError = nil
             notifyQuiescenceIfNeeded()
             return true
         case .failure(let error):
+            lastError = describe(error)
+            if layout.backend == .syncedFolder { return true }
             pendingConflicts[key] = event
             pendingOrder.append(key)
-            lastError = describe(error)
             notifyQuiescenceIfNeeded()
             return false
         }
@@ -1435,8 +1441,9 @@ actor StorageCoordinator {
            originalURL == indexPath.standardizedFileURL {
             return true
         }
-        return [layout.recordsDir, layout.archivesDir, layout.documentsDir, layout.positionsDir]
-            .contains { isDescendant(originalURL, of: $0) }
+        let roots = [layout.recordsDir, layout.archivesDir, layout.documentsDir, layout.positionsDir]
+            + [layout.pdfsDir].compactMap { $0 }
+        return roots.contains { isDescendant(originalURL, of: $0) }
     }
 }
 

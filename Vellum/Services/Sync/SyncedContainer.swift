@@ -91,3 +91,18 @@ enum StorageAccess: Sendable {
 
     var isCoordinated: Bool { container != nil }
 }
+
+/// The selected bookmark scope is held by StorageCoordinator for this
+/// container's lifetime. Creating the backend never creates a missing root.
+enum SharedFolderContainerFactory {
+    static func make(root: URL) async -> (any SyncedContainer)? {
+        await Task.detached(priority: .utility) {
+            guard let values = try? root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { return nil }
+            let container = FolderSyncedContainer(root: root, store: LocalFolderFileStore(root: root),
+                                                 watcher: FolderDirectoryWatcher(), merge: ConflictMerge.decide)
+            await container.resume()
+            return container
+        }.value
+    }
+}
