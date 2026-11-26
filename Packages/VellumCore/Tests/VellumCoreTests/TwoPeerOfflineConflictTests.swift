@@ -164,7 +164,7 @@ struct PeerLibrary {
         try await write(Self.meta, JSONSerialization.data(withJSONObject: meta))
         let captureKey = DocumentKey.web(normalizedURL: Self.address + "/" + peer)
         let saved = try await catalog.save(Self.archive(peer), forKey: captureKey.hash)
-        #expect(saved == url(Self.capture))
+        #expect(saved == root.standardizedFileURL.appendingPathComponent(Self.capture))
         let pdfID = try await verifyPDFs()
         try await positions.write(Self.position(peer, pdfID: pdfID))
         // Explicit, distinct mtimes let the real daemon and simulator agree on winner.
@@ -216,7 +216,8 @@ struct PeerLibrary {
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    var pending = Set(Self.conflictingPaths.map { url($0) })
+                    let eventRoot = root.standardizedFileURL
+                    var pending = Set(Self.conflictingPaths.map { eventRoot.appendingPathComponent($0) })
                     for await event in container.conflicts where pending.contains(event.url) {
                         let outcome = try await container.resolveConflict(event)
                         guard outcome != .deferred else { continue }
@@ -243,13 +244,14 @@ struct PeerLibrary {
 
     // Walk the unfiltered trees, including hidden directories and archived files.
     func conflictSiblings() throws -> Set<String> {
-        var pending = [root]
+        var pending = [(root, "")]
         var found = Set<String>()
-        while let directory = pending.popLast() {
+        while let (directory, prefix) = pending.popLast() {
             for entry in try store.contents(of: directory) {
-                if entry.isDirectory { pending.append(entry.url) }
+                let relative = prefix + entry.url.lastPathComponent
+                if entry.isDirectory { pending.append((entry.url, relative + "/")) }
                 if entry.url.lastPathComponent.contains(".sync-conflict-") {
-                    found.insert(entry.url.pathComponents.dropFirst(root.pathComponents.count).joined(separator: "/"))
+                    found.insert(relative)
                 }
             }
         }
