@@ -2,7 +2,14 @@
 xcuserdata/
 build/
 DerivedData/
+/.derived-data/
 *.xcuserstate
+
+# Local SwiftPM packages
+/Packages/*/.build/
+/Packages/*/.swiftpm/
+/Linux/.build/
+/Linux/.swiftpm/
 
 # Tooling scratch
 .dd/

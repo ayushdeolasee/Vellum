@@ -337,7 +337,7 @@ final class PdfViewerController: HighlightResizeControlling {
 
     /// Anchored zoom: keep the document point at the viewport center fixed.
     func zoomTo(_ target: Double) {
-        let clamped = min(AppStore.maxZoom, max(AppStore.minZoom, target))
+        let clamped = AppStore.freePdfZoom.clamped(target)
         guard let pdfView else {
             app?.setZoom(clamped)
             return

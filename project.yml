@@ -6,6 +6,8 @@ options:
     macOS: "26.0"
   createIntermediateGroups: true
 packages:
+  VellumCore:
+    path: Packages/VellumCore
   SwiftMath:
     url: https://github.com/mgriebling/SwiftMath
     exactVersion: 1.7.3
@@ -71,6 +73,8 @@ targetTemplates:
           - "Resources/PrivacyInfo.xcprivacy"
     dependencies:
       - package: SwiftMath
+      - package: VellumCore
+        product: VellumCore
     settings:
       base:
         PRODUCT_NAME: Vellum
@@ -206,6 +210,8 @@ targets:
         buildPhase: resources
     dependencies:
       - package: SwiftMath
+      - package: VellumCore
+        product: VellumCore
       - target: VellumShare
         embed: true
       - target: VellumWidgets

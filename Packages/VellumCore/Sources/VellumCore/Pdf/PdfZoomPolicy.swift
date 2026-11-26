@@ -1,5 +1,3 @@
-import Foundation
-
 // The arithmetic behind "open the page filling the viewport's width" and "never
 // let the page end up narrower than the viewport" (issue #152, spec #150).
 //
@@ -16,7 +14,7 @@ import Foundation
 // `PdfZoomPolicyTests`.
 
 /// How a viewer picks its scale.
-enum PdfZoomMode: Equatable, Sendable {
+public enum PdfZoomMode: Equatable, Sendable {
     /// Absolute zoom: the scale is whatever the user (or the tab's persisted
     /// zoom) last asked for, bounded only by the app-wide 25%–400% range.
     /// The iPad and macOS behaviour.
@@ -30,28 +28,28 @@ enum PdfZoomMode: Equatable, Sendable {
 
 /// The scale bounds and opening scale for one viewport, already resolved
 /// against the app-wide zoom range.
-struct PdfZoomPolicy: Equatable, Sendable {
+public struct PdfZoomPolicy: Equatable, Sendable {
     /// Lowest scale the viewer may reach — `PDFView.minScaleFactor`. Under
     /// `.fitWidth` this is the fit scale itself: that is the whole zoom floor.
-    let minimumScale: Double
+    public let minimumScale: Double
     /// Highest scale the viewer may reach — `PDFView.maxScaleFactor`. Fitting
     /// never touches the ceiling.
-    let maximumScale: Double
+    public let maximumScale: Double
     /// The scale at which the page spans the viewport, or nil when this policy
     /// does not fit (`.free`, or geometry too degenerate to fit against).
-    let fitWidthScale: Double?
+    public let fitWidthScale: Double?
 
     /// How close two scales must be to count as "the same scale". PDFKit
     /// returns the scale it actually applied, which is not always bit-identical
     /// to the one it was handed, and the value additionally round-trips through
     /// `AppStore.zoom`. 0.5% is far below anything a reader can see and far
     /// above that noise.
-    static let scaleTolerance = 0.005
+    public static let scaleTolerance = 0.005
 
     // MARK: - Construction
 
     /// The absolute-zoom policy: the app-wide range, no fitting.
-    static func free(minimumScale: Double, maximumScale: Double) -> PdfZoomPolicy {
+    public static func free(minimumScale: Double, maximumScale: Double) -> PdfZoomPolicy {
         PdfZoomPolicy(
             minimumScale: minimumScale, maximumScale: maximumScale, fitWidthScale: nil)
     }
@@ -69,7 +67,7 @@ struct PdfZoomPolicy: Equatable, Sendable {
     ///     The invariant is unsatisfiable there at any legal scale, and pinning
     ///     the floor to 400% would take zooming away entirely, which is a worse
     ///     answer than admitting the page is small.
-    static func fitWidth(
+    public static func fitWidth(
         pageWidth: Double,
         viewportWidth: Double,
         horizontalInset: Double = 0,
@@ -92,7 +90,7 @@ struct PdfZoomPolicy: Equatable, Sendable {
     }
 
     /// One call for the viewer: pick the policy the mode asks for.
-    static func resolve(
+    public static func resolve(
         mode: PdfZoomMode,
         pageWidth: Double,
         viewportWidth: Double,
@@ -118,7 +116,7 @@ struct PdfZoomPolicy: Equatable, Sendable {
     /// `scale` brought inside this policy's bounds. Under `.fitWidth` this is
     /// the floor doing its work: anything below the fit scale comes back as the
     /// fit scale.
-    func clamped(_ scale: Double) -> Double {
+    public func clamped(_ scale: Double) -> Double {
         guard scale.isFinite else { return minimumScale }
         return min(maximumScale, max(minimumScale, scale))
     }
@@ -131,7 +129,7 @@ struct PdfZoomPolicy: Equatable, Sendable {
     /// 100% on an iPad would open cropped, and one last read at 50% would open
     /// as a postage stamp. Width is the thing worth preserving across devices,
     /// not the number.
-    func openingScale(persisted: Double) -> Double {
+    public func openingScale(persisted: Double) -> Double {
         fitWidthScale ?? clamped(persisted)
     }
 
@@ -141,7 +139,7 @@ struct PdfZoomPolicy: Equatable, Sendable {
     /// A reader who was AT the old fit width is reading fit-to-width, so they
     /// follow the new one. A reader who had zoomed in past it keeps their
     /// magnification, and is only lifted if the new floor has risen above it.
-    func adjustedScale(current: Double, previousFitWidth: Double?) -> Double {
+    public func adjustedScale(current: Double, previousFitWidth: Double?) -> Double {
         guard let fitWidthScale else { return clamped(current) }
         if let previousFitWidth, abs(current - previousFitWidth) <= Self.scaleTolerance {
             return fitWidthScale
