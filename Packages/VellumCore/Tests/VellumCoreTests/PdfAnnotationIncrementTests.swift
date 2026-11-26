@@ -126,6 +126,23 @@ final class PdfAnnotationIncrementTests: XCTestCase {
         }
     }
 
+    func testLiteralEndobjInAnnotationContentSurvivesAnotherEdit() throws {
+        let original = PdfFixtureBuilder.twoColumnPdf()
+        let content = #"Private note: (endobj) followed by \ and more text."#
+        let literal = Array(#"(Private note: \(endobj\) followed by \\ and more text.)"#.utf8)
+        XCTAssertEqual(PdfEditEligibility.classify(original), .editable)
+        let created = try apply(.create(.init(type: .note, pageNumber: 1, content: content, id: "note")), original)
+        let pinned = try apply(.update(.init(id: "note", isPinned: true)), created)
+        for bytes in [created, pinned] {
+            let (file, annotations) = try page(bytes)
+            let slot = try XCTUnwrap(annotations.slot(0, file: file))
+            XCTAssertEqual(file.rawObjectValue(try XCTUnwrap(slot.object)), slot.dictionary.sourceBytes)
+            XCTAssertEqual(slot.dictionary.rawValue(forKey: "Contents"), literal)
+            XCTAssertEqual(try read(bytes).first?.content, content)
+        }
+        XCTAssertEqual(try read(pinned).first?.isPinned, true)
+    }
+
     func testUTF8BOMIsDisplayTextButCannotIdentifyAnAnnotation() throws {
         func fixture(nm: String) -> Data {
             PdfFixtureBuilder.classicObjects([

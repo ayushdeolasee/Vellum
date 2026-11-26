@@ -148,7 +148,6 @@ final class PdfClassicStructure {
                         streams[number] = body
                     }
                 } else {
-                    if bytes[bodyStart..<bodyEnd].firstRange(of: "endobj".utf8) != nil { portableSyntax = false }
                     objects[number] = body
                 }
                 try keyword("endobj")
