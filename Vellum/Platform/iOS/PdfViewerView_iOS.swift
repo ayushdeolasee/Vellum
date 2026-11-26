@@ -132,8 +132,18 @@ struct PdfViewerView_iOS: View {
                 }
                 .overlay(alignment: .bottom) {
                     if ink.isActive {
-                        InkToolPalette_iOS(host: ink)
+                        if ink.tool != .textHighlight && ink.currentPageHasPortableInk {
+                            HStack {
+                                Text("Handwriting on this page is read-only.")
+                                Button("Done") { ink.isActive = false }
+                            }
+                            .padding()
+                            .background(.regularMaterial, in: Capsule())
                             .padding(.bottom, 24)
+                        } else {
+                            InkToolPalette_iOS(host: ink)
+                                .padding(.bottom, 24)
+                        }
                     }
                 }
             }

@@ -108,7 +108,13 @@ struct WebInkRecord: Codable, Equatable, Sendable {
         /// that doubles the ink.
         var id: String
         /// Base64 in JSON (Data's default Codable representation).
-        var drawing: Data
+        var drawing: Data?
+        var strokes: [PortableStroke]? = nil
+        // A pre-I4 save may carry a newer or malformed wire value alongside
+        // a usable native drawing. Keep that value intact for read-only export.
+        var unreadableStrokes: JSONValue? = nil
+
+        var hasPortablePayload: Bool { strokes != nil || unreadableStrokes != nil }
         var bounds: Bounds
         var anchor: Anchor?
     }
@@ -130,13 +136,25 @@ struct WebInkRecord: Codable, Equatable, Sendable {
 
 extension WebInkRecord.Cluster: Codable {
     enum CodingKeys: String, CodingKey {
-        case id, drawing, bounds, anchor
+        case id, drawing, strokes, bounds, anchor
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
-        drawing = try container.decode(Data.self, forKey: .drawing)
+        drawing = try container.decodeIfPresent(Data.self, forKey: .drawing)
+        do {
+            if container.contains(.strokes) {
+                strokes = try container.decode([PortableStroke].self, forKey: .strokes)
+            }
+        } catch {
+            guard drawing != nil else { throw error }
+            unreadableStrokes = try container.decode(JSONValue.self, forKey: .strokes)
+        }
+        guard drawing != nil || strokes != nil else {
+            throw DecodingError.dataCorruptedError(forKey: .strokes, in: container,
+                debugDescription: "An ink cluster requires drawing or strokes")
+        }
         bounds = try container.decode(WebInkRecord.Bounds.self, forKey: .bounds)
         anchor = try container.decodeIfPresent(WebInkRecord.Anchor.self, forKey: .anchor)
         unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
@@ -147,7 +165,12 @@ extension WebInkRecord.Cluster: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
-        try container.encode(drawing, forKey: .drawing)
+        try container.encodeIfPresent(drawing, forKey: .drawing)
+        if let unreadableStrokes {
+            try container.encode(unreadableStrokes, forKey: .strokes)
+        } else {
+            try container.encodeIfPresent(strokes, forKey: .strokes)
+        }
         try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
         try container.encode(bounds, forKey: .bounds)
         if let anchor {
@@ -219,47 +242,75 @@ extension WebInkRecord {
             clusters: clusters)
     }
 
-    /// Rebuild the single live drawing from the stored clusters: each cluster's
-    /// drawing is translated from its cluster-local origin back to its document
-    /// bounds (Phase 3 re-anchoring adjusts `bounds` before this runs) and
-    /// merged. Zoom-1 CSS-pixel document space.
-    func mergedDrawing() -> PKDrawing {
-        var out = PKDrawing()
-        for cluster in clusters {
-            guard let drawing = try? PKDrawing(data: cluster.drawing) else { continue }
-            out = out.appending(drawing.transformed(
-                using: CGAffineTransform(translationX: cluster.bounds.x, y: cluster.bounds.y)))
+    func validateForEditing() throws {
+        var seen: Set<String> = []
+        for cluster in clusters where cluster.hasPortablePayload {
+            _ = try cluster.portableIndices(for: cluster.localDrawing())
+            for wire in cluster.strokes ?? [] where !seen.insert(wire.rawPathID).inserted {
+                throw SessionServiceError.invalidDocument("Multiple saved strokes match the same canvas path.")
+            }
         }
-        return out
     }
 
-    /// Decode every cluster or fail the whole record. Interactive restoration
-    /// remains best-effort through `mergedDrawing()`, but exports and archive
-    /// merges must never silently turn one corrupt cluster into missing ink.
     func validatedMergedDrawing() throws -> PKDrawing {
         guard (1...Self.currentVersion).contains(version) else {
             throw SessionServiceError.invalidDocument("This page's ink version is not supported")
         }
-        var out = PKDrawing()
-        for cluster in clusters {
-            let drawing: PKDrawing
-            do {
-                drawing = try PKDrawing(data: cluster.drawing)
-            } catch {
-                throw SessionServiceError.invalidDocument(
-                    "This page's ink data is damaged and could not be read")
-            }
-            // PencilKit can silently decode malformed bytes as an empty
-            // drawing. Every stored cluster must contain strokes; a cleared
-            // document is represented by an empty clusters array instead.
-            guard !drawing.strokes.isEmpty else {
-                throw SessionServiceError.invalidDocument(
-                    "This page's ink data is damaged and could not be read")
-            }
-            out = out.appending(drawing.transformed(
-                using: CGAffineTransform(translationX: cluster.bounds.x, y: cluster.bounds.y)))
+        return try clusters.reduce(PKDrawing()) { result, cluster in
+            try result.appending(cluster.documentDrawing())
         }
-        return out
+    }
+}
+
+extension WebInkRecord.Cluster {
+    /// A dual record retains its native drawing as Apple's source of truth.
+    func localDrawing() throws -> PKDrawing {
+        if let drawing {
+            let native = try PKDrawing(data: drawing)
+            guard !native.strokes.isEmpty else { throw SessionServiceError.invalidDocument("Invalid ink cluster drawing") }
+            return native
+        }
+        guard let strokes else { throw SessionServiceError.invalidDocument("Missing ink cluster data") }
+        return try PKDrawing(portableStrokes: strokes)
+    }
+
+    /// Maps native stroke order to wire indices by I3 raw-path identity.
+    /// Missing wire entries are allowed only for invisible native strokes.
+    func portableIndices(for native: PKDrawing) throws -> [Int?] {
+        let conflict = SessionServiceError.invalidDocument("The native and portable handwriting cannot be edited together.")
+        guard unreadableStrokes == nil else { throw conflict }
+        guard let strokes else { return Array(repeating: nil, count: native.strokes.count) }
+        guard Set(strokes.map(\.id)).count == strokes.count else { throw conflict }
+        if drawing == nil {
+            guard native.strokes.count == strokes.count else { throw conflict }
+            return try strokes.indices.map { i in
+                let stroke = native.strokes[i]
+                guard try strokes[i].rawPathID == PortableStroke.rawPathID(of: stroke),
+                      try strokes[i].describes(stroke) else { throw conflict }
+                return i
+            }
+        }
+        var available: [String: Int] = [:]
+        for (index, stroke) in strokes.enumerated() {
+            guard available.updateValue(index, forKey: stroke.rawPathID) == nil else { throw conflict }
+        }
+        var seen: Set<String> = []
+        let indices = try native.strokes.map { stroke -> Int? in
+            let key = try PortableStroke.rawPathID(of: stroke)
+            guard seen.insert(key).inserted else { throw conflict }
+            guard let index = available.removeValue(forKey: key) else {
+                guard stroke.maskedPathRanges.isEmpty else { throw conflict }
+                return nil
+            }
+            guard try strokes[index].describes(stroke) else { throw conflict }
+            return index
+        }
+        guard available.isEmpty else { throw conflict }
+        return indices
+    }
+
+    func documentDrawing() throws -> PKDrawing {
+        try localDrawing().transformed(using: CGAffineTransform(translationX: bounds.x, y: bounds.y))
     }
 }
 
@@ -312,16 +363,25 @@ enum WebInkStore {
     /// iCloud copy if needed (blocking; call off the main thread — `WebInkIO`
     /// is the production caller).
     static func loadRecord(forKey key: String, timeout: TimeInterval = 10) -> WebInkRecord? {
-        for path in candidateInkPaths(forKey: key) {
-            _ = WebICloud.materialize(at: path, timeout: timeout)
-            if let record = loadRecord(at: path) { return record }
-        }
-        return nil
+        try? loadRecordForExport(forKey: key, timeout: timeout)
     }
 
     static func loadRecord(at path: URL) -> WebInkRecord? {
-        guard let data = try? Data(contentsOf: path) else { return nil }
-        return try? JSONDecoder().decode(WebInkRecord.self, from: data)
+        try? readRecord(at: path)
+    }
+
+    private static func readRecord(at path: URL) throws -> WebInkRecord {
+        let data: Data
+        do { data = try Data(contentsOf: path) } catch {
+            throw SessionServiceError.io("Failed to read this page's ink: \(error.localizedDescription)")
+        }
+        do {
+            let record = try JSONDecoder().decode(WebInkRecord.self, from: data)
+            _ = try record.validatedMergedDrawing()
+            return record
+        } catch {
+            throw SessionServiceError.invalidDocument("This page's handwriting could not be read: \(error.localizedDescription)")
+        }
     }
 
     /// Strict loader for an explicit export. A genuinely absent sidecar means
@@ -338,22 +398,7 @@ enum WebInkStore {
                 throw SessionServiceError.io(
                     "This page's ink is in iCloud but hasn't downloaded yet — check your connection and try again")
             }
-            let data: Data
-            do {
-                data = try Data(contentsOf: path)
-            } catch {
-                throw SessionServiceError.io(
-                    "Failed to read this page's ink: \(error.localizedDescription)")
-            }
-            let record: WebInkRecord
-            do {
-                record = try JSONDecoder().decode(WebInkRecord.self, from: data)
-            } catch {
-                throw SessionServiceError.invalidDocument(
-                    "This page's ink record is damaged: \(error.localizedDescription)")
-            }
-            _ = try record.validatedMergedDrawing()
-            return record
+            return try readRecord(at: path)
         }
         return nil
     }
@@ -381,7 +426,9 @@ enum WebInkStore {
             throw SessionServiceError.io("Failed to create web store dir: \(error.localizedDescription)")
         }
         var record = record
-        if let previous = loadRecord(at: path) {
+        if FileManager.default.fileExists(atPath: path.path) {
+            let previous = try readRecord(at: path)
+            try previous.validateForEditing()
             carryUnknownFields(into: &record, from: [previous], reclustered: true)
         }
         let json: Data
@@ -434,8 +481,10 @@ enum WebInkStore {
         forKey key: String
     ) throws -> WebInkRecord {
         try withLockedCandidateRecords(forKey: key) { destination, current in
-            let result = current.map {
-                coordinatedSnapshot(current: $0, baseline: baseline, incoming: incoming)
+            _ = try incoming.validatedMergedDrawing()
+            try baseline?.validateForEditing()
+            let result = try current.map {
+                try coordinatedSnapshot(current: $0, baseline: baseline, incoming: incoming)
             } ?? incoming
             try writeRecord(result, to: destination)
             return result
@@ -455,10 +504,10 @@ enum WebInkStore {
         current: WebInkRecord,
         baseline: WebInkRecord?,
         incoming: WebInkRecord
-    ) -> WebInkRecord {
-        let currentStrokes = current.mergedDrawing().strokes
-        let baselineStrokes = baseline?.mergedDrawing().strokes ?? []
-        let incomingStrokes = incoming.mergedDrawing().strokes
+    ) throws -> WebInkRecord {
+        let currentStrokes = try current.validatedMergedDrawing().strokes
+        let baselineStrokes = try baseline?.validatedMergedDrawing().strokes ?? []
+        let incomingStrokes = try incoming.validatedMergedDrawing().strokes
         let baselineById = Dictionary(
             baselineStrokes.map { (strokeIdentity($0), $0) }, uniquingKeysWith: { _, newest in newest })
         let incomingById = Dictionary(
@@ -491,23 +540,8 @@ enum WebInkStore {
             resultStrokes.append(incomingStroke)
         }
 
-        // Re-derive clusters from the coordinated document-space drawing.
-        // Prefer incoming anchors, then current anchors, by spatial overlap so
-        // strokes preserved from another runtime retain their reflow identity.
-        let anchorCandidates = incoming.clusters + current.clusters
-        var result = WebInkRecord.snapshot(
-            of: PKDrawing(strokes: resultStrokes),
-            url: incoming.url,
-            layout: incoming.layout,
-            anchorFor: { bounds in
-                anchorCandidates.compactMap { cluster -> (Double, WebInkRecord.Anchor)? in
-                    guard let anchor = cluster.anchor else { return nil }
-                    let intersection = bounds.intersection(cluster.bounds.rect)
-                    guard intersection.isNull == false else { return nil }
-                    return (Double(intersection.width * intersection.height), anchor)
-                }
-                .max { $0.0 < $1.0 }?.1
-            })
+        var result = try mergedSnapshot(strokes: resultStrokes, metadata: incoming,
+                                        sources: [current, incoming], anchors: incoming.clusters + current.clusters)
         carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
         result.updatedAt = WebLibrary.rfc3339Now()
         return result
@@ -556,9 +590,7 @@ enum WebInkStore {
     }
 
     private static func strokeIDs(in cluster: WebInkRecord.Cluster) -> [StrokeIdentity] {
-        guard let local = try? PKDrawing(data: cluster.drawing) else { return [] }
-        return local.transformed(using: CGAffineTransform(
-            translationX: cluster.bounds.x, y: cluster.bounds.y)).strokes.map(strokeIdentity)
+        (try? cluster.documentDrawing().strokes.map(strokeIdentity)) ?? []
     }
 
     /// Relocation keeps the newest whole canvas, including its deletions.
@@ -585,6 +617,8 @@ enum WebInkStore {
         var inkType: String
         var colorComponents: [CGFloat]
         var points: [StrokeSignaturePoint]
+        var mask: CGPath?
+        var randomSeed: UInt32
         var visibleRanges: [ClosedRange<CGFloat>]
     }
 
@@ -618,6 +652,7 @@ enum WebInkStore {
                     azimuth: $0.azimuth, altitude: $0.altitude,
                     secondaryScale: $0.secondaryScale)
             },
+            mask: stroke.mask?.cgPath, randomSeed: stroke.randomSeed,
             visibleRanges: stroke.maskedPathRanges)
     }
 
@@ -647,22 +682,153 @@ enum WebInkStore {
         }
 
         let metadata = incomingNewer ? incoming : current
-        let anchorCandidates = metadata.clusters + (incomingNewer ? current.clusters : incoming.clusters)
-        var result = WebInkRecord.snapshot(
-            of: PKDrawing(strokes: strokes), url: metadata.url, layout: metadata.layout,
-            anchorFor: { bounds in
-                anchorCandidates.compactMap { cluster -> (Double, WebInkRecord.Anchor)? in
-                    guard let anchor = cluster.anchor else { return nil }
-                    let intersection = bounds.intersection(cluster.bounds.rect)
-                    guard !intersection.isNull else { return nil }
-                    return (Double(intersection.width * intersection.height), anchor)
-                }
-                .max { $0.0 < $1.0 }?.1
-            })
+        let other = incomingNewer ? current : incoming
+        var result = try mergedSnapshot(strokes: strokes, metadata: metadata,
+                                        sources: [metadata, other], anchors: metadata.clusters + other.clusters)
         result.version = min(current.version, incoming.version)
         carryUnknownFields(into: &result, from: [current, incoming], reclustered: true)
         result.updatedAt = metadata.updatedAt
         return result
+    }
+
+    /// Keep existing portable records separate from native additions, even when
+    /// the canvas groups both under the same text anchor. A portable array must
+    /// describe its entire cluster, and new strokes still use drawing only.
+    private static func mergedSnapshot(
+        strokes: [PKStroke], metadata: WebInkRecord, sources: [WebInkRecord], anchors: [WebInkRecord.Cluster]
+    ) throws -> WebInkRecord {
+        let originals = try sources.flatMap(\.clusters).map(StoredCluster.init)
+        var portableSource: [StrokeIdentity: Int] = [:]
+        var nativeSource: [StrokeIdentity: Int] = [:]
+        for (index, original) in originals.enumerated() {
+            for id in original.indices.keys {
+                if let wireID = original.wireID(for: id) {
+                    if let previous = portableSource[id], originals[previous].wireID(for: id) != wireID {
+                        throw SessionServiceError.invalidDocument("Conflicting portable stroke identities")
+                    }
+                    if portableSource[id] == nil { portableSource[id] = index }
+                } else if original.cluster.strokes != nil {
+                    if portableSource[id] == nil { portableSource[id] = index }
+                } else if nativeSource[id] == nil {
+                    nativeSource[id] = index
+                }
+            }
+        }
+
+        var result = metadata
+        result.clusters = []
+        let reserved = Set(originals.filter { $0.cluster.strokes != nil }.map { $0.cluster.id })
+        var used: Set<String> = []
+        for spatial in WebInkClustering.clusters(of: PKDrawing(strokes: strokes)) {
+            let members = spatial.drawing.strokes
+            var start = 0
+            while start < members.count {
+                let firstID = strokeIdentity(members[start])
+                let source = portableSource[firstID]
+                var end = start + 1
+                while end < members.count, portableSource[strokeIdentity(members[end])] == source { end += 1 }
+                let group = PKDrawing(strokes: Array(members[start..<end]))
+                let anchor = anchors.compactMap { cluster -> (CGFloat, WebInkRecord.Anchor)? in
+                    guard let anchor = cluster.anchor else { return nil }
+                    let overlap = group.bounds.intersection(cluster.bounds.rect)
+                    return overlap.isNull ? nil : (overlap.width * overlap.height, anchor)
+                }.max { $0.0 < $1.0 }?.1
+                let candidate = (source ?? nativeSource[firstID]).map { originals[$0] }
+                var cluster = try mergedCluster(group, anchor: anchor, original: candidate)
+                // Two representations under one anchor still need distinct cluster IDs.
+                if source == nil, reserved.contains(cluster.id) { cluster.id += ":native" }
+                let base = cluster.id
+                var suffix = 1
+                while !used.insert(cluster.id).inserted {
+                    suffix += 1
+                    cluster.id = "\(base):\(suffix)"
+                }
+                result.clusters.append(cluster)
+                start = end
+            }
+        }
+        return result
+    }
+
+    private struct StoredCluster {
+        let cluster: WebInkRecord.Cluster
+        let strokes: [PKStroke]
+        let indices: [StrokeIdentity: Int]
+        let wireIndices: [Int?]
+
+        init(_ cluster: WebInkRecord.Cluster) throws {
+            self.cluster = cluster
+            let local = try cluster.localDrawing()
+            wireIndices = try cluster.portableIndices(for: local)
+            strokes = local.transformed(using: CGAffineTransform(translationX: cluster.bounds.x, y: cluster.bounds.y)).strokes
+            indices = Dictionary(strokes.enumerated().map { (strokeIdentity($0.element), $0.offset) },
+                                 uniquingKeysWith: { first, _ in first })
+            guard !cluster.hasPortablePayload || indices.count == strokes.count else {
+                throw SessionServiceError.invalidDocument("Multiple saved strokes match the same canvas path.")
+            }
+        }
+
+        func wireID(for id: StrokeIdentity) -> String? {
+            guard let native = indices[id], let i = wireIndices[native] else { return nil }
+            return cluster.strokes?[i].id
+        }
+    }
+
+    private static func mergedCluster(
+        _ group: PKDrawing, anchor: WebInkRecord.Anchor?, original: StoredCluster?
+    ) throws -> WebInkRecord.Cluster {
+        if let original, group.strokes.map(strokeSignature) == original.strokes.map(strokeSignature) {
+            // No stroke changed. Keep even noncanonical native drawing bytes.
+            var cluster = original.cluster
+            if cluster.anchor != anchor {
+                cluster.anchor = anchor
+                cluster.id = WebInkRecord.clusterId(anchor: anchor, bounds: cluster.bounds.rect)
+            }
+            return cluster
+        }
+        let bounds = group.bounds
+        let local = group.transformed(using: CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
+        var cluster = WebInkRecord.Cluster(id: WebInkRecord.clusterId(anchor: anchor, bounds: bounds),
+            drawing: local.dataRepresentation(), bounds: .init(bounds), anchor: anchor)
+        guard let original, let stored = original.cluster.strokes else { return cluster }
+        cluster.strokes = try zip(group.strokes, local.strokes).compactMap { stroke, localStroke in
+            guard let i = original.indices[strokeIdentity(stroke)] else {
+                throw SessionServiceError.invalidDocument("Missing original ink stroke")
+            }
+            guard let wireIndex = original.wireIndices[i] else {
+                // A native-only erased stroke remains in the drawing blob.
+                guard stroke.maskedPathRanges.isEmpty else {
+                    throw SessionServiceError.invalidDocument("A newly visible stroke has no portable identity")
+                }
+                return nil
+            }
+            var wire = stored[wireIndex]
+            if strokeSignature(stroke) == strokeSignature(original.strokes[i]) {
+                // Only the cluster-local origin changed after a split.
+                wire.transform[4] += original.cluster.bounds.x - bounds.minX
+                wire.transform[5] += original.cluster.bounds.y - bounds.minY
+                return wire
+            }
+            // Update only a representation already on disk. Retain its opaque
+            // identity and fields that PencilKit cannot carry through an edit.
+            var edited = try PortableStroke(localStroke)
+            guard edited.points.count == wire.points.count else {
+                throw SessionServiceError.invalidDocument("Inconsistent dual ink paths")
+            }
+            edited.id = wire.id
+            edited.unknownFields = wire.unknownFields
+            for p in edited.points.indices { edited.points[p].unknownFields = wire.points[p].unknownFields }
+            // Translation or recoloring leaves the local mask intact. Keep its
+            // original wire commands across AppKit/UIKit path normalization.
+            if try wire.matchesMask(of: localStroke) {
+                edited.mask = wire.mask
+            } else {
+                edited.mask?.unknownFields = wire.mask?.unknownFields ?? [:]
+            }
+            return edited
+        }
+        if original.cluster.drawing == nil { cluster.drawing = nil }
+        return cluster
     }
 
     /// Archive import intentionally remains additive, but its whole
@@ -676,7 +842,7 @@ enum WebInkStore {
     ) throws {
         try withLockedCandidateRecords(forKey: key) { destination, current in
             var merged = current
-            WebArchive.mergeInk(&merged, incoming: incoming)
+            try WebArchive.mergeInk(&merged, incoming: incoming)
             guard var merged else { return }
             merged.url = normalizedURL
             try writeRecord(merged, to: destination)
@@ -708,7 +874,7 @@ enum WebInkStore {
         }
 
         let destination = candidates[0]
-        let current = candidates.lazy.compactMap(loadRecord(at:)).first
+        let current = try candidates.first { FileManager.default.fileExists(atPath: $0.path) }.map(readRecord(at:))
         return try body(destination, current)
     }
 
@@ -791,8 +957,8 @@ actor WebInkIO {
         key = WebLibrary.pageKey(normalized)
     }
 
-    func load() -> WebInkRecord? {
-        WebInkStore.loadRecord(forKey: key)
+    func load() throws -> WebInkRecord? {
+        try WebInkStore.loadRecordForExport(forKey: key)
     }
 
     @discardableResult

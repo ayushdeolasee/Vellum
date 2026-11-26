@@ -8,6 +8,7 @@ import UIKit
 /// its current super-sample factor `K` (the canvas's `zoomScale` — see
 /// `InkOverlayProvider_iOS` for the whole scheme).
 final class InkPageCanvas_iOS: PKCanvasView {
+    var portableInkReadOnly = false
     var pageNumber = 0
     /// The linear super-sample factor this canvas currently rasterizes at, i.e.
     /// its `zoomScale`. The canvas's *content* coordinate space is always the
@@ -190,11 +191,16 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         // the page's native ink so the display document doesn't double-render
         // behind the canvas.
         canvas.suppressChange = true
-        let seeded = PdfInk.drawing(on: page) ?? PKDrawing()
+        canvas.portableInkReadOnly = PdfInk.hasPortableInk(on: page)
+        let inkContent = PdfInk.overlayInk(on: page)
+        let seeded = inkContent.drawing
         canvas.drawing = seeded
         canvas.committedDrawing = seeded
         canvas.suppressChange = false
-        PdfInk.removeVellumInk(from: page)
+        for annotation in inkContent.represented {
+            if canvas.portableInkReadOnly { annotation.shouldDisplay = false }
+            else { page.removeAnnotation(annotation) }
+        }
         if !seeded.strokes.isEmpty {
             // Let observers (the sidebar's Handwriting chips) know ink exists
             // on this page — seeding is invisible to them otherwise.
@@ -319,7 +325,7 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         let active = (ink?.isActive ?? false) && ink?.tool != .textHighlight
         // Inactive canvases still render their strokes but pass all touches to
         // PDFView (so finger pan/zoom and text selection keep working).
-        canvas.isUserInteractionEnabled = active
+        canvas.isUserInteractionEnabled = active && (canvas as? InkPageCanvas_iOS)?.portableInkReadOnly != true
         #if targetEnvironment(simulator)
         canvas.drawingPolicy = .anyInput // no Pencil in the simulator
         #else
@@ -331,7 +337,7 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard let canvas = canvasView as? InkPageCanvas_iOS,
-              !canvas.suppressChange,
+              !canvas.portableInkReadOnly, !canvas.suppressChange,
               canvas.pageNumber >= 1 else { return }
         // Scratch-out runs first, and synchronously (see `applyScratchOut`): if
         // the stroke the user just finished is a scribble over existing ink, what

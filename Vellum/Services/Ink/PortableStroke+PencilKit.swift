@@ -17,6 +17,31 @@ enum PortableStrokeConversionError: Error {
 }
 
 extension PortableStroke {
+    var rawPathID: String { strokeID(created: createdAt, points: points) }
+
+    /// I3 identity uses only the creation instant and raw control-point x/y/t.
+    static func rawPathID(of stroke: PKStroke) throws -> String {
+        try strokeID(created: InkTimestamp.format(stroke.path.creationDate), points: stroke.path.map(PortablePoint.init))
+    }
+
+    /// Reject a stale mutable signature even when a previous Apple save kept
+    /// the same raw path. Future wire fields and the supplied ID are opaque.
+    func describes(_ stroke: PKStroke) throws -> Bool {
+        let m = stroke.transform
+        let ranges = stroke.maskedPathRanges.map { [Double($0.lowerBound), Double($0.upperBound)] }
+        return try ink == stroke.ink.inkType.rawValue && randomSeed == stroke.randomSeed
+            && close(color, rgba(stroke.ink.color.cgColor))
+            && close(transform, [m.a, m.b, m.c, m.d, m.tx, m.ty])
+            && points.count == stroke.path.count && zip(points, stroke.path).allSatisfy { $0.matches($1) }
+            && ranges.count == visibleRanges.count && zip(visibleRanges, ranges).allSatisfy(close)
+            && matchesMask(of: stroke)
+    }
+
+    func matchesMask(of stroke: PKStroke) throws -> Bool {
+        let expected = try mask?.rebuild()
+        return stroke.mask?.cgPath == expected?.cgPath && stroke.mask?.inkEvenOdd == expected?.inkEvenOdd
+    }
+
     init(_ stroke: PKStroke) throws {
         let created = try InkTimestamp.format(stroke.path.creationDate)
         let points = stroke.path.map(PortablePoint.init)
@@ -111,27 +136,49 @@ extension PKStroke {
         let date = try InkTimestamp.parse(stroke.createdAt)
         let path = try PKStrokePath(controlPoints: stroke.points.map { try $0.rebuild() }, creationDate: date)
         let mask = try stroke.mask?.rebuild()
-        self.init(ink: PKInk(inkType, color: color), path: path,
-                  transform: CGAffineTransform(a: m[0], b: m[1], c: m[2], d: m[3], tx: m[4], ty: m[5]),
-                  mask: mask, randomSeed: stroke.randomSeed)
+        let ink = PKInk(inkType, color: color)
+        let placement = CGAffineTransform(a: m[0], b: m[1], c: m[2], d: m[3], tx: m[4], ty: m[5])
+        self.init(ink: ink, path: path, transform: placement, mask: mask, randomSeed: stroke.randomSeed)
+        // PencilKit clips differently when a stroke is placed after erasure.
+        // Keep direct construction when it matches an existing record. For a
+        // moved stroke, transform the drawing so PencilKit moves the erase
+        // mask with the path. On iPadOS 26.5 assigning PKStroke.transform
+        // directly recomputes different intervals, even after serialization.
+        if let mask, !placement.isIdentity, !matchesVisibleRanges(stroke.visibleRanges) {
+            let local = PKStroke(ink: ink, path: path, mask: mask, randomSeed: stroke.randomSeed)
+            let placed = PKDrawing(strokes: [local]).transformed(using: placement)
+            guard placed.strokes.count == 1, let moved = placed.strokes.first else {
+                throw PortableStrokeConversionError.signatureMismatch
+            }
+            self = moved
+        }
 
         let rebuiltMask = self.mask
         guard rebuiltMask?.cgPath == mask?.cgPath,
               rebuiltMask?.inkEvenOdd == stroke.mask?.evenOdd else { throw PortableStrokeConversionError.unsupportedMask }
-        let actual = self.maskedPathRanges.map { [Double($0.lowerBound), Double($0.upperBound)] }
         // Without geometry a display-only erasure must fail, even when the
         // erased sliver is narrower than the signature's float tolerance.
-        if mask == nil, actual != stroke.visibleRanges { throw PortableStrokeConversionError.unsupportedMask }
+        if mask == nil {
+            let actual = maskedPathRanges.map { [Double($0.lowerBound), Double($0.upperBound)] }
+            guard actual == stroke.visibleRanges else { throw PortableStrokeConversionError.unsupportedMask }
+        }
 
         let transform = self.transform
-        guard self.path.count == stroke.points.count,
+        guard self.ink.inkType == inkType, self.randomSeed == stroke.randomSeed,
+              self.path.count == stroke.points.count,
               zip(stroke.points, self.path).allSatisfy({ $0.matches($1) }),
               try InkTimestamp.format(self.path.creationDate) == stroke.createdAt,
               close([transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty], m),
               try close(rgba(self.ink.color.cgColor), c),
-              actual.count == stroke.visibleRanges.count,
-              zip(actual, stroke.visibleRanges).allSatisfy(close)
+              matchesVisibleRanges(stroke.visibleRanges)
         else { throw PortableStrokeConversionError.signatureMismatch }
+    }
+
+    private func matchesVisibleRanges(_ ranges: [[Double]]) -> Bool {
+        let actual = maskedPathRanges
+        return actual.count == ranges.count && zip(actual, ranges).allSatisfy {
+            close([$0.lowerBound, $0.upperBound], $1)
+        }
     }
 }
 
@@ -210,14 +257,20 @@ private extension PortableStrokeMask {
 
     func rebuild() throws -> InkMaskPath {
         let result = CGMutablePath()
-        for command in path {
+        for (index, command) in path.enumerated() {
             let c = command.coordinates
             guard c.allSatisfy(\.isFinite), command.verb == "M" || !result.isEmpty else {
                 throw PortableStrokeConversionError.unsupportedMask
             }
             func point(_ i: Int) -> CGPoint { CGPoint(x: c[i], y: c[i + 1]) }
             switch (command.verb, c.count) {
-            case ("M", 2): result.move(to: point(0))
+            case ("M", 2):
+                // AppKit emits a trailing move back to the just-closed
+                // contour's start. UIKit PencilKit omits that empty subpath.
+                // closeSubpath already left the current point there.
+                if index == path.count - 1, index > 0, path[index - 1].verb == "Z",
+                   point(0) == result.currentPoint { continue }
+                result.move(to: point(0))
             case ("L", 2): result.addLine(to: point(0))
             case ("Q", 4): result.addQuadCurve(to: point(2), control: point(0))
             case ("C", 6): result.addCurve(to: point(4), control1: point(0), control2: point(2))
@@ -232,5 +285,16 @@ private extension PortableStrokeMask {
         mask.usesEvenOddFillRule = evenOdd
         #endif
         return mask
+    }
+}
+
+extension PKDrawing {
+    init(pdfStrokePayload: String) throws {
+        try self.init(portableStrokes: PortableStroke.decodePDFPayload(pdfStrokePayload))
+    }
+
+    init(portableStrokes: [PortableStroke]) throws {
+        guard !portableStrokes.isEmpty else { throw PortableStrokeConversionError.invalidPath }
+        self.init(strokes: try portableStrokes.map(PKStroke.init))
     }
 }

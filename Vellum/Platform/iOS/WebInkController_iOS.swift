@@ -23,7 +23,7 @@ import os
 protocol WebInkPersisting: AnyObject {
     /// Load the current sidecar off-main. Test doubles may return nil when they
     /// only capture controller output.
-    func loadRecord() async -> WebInkRecord?
+    func loadRecord() async throws -> WebInkRecord?
     /// Record the full snapshot that was actually seeded into this runtime.
     /// Future full-canvas writes are diffed against it so another runtime's
     /// concurrent changes are preserved.
@@ -43,7 +43,7 @@ protocol WebInkPersisting: AnyObject {
 }
 
 extension WebInkPersisting {
-    func loadRecord() async -> WebInkRecord? { nil }
+    func loadRecord() async throws -> WebInkRecord? { nil }
     func seedBaseline(_ record: WebInkRecord) {}
 
     /// Anchorless convenience (tests, clear paths).
@@ -108,9 +108,14 @@ final class WebInkController_iOS: InkPaletteHost {
         didSet {
             guard oldValue != isActive else { return }
             if isActive {
+                if readOnlyInk, toolState.tool != .textHighlight {
+                    app?.error = "Handwriting is read-only because its saved representations differ."
+                    isActive = false
+                    return
+                }
                 guard !isDocumentLoading, !documentLoadFailed,
                       liveDocumentUrl == loadedUrl,
-                      loadedUrl == nil || canResolveAnchors else {
+                      loadedUrl == nil || canDisplayInk else {
                     isActive = false
                     return
                 }
@@ -157,10 +162,14 @@ final class WebInkController_iOS: InkPaletteHost {
     /// once-per-document guard for `documentOpened` (init re-reports on
     /// hydration and soft navigation).
     @ObservationIgnored private var loadedUrl: String?
+    // Belongs to the retained canvas. A later URL can fail admission before
+    // binding its persister, while this drawing remains ready to show.
+    @ObservationIgnored private var retainedCanvasReady = false
     @ObservationIgnored private var liveDocumentUrl: String?
     @ObservationIgnored private var openingUrl: String?
     private(set) var isDocumentLoading = false
     private(set) var documentLoadFailed = false
+    private(set) var readOnlyInk = false
     /// A sidecar that finished loading before SwiftUI mounted this tab's
     /// PencilKit overlay. Kept until `attachOverlay` can seed the canvas.
     @ObservationIgnored private var pendingLoadedRecord: WebInkRecord?
@@ -260,6 +269,7 @@ final class WebInkController_iOS: InkPaletteHost {
         isActive = false
         flushPendingInk()
         loadedUrl = nil
+        retainedCanvasReady = false
         liveDocumentUrl = nil
         openingUrl = nil
         isDocumentLoading = false
@@ -298,7 +308,7 @@ final class WebInkController_iOS: InkPaletteHost {
         return webController?.liveDocumentUrlForInk.map { $0 == loadedUrl } ?? true
     }
 
-    private var canResolveAnchors: Bool { loadedUrl != nil && canDisplayInk }
+    private var canResolveAnchors: Bool { loadedUrl != nil && canDisplayInk && !readOnlyInk }
 
     /// The web document reported in (`handleInit` bumped `initCount`): bind the
     /// persister for its URL and seed the canvas with any stored ink. Ignores
@@ -311,7 +321,7 @@ final class WebInkController_iOS: InkPaletteHost {
         let url = (try? WebUrl.normalize(rawURL)) ?? rawURL
         documentWillNavigate(to: url)
         guard url != openingUrl else { return nil }
-        if url == loadedUrl {
+        if url == loadedUrl, retainedCanvasReady {
             // Returning to the still-retained document supersedes an incoming
             // load that has not passed its release barrier yet.
             if openingUrl != nil {
@@ -370,13 +380,34 @@ final class WebInkController_iOS: InkPaletteHost {
             }
             self.pendingLoadedRecord = nil
             self.loadedUrl = url
+            self.retainedCanvasReady = false
+            self.readOnlyInk = false
             self.resetAnchorState()
             self.persistence = persister
-            guard let record = await persister.loadRecord() else { return }
+            let loaded: WebInkRecord?
+            do {
+                loaded = try await persister.loadRecord()
+            } catch {
+                guard self.openGeneration == generation else { return }
+                self.documentLoadFailed = true
+                self.app?.error = "Saved handwriting could not be opened. Its data has been preserved."
+                Self.log.error("Unable to load saved handwriting: \(error.localizedDescription)")
+                return
+            }
+            guard self.openGeneration == generation else { return }
+            guard let record = loaded else {
+                self.retainedCanvasReady = true
+                return
+            }
+            let canEdit = await Task.detached(priority: .userInitiated) {
+                (try? record.validateForEditing()) != nil
+            }.value
             guard self.openGeneration == generation,
                   self.loadedUrl == url,
                   self.persistence === persister else { return }
-            persister.seedBaseline(record)
+            self.retainedCanvasReady = true
+            self.readOnlyInk = !canEdit
+            if canEdit { persister.seedBaseline(record) }
             self.pendingLoadedRecord = record
             self.applyPendingLoadedRecordIfPossible()
         }
@@ -389,7 +420,11 @@ final class WebInkController_iOS: InkPaletteHost {
     private func applyPendingLoadedRecordIfPossible() {
         guard let record = pendingLoadedRecord, let overlay else { return }
         pendingLoadedRecord = nil
-        let restored = record.mergedDrawing()
+        guard let restored = try? record.validatedMergedDrawing() else {
+            retainedCanvasReady = false
+            documentLoadFailed = true
+            return
+        }
         let derivedClusters = WebInkClustering.clusters(of: restored)
         if record.version >= WebInkRecord.currentVersion {
             // Seed only one-to-one stored anchors. A malformed/imported
@@ -779,8 +814,8 @@ final class WebInkController_iOS: InkPaletteHost {
 
     // MARK: - InkPaletteHost (undo/redo/clear)
 
-    func undo() { overlay?.canvas.undoManager?.undo() }
-    func redo() { overlay?.canvas.undoManager?.redo() }
+    func undo() { if !readOnlyInk { overlay?.canvas.undoManager?.undo() } }
+    func redo() { if !readOnlyInk { overlay?.canvas.undoManager?.redo() } }
     var canUndo: Bool {
         _ = drawingVersion
         return overlay?.canvas.undoManager?.canUndo ?? false
@@ -793,7 +828,7 @@ final class WebInkController_iOS: InkPaletteHost {
     /// Clear the document's ink (undoable). The web document is one continuous
     /// canvas, so "current page" means the whole drawing.
     func clearCurrentPage() {
-        guard let canvas = overlay?.canvas else { return }
+        guard !readOnlyInk, let canvas = overlay?.canvas else { return }
         canvas.drawing = PKDrawing()
         drawingChanged(PKDrawing())
     }
@@ -807,6 +842,7 @@ final class WebInkController_iOS: InkPaletteHost {
     /// clusters that don't have one yet get an async capture kicked off
     /// (stroke commit is the capture trigger).
     func drawingChanged(_ drawing: PKDrawing) {
+        guard !readOnlyInk else { return }
         drawingVersion &+= 1
         // An emptied canvas (Clear, or the last stroke undone away) has no
         // clusters, so no anchor should survive: drop the whole anchor cache.
@@ -953,8 +989,8 @@ final class WebInkPersister: WebInkPersisting {
         }
     }
 
-    func loadRecord() async -> WebInkRecord? {
-        await io.load()
+    func loadRecord() async throws -> WebInkRecord? {
+        try await io.load()
     }
 
     func seedBaseline(_ record: WebInkRecord) {
@@ -1070,11 +1106,11 @@ final class WebInkPersister: WebInkPersisting {
     /// background flush retries it instead of silently declaring it durable.
     private func write(_ record: WebInkRecord, generation gen: Int) async -> Bool {
         var replacing = baseline
-        if let seededObservation {
-            WebArchive.mergeInk(&replacing, incoming: seededObservation)
-        }
         let observedSeedGeneration = seedGeneration
         do {
+            if let seededObservation {
+                try WebArchive.mergeInk(&replacing, incoming: seededObservation)
+            }
             _ = try await writer(record, replacing)
             // The shared file may also contain another runtime's strokes.
             // Only this canvas's snapshot was observed locally: adopting the

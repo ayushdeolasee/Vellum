@@ -1,3 +1,5 @@
+import Foundation
+
 /// The path stays in PencilKit's raw control-point space. Apply the stroke
 /// transform to get cluster-local coordinates, then translate by the cluster bounds.
 public struct PortableStroke: Equatable, Sendable, Codable {
@@ -167,5 +169,17 @@ public struct PortableStrokeMask: Equatable, Sendable, Codable {
         try fields.encode(evenOdd, forKey: .evenOdd)
         try fields.encode(path, forKey: .path)
         try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension PortableStroke {
+    /// /VellumInkStrokes is an RFC 1950 zlib stream inside a base64 PDF string.
+    public static func decodePDFPayload(_ value: String) throws -> [PortableStroke] {
+        let limit = ArchiveCodec.maxInkBytes
+        guard value.utf8.count <= (limit + 2) / 3 * 4, let compressed = Data(base64Encoded: value) else {
+            throw ArchiveCodecError.invalidDocument("Invalid PDF handwriting data")
+        }
+        let bytes = try MiniZip.inflate(compressed, cap: limit, windowBits: 15)
+        return try JSONDecoder().decode([PortableStroke].self, from: bytes)
     }
 }

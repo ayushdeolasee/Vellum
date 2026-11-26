@@ -24,4 +24,21 @@ final class PortableStrokeWireTests: XCTestCase {
         let carried = try JSONEncoder().encode(stroke)
         XCTAssertEqual(try JSONDecoder().decode(PortableStroke.self, from: carried), stroke)
     }
+
+    func testPortablePDFPayloadValidatesZlibFraming() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "portable-partial", withExtension: "pdf",
+                                                  subdirectory: "Fixtures/Ink"))
+        let pdf = try ClassicPdfFile(data: Data(contentsOf: url))
+        let payload = try XCTUnwrap(pdf.objectSource(7)?.textString(forKey: "VellumInkStrokes"))
+        let strokes = try PortableStroke.decodePDFPayload(payload)
+        XCTAssertEqual(strokes.count, 1)
+        XCTAssertEqual(strokes.first?.id, "a284060ec6d9ca567256f7c186bc2477a35577d2561a2e6f9fd5005f1946c114")
+        var compressed = try XCTUnwrap(Data(base64Encoded: payload))
+        compressed.removeLast()
+        XCTAssertThrowsError(try PortableStroke.decodePDFPayload(compressed.base64EncodedString()))
+        compressed = try XCTUnwrap(Data(base64Encoded: payload))
+        compressed.append(0)
+        XCTAssertThrowsError(try PortableStroke.decodePDFPayload(compressed.base64EncodedString()))
+    }
+
 }

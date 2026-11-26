@@ -150,7 +150,7 @@ struct MacHandwritingNavigator: View {
     }
 }
 
-private enum SavedHandwritingReader {
+enum SavedHandwritingReader {
     /// This private reader owns its PDF exclusively off-main. It uses the
     /// display snapshot and unlock credential, never the PDFView's PDFPage.
     static func pdfPages(data: Data, password: String?) throws -> [Int] {
@@ -164,6 +164,24 @@ private enum SavedHandwritingReader {
             for index in 0..<CgPdf.count(entries) {
                 guard let annotation = CgPdf.dictionaryAt(entries, index),
                       CgPdf.name(annotation, "Subtype") == "Ink" else { continue }
+                // The navigator jumps to native ink too. A damaged carrier or
+                // a continuation marker without geometry says nothing about
+                // other annotations on this page or later pages.
+                let paths = CgPdf.array(annotation, "InkList")
+                let hasPath = paths.map { list in
+                    (0..<CgPdf.count(list)).contains { index in
+                        guard let entry = CgPdf.objectAt(list, index), let line = CgPdf.objectArray(entry) else { return false }
+                        return CgPdf.count(line) >= 2
+                    }
+                } ?? false
+                if !hasPath {
+                    let native = CgPdf.string(annotation, "VellumInk").flatMap { Data(base64Encoded: $0) }
+                    let legacy = native.flatMap { try? PKDrawing(data: $0) }
+                    if legacy?.strokes.isEmpty != false {
+                        guard let value = CgPdf.string(annotation, "VellumInkStrokes"), value != "1",
+                              (try? PKDrawing(pdfStrokePayload: value)) != nil else { continue }
+                    }
+                }
                 pages.append(page)
                 break
             }
@@ -184,8 +202,7 @@ private enum SavedHandwritingReader {
             guard bounds.x.isFinite, bounds.y.isFinite,
                   bounds.w.isFinite, bounds.h.isFinite,
                   bounds.w > 0, bounds.h > 0,
-                  let drawing = try? PKDrawing(data: cluster.drawing),
-                  !drawing.strokes.isEmpty else { return nil }
+                  (try? cluster.localDrawing()) != nil else { return nil }
             var result = cluster
             if let anchor = result.anchor,
                anchor.startOffset < 0 || anchor.startOffset == Int.max || !anchor.rect.y.isFinite {

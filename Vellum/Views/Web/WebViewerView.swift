@@ -719,10 +719,10 @@ final class WebViewerController: NSObject {
         let generation = savedInkGeneration
         savedInkTask = Task { [weak self] in
             let worker = Task.detached(priority: .utility) {
-                WebSavedInkRenderer.load(url: url, pageURL: pageURL)
+                try WebSavedInkRenderer.load(url: url, pageURL: pageURL)
             }
-            let payload = await withTaskCancellationHandler {
-                await worker.value
+            let result = await withTaskCancellationHandler {
+                await worker.result
             } onCancel: {
                 worker.cancel()
             }
@@ -731,6 +731,12 @@ final class WebViewerController: NSObject {
                   self.mountTabId == tabId, self.mountDocument?.pdfPath == url,
                   self.mountDocument?.docId == docId else { return }
             self.savedInkTask = nil
+            guard case let .success(payload) = result else {
+                if self.app?.document?.pdfPath == url {
+                    self.app?.error = "Saved handwriting could not be opened."
+                }
+                return
+            }
             guard let payload else { return }
             self.webView.evaluateJavaScript(
                 "window.__vellumCmd && window.__vellumCmd({vellumCmd:'set-saved-ink', payload:\(payload)});",
