@@ -175,6 +175,7 @@ targets:
       - path: Tests/AiPromptContextTests.swift
       - path: Tests/MarkdownParserTests.swift
       - path: Tests/StorageMigrationRecoveryTests.swift
+      - path: Packages/VellumCore/Tests/VellumCoreTests/CrossPlatformRoundTripTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/TwoPeerOfflineConflictTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/TestSupport/SyncthingSimulator.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/TestSupport/PeerPDFMigration.swift

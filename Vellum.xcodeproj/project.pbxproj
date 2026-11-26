@@ -662,6 +662,7 @@
 		CFE4A8E4B99091F462410786 /* PaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD01D08235008A4E602D0373 /* PaneTreeView.swift */; };
 		D029777CB004B5CD28A30A94 /* harbor-linux.vellumweb in Resources */ = {isa = PBXBuildFile; fileRef = 8C74B38FCDD716D175A394AD /* harbor-linux.vellumweb */; };
 		D0E914B2A548C5CC0045E1A4 /* RenameDocumentSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2740411A060E87E62C9BEDB5 /* RenameDocumentSheet_iOS.swift */; };
+		D0FEBA5B6D61594086B6429A /* CrossPlatformRoundTripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A423C19425B159205D429EA0 /* CrossPlatformRoundTripTests.swift */; };
 		D17867A0AE9B35DC81EC7EDB /* RootShell_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA126C184AC445339DBCB04F /* RootShell_iOS.swift */; };
 		D17C6AC2C5B08EE027B5A40D /* InkController_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96A7991568F0B38518672931 /* InkController_iOS.swift */; };
 		D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D82487970E20F6628200C4BE /* KeychainStore.swift */; };
@@ -1167,6 +1168,7 @@
 		A35446F16BAA2884CAF8327A /* DisconnectServiceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisconnectServiceSheet.swift; sourceTree = "<group>"; };
 		A3728E6C51765342ED302C4B /* HomeTextDropHandler_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTextDropHandler_iOS.swift; sourceTree = "<group>"; };
 		A41D70800A252ABA20FFCD9D /* ExternalLibraryList_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalLibraryList_macOS.swift; sourceTree = "<group>"; };
+		A423C19425B159205D429EA0 /* CrossPlatformRoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossPlatformRoundTripTests.swift; sourceTree = "<group>"; };
 		A5003641A54B311693588C6C /* PdfPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfPersistenceTests.swift; sourceTree = "<group>"; };
 		A63B27999946C80990252F63 /* VellumWidgetSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumWidgetSnapshotStore.swift; sourceTree = "<group>"; };
 		A7508380103E3495A82E0771 /* KaTeX_Caligraphic-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Caligraphic-Regular.woff2"; sourceTree = "<group>"; };
@@ -1502,6 +1504,7 @@
 		1D33B978624B1359DF4786CC /* VellumCoreTests */ = {
 			isa = PBXGroup;
 			children = (
+				A423C19425B159205D429EA0 /* CrossPlatformRoundTripTests.swift */,
 				0F475713A06234E44D7BF506 /* PdfFixturesSanityTests.swift */,
 				B1483F7412DD6797C62E9E6C /* PositionTestSupport.swift */,
 				5BF759D8EAE41ADCE33AAB05 /* TwoPeerOfflineConflictTests.swift */,
@@ -2942,6 +2945,7 @@
 				53383D04BAEFB64A3762F5B4 /* AiPromptContextTests.swift in Sources */,
 				01DF4A6148DF4256E751365B /* ArchiveExchangeTests.swift in Sources */,
 				30026B5ECE86A034C6C2781F /* ConflictMergeTests.swift in Sources */,
+				D0FEBA5B6D61594086B6429A /* CrossPlatformRoundTripTests.swift in Sources */,
 				B3E44891A8E2A43F2685347A /* DocumentAccessBookmarkStoreTests.swift in Sources */,
 				6D471798D0195D7D153CB1A1 /* DocumentActionsTests.swift in Sources */,
 				2C4EC613B65AAF9A1FBAB11C /* DocumentIdentityTests.swift in Sources */,

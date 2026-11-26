@@ -132,8 +132,20 @@ def run(stage, build_container, package):
             env = {"VELLUM_S9_PHASE": step, "VELLUM_S9_PEER": peer.role}
             if peer is mac:
                 env["VELLUM_S9_SANDBOX"] = str(root)
-                subprocess.run([*opts, "--package-path", package, "--scratch-path", stage / "build"],
-                               env={**os.environ, **env}, check=True)
+                if step in ("mac-edit", "recover"):
+                    # These two phases must exercise the shipping Mac scratchpad
+                    # save and typed merge policy. Keep the Debug host isolated.
+                    project = Path(package).parents[1] / "Vellum.xcodeproj"
+                    derived = os.environ.get("VELLUM_S9_DERIVED_DATA", str(stage / "mac-debug"))
+                    command = ["xcodebuild", "-project", project, "-scheme", "Vellum Mac",
+                               "-configuration", "Debug", "-destination", "platform=macOS",
+                               "-derivedDataPath", derived, "-jobs", "2", "-parallel-testing-enabled", "NO",
+                               "-disableAutomaticPackageResolution", "-skipPackageUpdates",
+                               "-only-testing:VellumMacTests/CrossPlatformRoundTripTests", "test"]
+                    env.update({"TEST_RUNNER_" + k: v for k, v in env.items()})
+                else:
+                    command = [*opts, "--package-path", package, "--scratch-path", stage / "build"]
+                subprocess.run(command, env={**os.environ, **env, "GIT_ALLOW_PROTOCOL": "file"}, check=True)
                 assert (root / ("completed-" + step)).read_text() == step
             else:
                 # Export a fresh view each time. The build container has no network
