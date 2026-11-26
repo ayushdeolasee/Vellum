@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import VellumCore
 
 // Cross-platform value types + overlay-positioning helper shared by the macOS
 // and iPad PDF viewers. The controllers and PDFView wrappers are platform

@@ -1,4 +1,8 @@
 import Foundation
+import VellumCore
+
+typealias PdfZoomMode = VellumCore.PdfZoomMode
+typealias PdfZoomPolicy = VellumCore.PdfZoomPolicy
 
 // Core data models — mirror src/types/index.ts and the Rust models exactly.
 // JSON field names stay snake_case for compatibility with data written by the

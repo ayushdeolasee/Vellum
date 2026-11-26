@@ -102,11 +102,12 @@ struct PdfKitView: NSViewRepresentable {
         // 12px gap between pages (top 6 + bottom 6); PDFKit has no separate
         // edge padding, so the 16px py of the original becomes 6.
         view.pageBreakMargins = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
-        view.minScaleFactor = AppStore.minZoom
-        view.maxScaleFactor = AppStore.maxZoom
+        let zoom = AppStore.freePdfZoom
+        view.minScaleFactor = zoom.minimumScale
+        view.maxScaleFactor = zoom.maximumScale
         view.backgroundColor = NSColor(palette.well)
         view.document = document
-        view.scaleFactor = min(AppStore.maxZoom, max(AppStore.minZoom, app.zoom))
+        view.scaleFactor = zoom.openingScale(persisted: app.zoom)
         controller.pdfView = view
         context.coordinator.attach(to: view)
         controller.documentAttached()

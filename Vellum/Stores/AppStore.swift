@@ -282,6 +282,7 @@ struct DocumentBinding: Equatable, Sendable {
 final class AppStore {
     static let minZoom: Double = 0.25
     static let maxZoom: Double = 4.0
+    static let freePdfZoom = PdfZoomPolicy.free(minimumScale: minZoom, maximumScale: maxZoom)
     static let zoomStep: Double = 0.1
 
     let sessions: SessionService
