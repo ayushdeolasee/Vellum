@@ -133,10 +133,18 @@ public actor SharedWebArchives {
         return (name, bytes)
     }
 
+    // Foundation passes decomposed UTF-8 to Darwin and the original bytes
+    // to Linux. Compare the spelling actually used by filesystem operations.
+    private func diskName(_ name: String) -> Data {
+        let bytes = FileManager.default.fileSystemRepresentation(withPath: name)
+        return Data(bytes: bytes, count: strlen(bytes))
+    }
+
     private func matchingBytes(_ key: String, name: String) async throws -> Data? {
         let path = pages.appendingPathComponent(name)
+        let spelling = diskName(name)
         // Do not open a directory, symlink, FIFO or oversized file named by an index.
-        guard try await archiveFiles(in: pages).contains(where: { $0.name.utf8.elementsEqual(name.utf8) }),
+        guard try await archiveFiles(in: pages).contains(where: { diskName($0.name) == spelling }),
               let data = try await store.read(path),
               let manifest = try? ArchiveCodec.readManifest(data: data),
               let url = try? WebURLNormalizer.normalize(manifest.url, httpsOnly: false),
@@ -195,9 +203,9 @@ public actor SharedWebArchives {
 
     private func archiveFiles(in directory: URL) async throws -> [LibraryFileEntry] {
         let regular = try store.contents(of: directory).filter { !$0.isDirectory }
-        let names = Set(regular.map { Data($0.url.lastPathComponent.utf8) })
+        let names = Set(regular.map { diskName($0.url.lastPathComponent) })
         return try await store.list(directory, suffix: nil).filter {
-            WebArchiveNaming.validLeaf($0.name) && names.contains(Data($0.name.utf8))
+            WebArchiveNaming.validLeaf($0.name) && names.contains(diskName($0.name))
                 && ($0.byteSize ?? 0) <= ArchiveCodec.maxArchiveBytes
         }
     }
@@ -214,13 +222,13 @@ public actor SharedWebArchives {
         let (original, indexBytes) = try await readIndex()
         var copies: [Copy] = []
         let unresolved = try unresolvedPaths(in: pages)
-        var occupied = Set(try store.occupiedNames(in: pages).map { Data($0.utf8) })
+        var occupied = Set(try store.occupiedNames(in: pages).map(diskName))
         for dir in [pages, pending] {
             for file in try await archiveFiles(in: dir) {
                 guard let bytes = try await store.read(file.url) else { throw LibraryFileError.retryable }
                 guard let copy = try? Copy(path: file.url, bytes: bytes) else { continue }
                 copies.append(copy)
-                if dir == pages { occupied.remove(Data(file.name.utf8)) }
+                if dir == pages { occupied.remove(diskName(file.name)) }
             }
         }
         // Keep just the metadata in memory between reads. Distinct captures
@@ -242,7 +250,7 @@ public actor SharedWebArchives {
             let copy = copies[i]
             guard copy.path.deletingLastPathComponent() == pages else { continue }
             let name = updated.entries[copy.key]!
-            if copy.path.lastPathComponent.utf8.elementsEqual(name.utf8),
+            if diskName(copy.path.lastPathComponent) == diskName(name),
                copy.digest == copies[selected[copy.key]!].digest { continue }
             // Leave the current version present until S5b has journaled all
             // siblings. An unrelated or malformed sibling cannot block a save.

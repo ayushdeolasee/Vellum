@@ -119,6 +119,10 @@ struct SharedWebArchiveTests {
                 #expect(found.bytes == article.bytes)
             }
             #expect(try await store.read(occupied) == opaque)
+            let long = try Article("long", title: String(repeating: "각", count: 80))
+            let path = try await container.webArchives.save(long.bytes, forKey: long.key)
+            #expect(path.lastPathComponent.decomposedStringWithCanonicalMapping.utf8.count <= 255)
+            #expect(try await container.webArchives.lookup(forKey: long.key)?.bytes == long.bytes)
         }
     }
 

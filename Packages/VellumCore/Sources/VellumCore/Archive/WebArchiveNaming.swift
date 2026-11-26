@@ -78,7 +78,7 @@ extension WebArchiveNaming {
     }
 
     static func validLeaf(_ name: String) -> Bool {
-        !name.hasPrefix(".") && name.lowercased().hasSuffix(ext) && name.utf8.count <= 255
+        !name.hasPrefix(".") && name.lowercased().hasSuffix(ext) && name.precomposedStringWithCanonicalMapping.utf8.count <= 255
             && !name.contains("/") && !name.contains("\\") && !name.contains(":")
             && !SyncArtifact.matches(name.lowercased())
             && !name.unicodeScalars.contains { $0.properties.generalCategory == .control }
@@ -89,13 +89,14 @@ extension WebArchiveNaming {
             .precomposedStringWithCanonicalMapping
     }
 
-    // NAME_MAX is in bytes. Reserve the extension and suffix before clipping.
+    // Reserve room for the suffix in either filesystem spelling. A single
+    // Hangul syllable, for example, can take nine UTF-8 bytes on Darwin.
     private static func name(_ stem: String, suffix: String = "") -> String {
         let tail = suffix + ext
         let limit = 255 - tail.utf8.count
         var bytes = 0
         let base = stem.precomposedStringWithCanonicalMapping.unicodeScalars.prefix { scalar in
-            bytes += scalar.utf8.count
+            bytes += max(scalar.utf8.count, String(scalar).decomposedStringWithCanonicalMapping.utf8.count)
             return bytes <= limit
         }
         return String(base) + tail
