@@ -2,6 +2,7 @@
 import Darwin
 import Foundation
 import Testing
+import VellumCore
 
 @testable import Vellum
 
@@ -67,6 +68,42 @@ struct SyncedFolderStorageTests {
                     #expect(moved?.lastKnownPath == "PDFs/" + next.lastPathComponent)
                     #expect(!resolver.sourceExists(key: key, lastKnownPath: source.path))
                     #expect(!resolver.sourceExists(key: key, lastKnownPath: "PDFs/../../" + source.lastPathComponent))
+                    if shouldStamp {
+                        let manager = DocumentSessionManager()
+                        let info = try await resolver.openPickedPDF(url: next, sessionId: "edit", open: manager.openFile)
+                        let annotation = try await manager.createAnnotation(sessionId: "edit", input: .init(
+                            type: .highlight, pageNumber: 1, color: "#fef08a",
+                            positionData: .init(rects: [.init(x: 72, y: 100, width: 180, height: 16)],
+                                                pageWidth: 612, pageHeight: 792)))
+                        try await manager.closeFile(sessionId: "edit")
+                        let restored = try await resolver.restoreSavedPDF(info, sessionId: "restored",
+                            resolveExistingPath: { _ in nil }, open: manager.openFile)
+                        #expect(restored.docId == key)
+                        #expect(try await manager.getAnnotations(sessionId: "restored", pageNumber: 1).contains { $0.id == annotation.id })
+                        let saved = try Data(contentsOf: next)
+                        #expect(SharedPDFIdentity.stamp(in: saved, readerID: SharedPDFImport.readID(saved)) == key)
+                        let metaURL = shared.appendingPathComponent(".vellum/documents/" + key + "/meta.json")
+                        let savedMeta = try Data(contentsOf: metaURL)
+
+                        // The private Apple writer can serialize this large Info
+                        // dictionary with a CGPDF-readable ID outside the portable
+                        // proof window. The same edit in a shared session must fail.
+                        let title = String(repeating: "a", count: 70000)
+                        let privateCopy = tmp.appendingPathComponent("private-probe.pdf")
+                        try saved.write(to: privateCopy)
+                        _ = try await manager.openFile(path: privateCopy.path, sessionId: "private")
+                        try await manager.setDocumentMetadata(sessionId: "private", key: "title", value: title)
+                        let privateBytes = try Data(contentsOf: privateCopy)
+                        #expect(SharedPDFImport.readID(privateBytes) == key)
+                        #expect(SharedPDFIdentity.stamp(in: privateBytes, readerID: SharedPDFImport.readID(privateBytes)) == nil)
+                        await #expect(throws: SessionServiceError.self) {
+                            try await manager.setDocumentMetadata(sessionId: "restored", key: "title", value: title)
+                        }
+                        #expect(try Data(contentsOf: next) == saved)
+                        #expect(try Data(contentsOf: metaURL) == savedMeta)
+                        try await manager.closeFile(sessionId: "private")
+                        try await manager.closeFile(sessionId: "restored")
+                    }
                 }
                 #expect(!fm.fileExists(atPath: tmp.appendingPathComponent("managed").path))
             } catch {
@@ -74,6 +111,32 @@ struct SyncedFolderStorageTests {
                 throw error
             }
             await coordinator.stop()
+        }
+    }
+
+    @Test("A shared save rejects a CGPDF-visible ID outside the bounded classic xref proof")
+    func boundedSharedCandidateIdentity() throws {
+        let key = UUID().uuidString.lowercased()
+        let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"
+        let objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                       page, "<< /VellumDocId (\(key)) >>"]
+        var classic = String(decoding: PdfFixtureBuilder.classicObjects(objects), as: UTF8.self)
+        // Free entries keep the fixture small while putting the trailer beyond
+        // the classic reader's 1 MiB limit. Offsets of live objects stay intact.
+        classic = classic.replacingOccurrences(of: "xref\n0 5\n", with: "xref\n0 53005\n")
+            .replacingOccurrences(of: "trailer\n<< /Size 5", with:
+                String(repeating: "0000000000 65535 f \n", count: 53000) + "trailer\n<< /Info 4 0 R /Size 53005")
+        let wide = Data(classic.utf8)
+        #expect(SharedPDFImport.readID(wide) == key)
+        #expect(SharedPDFIdentity.stamp(in: wide, readerID: key) == nil)
+        #expect(throws: SessionServiceError.self) { try PdfDocumentSession.verifiedSharedEdit(wide, expectedID: key) }
+
+        let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column"))
+        let repaired = try PdfDocumentSession.verifiedSharedEdit(original, expectedID: key)
+        #expect(repaired.starts(with: original) && repaired.count > original.count)
+        #expect(SharedPDFIdentity.stamp(in: repaired, readerID: SharedPDFImport.readID(repaired)) == key)
+        #expect(throws: SessionServiceError.self) {
+            try PdfDocumentSession.verifiedSharedEdit(repaired, expectedID: UUID().uuidString.lowercased())
         }
     }
 
