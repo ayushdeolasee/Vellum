@@ -19,6 +19,8 @@ extension PdfiumTests {
             in: Data(contentsOf: fixtures.appendingPathComponent("Pdf/foreign-annotations.pdf")), at: 0)
         let blankDrag = try #require(PdfTextLocatorPortable.locate(query: "Highlighted", in: blankDragSource))
         var observed: Set<String> = []
+        var dragCount = 0
+        var midpointDifferences = 0
         for file in files {
             let golden = try JSONDecoder().decode(PdfTextGolden.self, from: Data(contentsOf: file))
             try #require(golden.version == 1)
@@ -96,18 +98,40 @@ extension PdfiumTests {
                         }
                         #expect(actual.positionData.startOffset == nil && actual.positionData.endOffset == nil)
                     }
-                    let textMatches = sameUnits(drag.result?.selectedText, actual?.positionData.selectedText)
-                    if !textMatches {
-                        difference("drag text \(drag.name)", "\(String(describing: drag.result?.selectedText)) → \(String(describing: actual?.positionData.selectedText))")
-                        #expect(sameUnits(actual?.positionData.selectedText, knownDragText[label]?[drag.name]), "\(label)")
-                    }
+                    dragCount += 1
+                    let expectedText = drag.result?.selectedText
+                    let actualText = actual?.positionData.selectedText
                     let bounds = compareRects(drag.result?.rects, actual?.positionData.rects)
-                    if !bounds.passes {
-                        difference("drag bounds \(drag.name)", bounds.details)
-                    } else if let iou = bounds.iou {
-                        print("DRAG \(label) \(drag.name.debugDescription) textExact=\(textMatches) IoU=\(iou) edge=\(bounds.edge)")
+                    if sameUnits(expectedText, actualText) {
+                        #expect(bounds.passes, "\(label) \(drag.name) \(bounds.details)")
+                        if let iou = bounds.iou {
+                            print("DRAG \(label) \(drag.name.debugDescription) textExact=true IoU=\(iou) edge=\(bounds.edge)")
+                        } else {
+                            print("DRAG \(label) \(drag.name.debugDescription) both refused")
+                        }
                     } else {
-                        print("DRAG \(label) \(drag.name.debugDescription) both refused")
+                        // Diagnose midpoint differences geometrically and verify
+                        // that the engines chose the two adjacent caret stops.
+                        // Every ordinary result still has to pass exactly.
+                        let end = drag.edge == .end
+                        let expected = try #require(expectedText)
+                        let actual = try #require(actualText)
+                        let shorter = expected.utf16.count < actual.utf16.count ? expected : actual
+                        let longer = expected.utf16.count < actual.utf16.count ? actual : expected
+                        #expect(drag.targetFraction == 0.5, "\(label) \(drag.name)")
+                        #expect(longer.utf16.count - shorter.utf16.count == 1, "\(label) \(drag.name)")
+                        #expect(end ? longer.hasPrefix(shorter) : longer.hasSuffix(shorter), "\(label) \(drag.name)")
+                        let glyph = try #require(drag.targetGlyph)
+                        let rect = try #require(page.charUiRects[glyph])
+                        let quarterTurn = geometry.rotation == 90 || geometry.rotation == 270
+                        let advance = quarterTurn ? rect.height : rect.width
+                        let origin = quarterTurn ? rect.y : rect.x
+                        let point = quarterTurn ? drag.y : drag.x
+                        let midpointDelta = abs(point - (origin + advance / 2))
+                        #expect(midpointDelta < 0.001, "\(label) \(drag.name)")
+                        #expect(abs(bounds.edge - advance) < 0.2, "\(label) \(drag.name) \(bounds.details)")
+                        midpointDifferences += 1
+                        print("MIDPOINT \(label) \(drag.name.debugDescription) delta=\(midpointDelta) pt \(bounds.details) \(expected.debugDescription) → \(actual.debugDescription)")
                     }
                 }
 
@@ -124,6 +148,7 @@ extension PdfiumTests {
             }
         }
         #expect(observed == knownDifferences, "Observed PDFKit/PDFium differences: \(observed.sorted())")
+        print("DRAG SUMMARY \(dragCount - midpointDifferences)/\(dragCount) exact outcomes, \(midpointDifferences) adjacent-caret midpoint differences")
     }
 }
 
@@ -159,6 +184,8 @@ private struct PdfTextGolden: Decodable {
         let edge: PdfTextLocatorPortable.Edge
         let x: Double
         let y: Double
+        let targetGlyph: Int?
+        let targetFraction: Double?
         let result: PositionData?
     }
 }
@@ -174,16 +201,6 @@ private let knownQuoteText = [
     "Café First line": "Café\nFirst line",
     "evidence. Right column": "evidence.\nRight column"
 ]
-private let extendEnd = "extend end on rotated page"
-private let extendStart = "extend start on rotated page"
-private let knownDragText = [
-    "rotated-all-angles.pdf:1": [extendEnd: "Rotation 0 degre"],
-    "rotated-all-angles.pdf:2": [extendEnd: "Rotation 90 degre", extendStart: "ation 90 degrees"],
-    "rotated-all-angles.pdf:3": [extendEnd: "Rotation 180 degre", extendStart: "ation 180 degrees"],
-    "rotated-all-angles.pdf:4": [extendEnd: "Rotation 270 degre", extendStart: "ation 270 degrees"],
-    "text-selection-edge-cases.pdf:1": ["extend across lines": "first line of text.\nWrapping sel"]
-]
-
 private var knownDifferences: Set<String> {
     let twoColumnFiles = ["classic-two-column", "digitally-signed", "encrypted-user-pass"]
     var result = Set(twoColumnFiles.flatMap { name in
@@ -192,12 +209,6 @@ private var knownDifferences: Set<String> {
     })
     result.insert("text-selection-edge-cases.pdf:2 PDFKit selection range after")
     result.insert("text-selection-edge-cases.pdf:3 PDFKit selection range left second")
-    for (label, drags) in knownDragText {
-        for name in drags.keys {
-            result.insert("\(label) drag text \(name)")
-            result.insert("\(label) drag bounds \(name)")
-        }
-    }
     return result
 }
 

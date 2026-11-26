@@ -37,5 +37,13 @@ text-order similarity ignoring only whitespace, and direct rectangle overlap
 crop and rotation. The known different results are asserted separately:
 PDFKit uses spaces at some column boundaries and can include a trailing
 separator in its reported range without including it in the selection
-string. The rotated Apple drag moves the pinned endpoint, and the engines
-resolve some glyph-midpoint ties differently.
+string. The engines resolve some glyph-midpoint ties differently. The Linux check
+reports those cases only after confirming the target is at the midpoint
+and the selected ranges differ by one adjacent caret stop.
+
+`BeforeApplePinnedEdgeFix/rotated-drag-results.json` contains the untouched
+PDFKit resize points and results from before the Apple anchor correction,
+captured on macOS 27.0.1. The previous implementation used the horizontal
+display edges even when the reading axis was rotated. The current harness
+checks the opposite endpoint in native page coordinates at all four
+rotations and probes on both sides of the midpoint.

@@ -95,13 +95,15 @@ final class PdfTextComparisonHarnessTests: XCTestCase {
             let edge: PdfTextLocatorPortable.Edge
             let x: Double
             let y: Double
+            let targetGlyph: Int?
+            let targetFraction: Double?
             let result: PositionData?
         }
     }
 
     private struct Probes: Sendable {
         struct Drag: Sendable {
-            enum Target: Sendable { case character(String, offset: Int), afterLine }
+            enum Target: Sendable { case character(String, offset: Int, fraction: Double = 0.5), beforeLine, afterLine }
             let name: String
             let initialQuery: String
             let edge: PdfTextLocatorPortable.Edge
@@ -109,6 +111,7 @@ final class PdfTextComparisonHarnessTests: XCTestCase {
         }
         let quotes: [String]
         var drags: [Drag] = []
+        var pinRotatedEndpoints = false
     }
 
     private actor ReferenceDocument {
@@ -132,6 +135,13 @@ final class PdfTextComparisonHarnessTests: XCTestCase {
             let text = page.string ?? ""
             let crop = page.bounds(for: .cropBox)
             let dimensions = PdfTextLocator.displayDimensions(of: page)
+            if text.isEmpty {
+                let current = PositionData(rects: [AnnotationRect(x: 10, y: 10, width: 50, height: 12)],
+                                           pageWidth: dimensions.width, pageHeight: dimensions.height)
+                guard PdfTextLocator.resizedPosition(
+                    page: page, current: current, edge: .end, toDisplayPoint: CGPoint(x: 100, y: 16)
+                ) == nil else { return nil }
+            }
             func locate(_ query: String) -> LocatedText? {
                 PdfTextLocator.locate(pageNumber: number, query: query, in: document, pageString: text)
             }
@@ -153,22 +163,50 @@ final class PdfTextComparisonHarnessTests: XCTestCase {
                     return nil
                 }
                 let target: CGPoint
+                let targetGlyph: Int?
+                let targetFraction: Double?
                 switch probe.target {
-                case let .character(word, offset):
+                case let .character(word, offset, fraction):
                     guard let range = PdfTextSelectionMath.firstMatch(of: word, in: text),
                           range.contains(range.lowerBound + offset),
                           let char = page.selection(for: NSRange(location: range.lowerBound + offset, length: 1))
                     else { return nil }
                     let bounds = char.bounds(for: page)
-                    let geometry = PdfTextLocator.uiRect(fromPageSpace: bounds, page: page)
-                    target = CGPoint(x: geometry.x + 0.5 * geometry.width, y: geometry.y + 0.5 * geometry.height)
-                case .afterLine:
-                    target = CGPoint(x: dimensions.width + 1_000, y: rect.y + rect.height / 2)
+                    let nativePoint = CGRect(x: bounds.minX + fraction * bounds.width,
+                                             y: bounds.midY, width: 0, height: 0)
+                    let geometry = PdfTextLocator.uiRect(fromPageSpace: nativePoint, page: page)
+                    target = CGPoint(x: geometry.x, y: geometry.y)
+                    targetGlyph = range.lowerBound + offset
+                    targetFraction = fraction
+                case .beforeLine, .afterLine:
+                    let x: Double
+                    if case .beforeLine = probe.target { x = 0 } else { x = dimensions.width + 1_000 }
+                    target = CGPoint(x: x, y: rect.y + rect.height / 2)
+                    targetGlyph = nil
+                    targetFraction = nil
                 }
                 let result = PdfTextLocator.resizedPosition(page: page, current: initial,
                     edge: probe.edge == .start ? .start : .end, toDisplayPoint: target)
+                if probes.pinRotatedEndpoints {
+                    guard let selectedText = result?.selectedText,
+                          let outputRect = result?.rects.first
+                    else { return nil }
+                    let start = probe.edge == .end
+                    guard start ? selectedText.hasPrefix(probe.initialQuery) : selectedText.hasSuffix(probe.initialQuery)
+                    else { return nil }
+                    // Compare in native page space, so the asserted endpoint
+                    // is independent of display axis and sign.
+                    func endpoint(_ rect: AnnotationRect) -> Double {
+                        let a = PdfTextLocator.pageSpacePoint(fromDisplay: CGPoint(x: rect.x, y: rect.y), page: page)
+                        let b = PdfTextLocator.pageSpacePoint(
+                            fromDisplay: CGPoint(x: rect.x + rect.width, y: rect.y + rect.height), page: page)
+                        return start ? min(a.x, b.x) : max(a.x, b.x)
+                    }
+                    guard abs(endpoint(rect) - endpoint(outputRect)) < 0.001 else { return nil }
+                }
                 return Golden.Drag(name: probe.name, initialQuery: probe.initialQuery, edge: probe.edge,
-                                   x: target.x, y: target.y, result: result)
+                                   x: target.x, y: target.y, targetGlyph: targetGlyph,
+                                   targetFraction: targetFraction, result: result)
             }
             guard drags.count == probes.drags.count else { return nil }
             snapshot = Golden.Page(page: number, pdfkitText: text, pdfkitCharacterCount: page.numberOfCharacters,
@@ -198,8 +236,16 @@ final class PdfTextComparisonHarnessTests: XCTestCase {
                 .init(name: "extend end on rotated page", initialQuery: "Rotation", edge: .end,
                       target: .character("degrees", offset: 4)),
                 .init(name: "extend start on rotated page", initialQuery: "degrees", edge: .start,
-                      target: .character("Rotation", offset: 2))
-            ])
+                      target: .character("Rotation", offset: 2)),
+                .init(name: "extend end before rotated midpoint", initialQuery: "Rotation", edge: .end,
+                      target: .character("degrees", offset: 4, fraction: 0.25)),
+                .init(name: "extend end after rotated midpoint", initialQuery: "Rotation", edge: .end,
+                      target: .character("degrees", offset: 4, fraction: 0.75)),
+                .init(name: "extend start before rotated midpoint", initialQuery: "degrees", edge: .start,
+                      target: .character("Rotation", offset: 2, fraction: 0.25)),
+                .init(name: "extend start after rotated midpoint", initialQuery: "degrees", edge: .start,
+                      target: .character("Rotation", offset: 2, fraction: 0.75))
+            ], pinRotatedEndpoints: true)
         case "xref-stream-objstm":
             return Probes(quotes: ["Compressed page dictionary"])
         case "text-selection-edge-cases" where page == 1:
@@ -209,15 +255,21 @@ final class PdfTextComparisonHarnessTests: XCTestCase {
                 .init(name: "extend start", initialQuery: "fox", edge: .start,
                       target: .character("The", offset: 1)),
                 .init(name: "clamp end past page", initialQuery: "quick brown", edge: .end, target: .afterLine),
+                .init(name: "reject drag into left margin", initialQuery: "quick brown", edge: .end,
+                      target: .beforeLine),
                 .init(name: "cross pinned start", initialQuery: "quick brown", edge: .end,
                       target: .character("The", offset: 1)),
                 .init(name: "cross pinned end", initialQuery: "fox", edge: .start,
                       target: .character("jumps", offset: 2)),
                 .init(name: "extend across lines", initialQuery: "first line", edge: .end,
-                      target: .character("selection", offset: 3))
+                      target: .character("selection", offset: 3)),
+                .init(name: "extend across lines before midpoint", initialQuery: "first line", edge: .end,
+                      target: .character("selection", offset: 3, fraction: 0.25)),
+                .init(name: "extend across lines after midpoint", initialQuery: "first line", edge: .end,
+                      target: .character("selection", offset: 3, fraction: 0.75))
             ])
         case "text-selection-edge-cases" where page == 2:
-            return Probes(quotes: ["🙂", "é", "ﬁ", "after", "End"])
+            return Probes(quotes: ["🙂", "é", "ﬁ", "fi", "after", "End"])
         case "text-selection-edge-cases":
             return Probes(quotes: ["spanning title", "left second", "right first", "Outside crop", "Footer"])
         default:
