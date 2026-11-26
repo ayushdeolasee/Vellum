@@ -328,6 +328,7 @@ final class WebDocumentSession: DocumentSession {
         }
         let annotations = record?.annotations ?? []
 
+        let previousManifest = try await storage.previousManifest(forKey: localKey)
         let manifest = WebArchive.buildManifest(
             url: url,
             title: record?.title,
@@ -338,7 +339,8 @@ final class WebDocumentSession: DocumentSession {
             snapshotHtml: captured.html,
             pagesJson: pagesJson,
             assets: captured.assets,
-            assetsSkipped: captured.skipped)
+            assetsSkipped: captured.skipped,
+            previous: previousManifest)
 
         // Refresh the local self-contained snapshot so offline fallback
         // matches what was just archived — off the main thread (can be tens of MB).
@@ -466,7 +468,10 @@ actor WebDocumentIO {
             if let content = input.content {
                 record.annotations[index].content = content
             }
-            if let positionData = input.positionData {
+            if var positionData = input.positionData {
+                if let previous = record.annotations[index].positionData {
+                    positionData.inheritUnknownFields(from: previous)
+                }
                 record.annotations[index].positionData = positionData
             }
             // iPad fix (main regressed this): persist an updated pageNumber. A

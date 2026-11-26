@@ -87,6 +87,8 @@ public struct DocumentKey: Hashable, Sendable, Codable, CustomStringConvertible 
 /// with `scrollFraction` from another would produce a position that never
 /// existed on any device.
 public struct ReadingPosition: Hashable, Sendable, Codable {
+    public var unknownFields: [String: JSONValue] = [:]
+
     /// 1-indexed, matching `TabDescriptor.currentPage`.
     public var page: Int
     public var pageCount: Int?
@@ -190,6 +192,8 @@ public enum PositionEvent: Sendable {
 /// A value plus the wall-clock instant the writing device produced it. Used
 /// for every mergeable field whose value is not itself a time.
 public struct Stamped<Value: Hashable & Sendable & Codable>: Hashable, Sendable, Codable {
+    public var unknownFields: [String: JSONValue] = [:]
+
     public var at: Date
     public var value: Value
 
@@ -206,6 +210,8 @@ public struct Stamped<Value: Hashable & Sendable & Codable>: Hashable, Sendable,
 
 /// Per-device open/tab state. Never merged into one answer (see `openElsewhere`).
 public struct OpenState: Hashable, Sendable, Codable {
+    public var unknownFields: [String: JSONValue] = [:]
+
     public var isOpen: Bool
     public var tabOrdinal: Int?
 
@@ -223,6 +229,7 @@ public struct OpenState: Hashable, Sendable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         isOpen = try container.decodeIfPresent(Bool.self, forKey: .isOpen) ?? false
         tabOrdinal = try container.decodeIfPresent(Int.self, forKey: .tabOrdinal)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
     }
 
     /// `tab_ordinal` is written even when absent: the pair is one value, and a
@@ -232,6 +239,7 @@ public struct OpenState: Hashable, Sendable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(isOpen, forKey: .isOpen)
         try container.encode(tabOrdinal, forKey: .tabOrdinal)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }
 
@@ -290,7 +298,7 @@ public struct PositionDeviceRecord: Hashable, Sendable, Codable {
             title = try container.decodeIfPresent(Stamped<String>.self, forKey: .title)
             openState = try container.decodeIfPresent(Stamped<OpenState>.self, forKey: .openState)
             unknownFields = try PositionJSON.unknownFields(
-                in: decoder, known: CodingKeys.allCases.map(\.rawValue))
+                in: decoder, excluding: CodingKeys.self)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -300,7 +308,7 @@ public struct PositionDeviceRecord: Hashable, Sendable, Codable {
             try container.encodeIfPresent(closedAt, forKey: .closedAt)
             try container.encodeIfPresent(title, forKey: .title)
             try container.encodeIfPresent(openState, forKey: .openState)
-            try PositionJSON.encode(unknownFields, to: encoder)
+            try PositionJSON.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
         }
     }
 
@@ -369,7 +377,7 @@ public struct PositionDeviceRecord: Hashable, Sendable, Codable {
             result[key] = pair.value
         }
         unknownFields = try PositionJSON.unknownFields(
-            in: decoder, known: CodingKeys.allCases.map(\.rawValue))
+            in: decoder, excluding: CodingKeys.self)
         fileNameVersion = nil
     }
 
@@ -383,7 +391,7 @@ public struct PositionDeviceRecord: Hashable, Sendable, Codable {
         var byRawKey: [String: DocumentEntry] = [:]
         for (key, entry) in documents { byRawKey[key.rawValue] = entry }
         try container.encode(byRawKey, forKey: .documents)
-        try PositionJSON.encode(unknownFields, to: encoder)
+        try PositionJSON.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 
     /// Drops the least-recently-touched documents. Only ever applied to the
@@ -494,4 +502,44 @@ public enum PositionCoding {
         }
         return decoder
     }()
+}
+
+extension ReadingPosition {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        page = try container.decode(Int.self, forKey: .page)
+        pageCount = try container.decodeIfPresent(Int.self, forKey: .pageCount)
+        scrollFraction = try container.decodeIfPresent(Double.self, forKey: .scrollFraction)
+        anchorPrefix = try container.decodeIfPresent(String.self, forKey: .anchorPrefix)
+        anchorSuffix = try container.decodeIfPresent(String.self, forKey: .anchorSuffix)
+        viewportOffset = try container.decodeIfPresent(Double.self, forKey: .viewportOffset)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(page, forKey: .page)
+        try container.encodeIfPresent(pageCount, forKey: .pageCount)
+        try container.encodeIfPresent(scrollFraction, forKey: .scrollFraction)
+        try container.encodeIfPresent(anchorPrefix, forKey: .anchorPrefix)
+        try container.encodeIfPresent(anchorSuffix, forKey: .anchorSuffix)
+        try container.encodeIfPresent(viewportOffset, forKey: .viewportOffset)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension Stamped {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        at = try container.decode(Date.self, forKey: .at)
+        value = try container.decode(Value.self, forKey: .value)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(at, forKey: .at)
+        try container.encode(value, forKey: .value)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
 }

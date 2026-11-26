@@ -543,7 +543,11 @@ final class WebLibraryStorageTests: XCTestCase {
             layout.archivesDir.appendingPathComponent("Same Title.vellumweb"),
             data: Data("occupied".utf8))
 
+        let indexURL = try XCTUnwrap(layout.indexPath)
+        container.seed(indexURL, data: Data(#"{"version":1,"entries":{},"future":null}"#.utf8))
         let name = try await storage.reserveManagedArchiveName(forKey: key)
+        let index = try JSONDecoder().decode(WebArchiveIndex.Contents.self, from: XCTUnwrap(container.peek(indexURL)))
+        XCTAssertEqual(index.unknownFields["future"], .null)
 
         XCTAssertEqual(name, "Same Title 2.vellumweb")
         XCTAssertGreaterThanOrEqual(container.metadataQueryCount, 1)

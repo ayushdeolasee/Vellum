@@ -489,6 +489,20 @@ enum VellumBundle {
 
     /// Union the imported conversation with any local one by message id, sort by
     /// created_at, then apply the per-document caps (AiPersistence contract).
+    private static func mergedMessages(local: [AiMessage], incoming: [AiMessage]) -> [AiMessage] {
+        var indices: [String: Int] = [:]
+        var merged: [AiMessage] = []
+        for message in local + incoming {
+            if let index = indices[message.id] {
+                merged[index].inheritUnknownFields(from: message)
+            } else {
+                indices[message.id] = merged.count
+                merged.append(message)
+            }
+        }
+        return AiPersistence.limitedMessages(merged.sorted { $0.createdAt < $1.createdAt })
+    }
+
     private static func mergeConversations(_ incomingData: Data, forKey key: String) throws {
         // Both sides go through the same lossy decode the live loader uses, so
         // one unreadable message costs that message rather than a conversation
@@ -515,13 +529,7 @@ enum VellumBundle {
         guard !incoming.isEmpty || !local.isEmpty else { return }
 
         // Local kept on an id collision (first occurrence wins).
-        var seen = Set<String>()
-        var merged: [AiMessage] = []
-        for message in local + incoming where seen.insert(message.id).inserted {
-            merged.append(message)
-        }
-        merged.sort { $0.createdAt < $1.createdAt }
-        let capped = AiPersistence.limitedMessages(merged)
+        let capped = mergedMessages(local: local, incoming: incoming)
         guard !capped.isEmpty else { return }
         let data = try JSONEncoder().encode(capped)
         try DocumentDataStore.saveConversationsData(forKey: key, data: data)
@@ -548,13 +556,7 @@ enum VellumBundle {
         }
         guard !incoming.isEmpty || !local.isEmpty else { return }
 
-        var seen = Set<String>()
-        var merged: [AiMessage] = []
-        for message in local + incoming where seen.insert(message.id).inserted {
-            merged.append(message)
-        }
-        merged.sort { $0.createdAt < $1.createdAt }
-        let capped = AiPersistence.limitedMessages(merged)
+        let capped = mergedMessages(local: local, incoming: incoming)
         guard !capped.isEmpty else { return }
         try await DocumentDataStore.saveConversationsData(
             forKey: key, data: JSONEncoder().encode(capped), coordinator: coordinator)

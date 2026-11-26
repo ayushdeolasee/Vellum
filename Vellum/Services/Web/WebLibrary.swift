@@ -277,6 +277,7 @@ enum WebLibrary {
                 // Unreadable source: don't delete it — leave it for inspection.
                 return false
             }
+            dest.unknownFields.fillMissing(from: src.unknownFields)
             WebArchive.mergeAnnotations(&dest.annotations, incoming: src.annotations)
             dest.saved = dest.saved || src.saved
             dest.savedAt = dest.savedAt ?? src.savedAt

@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Number fidelity, precisely: a number is tried as `Int`, then `Decimal`, then
 /// `Double`. `Decimal` sits in the middle because it is the only one of the
-/// three that survives a value outside `Int`'s range without losing digits —
+/// three that can retain more integer digits than `Double` —
 /// `12345678901234567890` becomes `1.2345678901234567e+19` through `Double` and
 /// comes back out mangled, which for a cross-device file is a v1 build
 /// corrupting a v2 build's field while claiming to merely carry it.
@@ -14,7 +14,7 @@ import Foundation
 /// `2`. That is a limit of `JSONEncoder`, not a choice here — it emits `2` for
 /// `Double(2.0)` and for `Decimal(string: "2.0")` alike, and `JSONDecoder`
 /// normalizes both on the way in, so no case of this enum can round-trip the
-/// trailing `.0`. Values are preserved; JSON number *spelling* is normalized.
+/// trailing `.0`. Precision is bounded by Decimal and Double.
 /// Pinned by "An integral float from a future version carries its value, not
 /// its spelling".
 public indirect enum JSONValue: Hashable, Sendable, Codable {
@@ -70,23 +70,35 @@ public indirect enum JSONValue: Hashable, Sendable, Codable {
         init?(intValue: Int) { nil }
     }
 
-    static func unknownFields(in decoder: Decoder, known: [String]) throws -> [String: JSONValue] {
+    /// Decode only unrecognized keys. Known fields keep their type-specific
+    /// decoding, including legacy defaults, dates and explicit nulls.
+    public static func unknownFields<Key: CodingKey>(
+        in decoder: Decoder, excluding: Key.Type
+    ) throws -> [String: JSONValue] {
         let container = try decoder.container(keyedBy: AnyKey.self)
-        let knownKeys = Set(known)
         var extras: [String: JSONValue] = [:]
-        for key in container.allKeys where !knownKeys.contains(key.stringValue) {
+        for key in container.allKeys where Key(stringValue: key.stringValue) == nil {
             extras[key.stringValue] = try container.decode(JSONValue.self, forKey: key)
         }
         return extras
     }
 
-    static func encode(_ fields: [String: JSONValue], to encoder: Encoder) throws {
+    public static func encode<Key: CodingKey>(
+        _ fields: [String: JSONValue], to encoder: Encoder, excluding: Key.Type
+    ) throws {
         guard !fields.isEmpty else { return }
         var container = encoder.container(keyedBy: AnyKey.self)
-        for (name, value) in fields {
+        for (name, value) in fields where Key(stringValue: name) == nil {
             try container.encode(value, forKey: AnyKey(name))
         }
     }
 }
 
 public typealias PositionJSON = JSONValue
+
+public extension Dictionary where Key == String, Value == JSONValue {
+    /// The existing version owns a colliding key, including explicit null.
+    mutating func fillMissing(from other: Self) {
+        merge(other) { current, _ in current }
+    }
+}

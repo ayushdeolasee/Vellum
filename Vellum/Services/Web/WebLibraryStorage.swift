@@ -230,6 +230,34 @@ actor WebLibraryStorage {
         }
     }
 
+    /// The unpacked snapshot is local, while a managed archive can arrive
+    /// independently from another device. Rebuilding must retain both sets.
+    func previousManifest(forKey key: String) async throws -> ArchiveManifest? {
+        var installed = try WebArchive.installedManifest(forKey: key)
+        let managed: ArchiveManifest? = try await withStorageContext { context in
+            switch context {
+            case .direct(let layout):
+                guard let path = Self.existingManagedArchiveURLDirect(forKey: key, layout: layout)
+                else { return nil }
+                _ = WebICloud.materialize(at: path)
+                return try WebArchive.readManifest(at: path)
+            case .coordinated(let container, let layout):
+                guard let item = try await Self.existingManagedArchiveMetadata(
+                    forKey: key, layout: layout, container: container, readyOnly: false)
+                else { return nil }
+                let path = layout.archivesDir.appendingPathComponent(item.name)
+                return try await container.read(path, materializing: .downloadIfNeeded(timeout: 10)) {
+                    try WebArchive.readManifest(data: $0)
+                }
+            }
+        }
+        if let managed {
+            guard installed != nil else { return managed }
+            installed?.inheritUnknownFields(from: managed)
+        }
+        return installed
+    }
+
     func readManagedArchive(forKey key: String) async throws -> Data? {
         await acquireIndex()
         defer { releaseIndex() }

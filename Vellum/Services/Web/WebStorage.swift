@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // Where the web library lives on disk (issue #29 follow-up): the user picks a
 // storage location once — iCloud Drive (everything syncs: offline copies AND
@@ -395,6 +396,8 @@ struct WebStorageLayout: Equatable, Sendable {
 /// truth, so losing it (e.g. an iCloud conflict) is never data loss.
 enum WebArchiveIndex {
     struct Contents: Codable {
+        var unknownFields: [String: JSONValue] = [:]
+
         var version: Int
         var entries: [String: String]
 
@@ -1171,13 +1174,17 @@ enum WebStorageMigrator {
         if isInk {
             guard let incoming = try? JSONDecoder().decode(WebInkRecord.self, from: source),
                   let current = try? JSONDecoder().decode(WebInkRecord.self, from: destination) else { return nil }
-            let newer = WebArchive.newerThan(incoming.updatedAt, current.updatedAt)
-            return (newer ? source : destination, newer)
+            let merged = WebInkStore.relocationSnapshot(current: current, incoming: incoming)
+            if merged == current { return (destination, false) }
+            if merged == incoming { return (source, true) }
+            guard let data = try? WebLibrary.jsonEncoderPretty.encode(merged) else { return nil }
+            return (data, true)
         }
         guard let incoming = try? JSONDecoder().decode(WebPageRecord.self, from: source),
               var current = try? JSONDecoder().decode(WebPageRecord.self, from: destination)
         else { return nil }
         let original = current
+        current.unknownFields.fillMissing(from: incoming.unknownFields)
         WebArchive.mergeAnnotations(&current.annotations, incoming: incoming.annotations)
         current.saved = current.saved || incoming.saved
         current.savedAt = current.savedAt ?? incoming.savedAt
@@ -1221,6 +1228,13 @@ enum WebStorageMigrator {
         do {
             sourceIndex = try await loadIndex(for: source, store: sourceStore)
             destinationIndex = try await loadIndex(for: destination, store: destinationStore)
+            if destination.pretty {
+                let original = destinationIndex.unknownFields
+                destinationIndex.unknownFields.fillMissing(from: sourceIndex.unknownFields)
+                if destinationIndex.unknownFields != original {
+                    try await saveIndex(destinationIndex, for: destination, store: destinationStore)
+                }
+            }
         } catch {
             return false
         }
@@ -1708,5 +1722,25 @@ enum WebStorageMigrator {
             // elsewhere via `adoptRecordFile`).
             _ = rmdir(dir.path)
         }
+    }
+}
+
+extension WebArchiveIndex.Contents {
+    private enum CodingKeys: String, CodingKey {
+        case version, entries
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        entries = try container.decode([String:String].self, forKey: .entries)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(entries, forKey: .entries)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }
