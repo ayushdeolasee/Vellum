@@ -7,6 +7,72 @@ import Testing
 
 @Suite("Shared folder storage", .serialized, .isolatedStorage)
 struct SyncedFolderStorageTests {
+    @Test("Shared PDFs import, reopen and relink by verified identity without deleting the prior PDF")
+    @MainActor
+    func sharedPDFLifecycle() async throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let shared = tmp.appendingPathComponent("Users/alice/Vellum", isDirectory: true)
+        let local = tmp.appendingPathComponent("local/web", isDirectory: true)
+        try fm.createDirectory(at: shared, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+        let savedOverride = WebLibrary.storeDirOverride
+        WebLibrary.storeDirOverride = local
+        defer { WebLibrary.storeDirOverride = savedOverride }
+        let suite = "vellum.shared-pdf-tests.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try await AppDefaults.withDefaults(defaults) {
+            WebStorageSettings.selectSyncedFolder(path: shared.path, bookmark: Data())
+            let coordinator = StorageCoordinator(storeDir: local, rootResolver: { nil }, containerFactory: { nil },
+                                                conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+            await coordinator.start()
+            do {
+                let base = DocumentAccessResolver(store: DocumentAccessBookmarkStore(directory: tmp),
+                                                  adapter: SystemDocumentAccessAdapter(),
+                                                  libraryDirectory: { tmp.appendingPathComponent("managed") },
+                                                  appOwnedRoots: { [] })
+                let resolver = try await base.configured(for: coordinator)
+                let backend = PdfSessionBackend()
+                for (fixture, shouldStamp) in [("classic-two-column", true), ("digitally-signed", false)] {
+                    let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL(fixture))
+                    let source = tmp.appendingPathComponent(fixture + ".pdf")
+                    try original.write(to: source)
+                    let doc = try await resolver.openPickedPDF(url: source, sessionId: "picked") { path, id in
+                        try await backend.open(path: path, sessionId: id).info
+                    }
+                    let key = try #require(doc.docId)
+                    let destination = URL(fileURLWithPath: doc.pdfPath)
+                    let bytes = try Data(contentsOf: destination)
+                    #expect(try Data(contentsOf: source) == original)
+                    #expect(bytes.starts(with: original))
+                    #expect(shouldStamp ? SharedPDFImport.readID(bytes) == key : key == DocumentIdentity.byteHash(original))
+                    #expect(shouldStamp || bytes == original)
+                    try await DocumentDataStore.touch(document: doc, coordinator: coordinator)
+                    let path = try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)?.lastKnownPath
+                    #expect(path == "PDFs/" + source.lastPathComponent)
+                    let reopened = try await resolver.openPickedPDF(url: destination, sessionId: "again") { path, id in
+                        try await backend.open(path: path, sessionId: id).info
+                    }
+                    #expect(reopened.pdfPath == doc.pdfPath && reopened.docId == key)
+                    let next = destination.deletingLastPathComponent().appendingPathComponent("Moved-" + source.lastPathComponent)
+                    try fm.copyItem(at: destination, to: next)
+                    try await resolver.relink(key: key, isDocIdKeyed: false, to: next, coordinator: coordinator).get()
+                    #expect(try Data(contentsOf: destination) == bytes)
+                    let moved = try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)
+                    #expect(moved?.lastKnownPath == "PDFs/" + next.lastPathComponent)
+                    #expect(!resolver.sourceExists(key: key, lastKnownPath: source.path))
+                    #expect(!resolver.sourceExists(key: key, lastKnownPath: "PDFs/../../" + source.lastPathComponent))
+                }
+                #expect(!fm.fileExists(atPath: tmp.appendingPathComponent("managed").path))
+            } catch {
+                await coordinator.stop()
+                throw error
+            }
+            await coordinator.stop()
+        }
+    }
+
     @Test("Shared-folder layout matches iCloud paths and selects a distinct backend")
     func layout() {
         let root = URL(fileURLWithPath: "/fixture/library", isDirectory: true)

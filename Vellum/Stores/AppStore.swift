@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import PDFKit
+import VellumCore
 #if os(macOS)
 import AppKit
 import UniformTypeIdentifiers
@@ -1034,7 +1035,14 @@ final class AppStore {
                             url: savedDocument.pdfPath, sessionId: sessionId)
                     }
                 } else {
-                    opened = try await documentAccess.restoreSavedPDF(
+                    let access = try await documentAccess.configured(for: workspace?.storageCoordinator)
+                    var savedDocument = savedDocument
+                    if let shared = access.sharedPDFs, let id = savedDocument.docId, let coordinator = workspace?.storageCoordinator,
+                       let meta = try await DocumentDataStore.loadMeta(forKey: id, coordinator: coordinator) {
+                        guard let url = shared.resolve(meta.lastKnownPath) else { throw DocumentAccessError.unavailable(meta.lastKnownPath) }
+                        savedDocument.pdfPath = url.path
+                    }
+                    opened = try await access.restoreSavedPDF(
                         savedDocument,
                         sessionId: sessionId,
                         resolveExistingPath: resolveExistingDocumentPath
@@ -1442,13 +1450,21 @@ final class AppStore {
         if isArchive {
             doc = try await sessions.openVellumwebFile(path: path, sessionId: sessionId)
         } else {
-            doc = try await documentAccess.openPickedPDF(
+            let access = try await documentAccess.configured(for: workspace?.storageCoordinator)
+            doc = try await access.openPickedPDF(
                 url: URL(fileURLWithPath: path),
                 sessionId: sessionId
             ) { [sessions] path, sessionId in
                 try await sessions.openFile(path: path, sessionId: sessionId)
             } close: { [sessions] sessionId in
                 try? await sessions.closeFile(sessionId: sessionId)
+            }
+            if access.sharedPDFs != nil, let coordinator = workspace?.storageCoordinator {
+                do { try await DocumentDataStore.touch(document: doc, force: true, coordinator: coordinator) }
+                catch {
+                    try? await sessions.closeFile(sessionId: sessionId)
+                    throw error
+                }
             }
         }
         try await adoptOpenedDocument(doc, sessionId: sessionId)
@@ -1459,6 +1475,48 @@ final class AppStore {
             NotificationCenter.default.post(name: .vellumAnnotationsUpdated, object: nil)
         }
     }
+
+    #if os(macOS)
+    /// Save a verified byte copy before retargeting the tab. Export outside a
+    /// shared root leaves the session attached to its shared notes and position.
+    func savePDFCopy(sessionId: String, to destination: URL) async throws {
+        guard let original = tabs.first(where: { $0.id == sessionId })?.document,
+              original.kind == .pdf else { return }
+        let access = try await documentAccess.configured(for: workspace?.storageCoordinator)
+        try await awaitTeardowns(ofDocumentAt: destination.path)
+        guard await teardowns.awaitPersistence(for: original),
+              tabs.first(where: { $0.id == sessionId })?.document == original else { throw CancellationError() }
+        try await sessions.saveFile(sessionId: sessionId)
+        let staysShared = try await Task.detached(priority: .userInitiated) {
+            let source = URL(fileURLWithPath: original.pdfPath)
+            if source.resolvingSymlinksInPath().path == destination.resolvingSymlinksInPath().path { return true }
+            let bytes = try Data(contentsOf: source)
+            if let location = access.sharedPDFs {
+                guard let id = original.docId,
+                      SharedPDFIdentity.storageKey(in: bytes, readerID: SharedPDFImport.readID(bytes)) == id else {
+                    throw DocumentAccessError.unavailable(source.path)
+                }
+                if location.relativePath(for: destination) != nil {
+                    let store = LocalFolderFileStore(root: location.root)
+                    let before = try await store.read(destination)
+                    guard before == nil || before == bytes,
+                          try await store.replace(destination, with: bytes, ifCurrent: before) else {
+                        throw SessionServiceError.io("Choose an unused shared PDF filename.")
+                    }
+                    return false
+                }
+                guard !destination.standardizedFileURL.pathComponents.starts(with: location.root.pathComponents) else {
+                    throw DocumentAccessError.unavailable(destination.path)
+                }
+            }
+            try bytes.write(to: destination, options: .atomic)
+            return access.sharedPDFs != nil
+        }.value
+        guard !staysShared, tabs.first(where: { $0.id == sessionId })?.document == original else { return }
+        await closeTab(sessionId)
+        await openFile(path: destination.path)
+    }
+    #endif
 
     private func webDocumentKey(inArchiveAt path: String) async throws -> DocumentKey {
         let archiveUrl = URL(fileURLWithPath: path)
@@ -1620,6 +1678,18 @@ final class AppStore {
         _ imported: VellumBundle.Imported, to destination: URL,
         resolveScratchpadConflict: @escaping @MainActor (String) async throws -> VellumBundle.ScratchpadDecision
     ) async throws -> (path: String, failedAttachments: [String]) {
+        let shared = imported.manifest.kind == "pdf"
+            ? try await documentAccess.configured(for: workspace?.storageCoordinator).sharedPDFs : nil
+        var payload = imported
+        if let shared {
+            guard shared.relativePath(for: destination) != nil else { throw DocumentAccessError.unavailable(destination.path) }
+            let prepared = await Task.detached(priority: .userInitiated) {
+                SharedPDFIdentity.prepare(imported.documentData, preferredID: imported.manifest.docId, readID: SharedPDFImport.readID)
+            }.value
+            payload.documentData = prepared.bytes
+            payload.manifest.docId = prepared.key
+        }
+        let imported = payload
         let prepared = await Task.detached(priority: .userInitiated) {
             // Use the same realpath identity as the reopen/teardown boundary.
             // Foundation can retain /var where realpath returns /private/var;
@@ -1637,7 +1707,7 @@ final class AppStore {
                 $0.appendingPathComponent($1)
             }
             var key = imported.manifest.docId
-            if imported.manifest.kind == "pdf",
+            if shared == nil, imported.manifest.kind == "pdf",
                let provider = CGDataProvider(data: imported.documentData as CFData),
                let raw = CGPDFDocument(provider), let embedded = PdfMetadata.documentId(raw) {
                 key = embedded
@@ -1668,7 +1738,18 @@ final class AppStore {
                 guard await AiPersistence.awaitPendingFlush() else {
                     throw SessionServiceError.io("Existing conversation changes could not be saved. Restore storage access and retry the import.")
                 }
-                let installedKey = try await Self.writeImportedDocument(imported, to: destination)
+                let installedKey: String
+                if let shared {
+                    let store = LocalFolderFileStore(root: shared.root)
+                    guard try await store.replace(destination, with: imported.documentData, ifCurrent: nil),
+                          let saved = try await store.read(destination), saved == imported.documentData,
+                          SharedPDFIdentity.storageKey(in: saved, readerID: SharedPDFImport.readID(saved)) == key else {
+                        throw SessionServiceError.io("Could not confirm the imported PDF. Its sidecar was kept unchanged.")
+                    }
+                    installedKey = key
+                } else {
+                    installedKey = try await Self.writeImportedDocument(imported, to: destination)
+                }
                 guard installedKey == key else {
                     throw SessionServiceError.io("The imported document identity could not be confirmed. Its sidecar was kept unchanged.")
                 }
@@ -1806,15 +1887,21 @@ final class AppStore {
         let manifest = imported.manifest
         let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
 
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = manifest.documentFile
-        if kind == .web, let archive = UTType(filenameExtension: "vellumweb") {
-            panel.allowedContentTypes = [archive]
-        } else if kind == .pdf {
-            panel.allowedContentTypes = [.pdf]
+        let destination: URL
+        if kind == .pdf, let shared = try await documentAccess.configured(for: workspace?.storageCoordinator).sharedPDFs {
+            destination = try await SharedPDFImport.availableDestination(named: manifest.documentFile, into: shared)
+        } else {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = manifest.documentFile
+            if kind == .web, let archive = UTType(filenameExtension: "vellumweb") {
+                panel.allowedContentTypes = [archive]
+            } else if kind == .pdf {
+                panel.allowedContentTypes = [.pdf]
+            }
+            guard panel.runModal() == .OK, let selected = panel.url else { return nil }
+            destination = selected
         }
-        guard panel.runModal() == .OK, let destination = panel.url else { return nil }
 
         let result = try await importVellumBundle(imported, to: destination) { [self] key in
             let coordinator = workspace?.storageCoordinator

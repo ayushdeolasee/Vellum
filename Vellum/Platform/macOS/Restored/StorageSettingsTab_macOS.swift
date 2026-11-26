@@ -44,6 +44,9 @@ struct StorageSettingsTab: View {
     @State private var relocationReloadTask: Task<Void, Never>?
     @State private var pendingLocation: PendingLocation?
     @State private var isPickingSharedFolder = false
+    @State private var migratingPDFs = false
+    @State private var migrationMessage: String?
+    @State private var confirmPDFRollback = false
 
     // Pending destructive confirmations (user data confirms with the title).
     @State private var pendingDeleteAll: StorageInventory.DocumentRow?
@@ -370,7 +373,7 @@ struct StorageSettingsTab: View {
                     .disabled(relocationStatus.isInProgress || relocationStatus.needsRecovery)
             }
             .accessibilityIdentifier("storage.locationPicker")
-            .disabled(isPickingSharedFolder)
+            .disabled(isPickingSharedFolder || migratingPDFs)
 
             if relocationStatus.isInProgress {
                 ProgressView(relocationStatus.message)
@@ -421,9 +424,28 @@ struct StorageSettingsTab: View {
                 }
                 .accessibilityIdentifier("storage.changeFolder")
             }
+            if storageMode == .syncedFolder, sharedFolderStatus?.activeSharedFolderRoot != nil {
+                Button("Migrate Local PDFs…") {
+                    let picker = NSOpenPanel()
+                    picker.allowedContentTypes = [.pdf]
+                    picker.allowsMultipleSelection = true
+                    picker.message = "Choose the original PDFs whose notes, attachments, chats and reading positions to copy into this library."
+                    guard picker.runModal() == .OK else { return }
+                    runPDFMigration(picker.urls)
+                }.disabled(migratingPDFs)
+                Button("Resume PDF Migration") { runPDFMigration([]) }.disabled(migratingPDFs)
+                Button("Undo PDF Migration…") { confirmPDFRollback = true }.disabled(migratingPDFs)
+                    .confirmationDialog("Undo the PDF migration?", isPresented: $confirmPDFRollback) {
+                        Button("Undo Migration") { runPDFMigration([], rollback: true) }
+                    } message: {
+                        Text("The original PDFs and local data are preserved. Migrated copies are moved to the shared folder’s trash.")
+                    }
+                if migratingPDFs { ProgressView("Updating shared PDFs…") }
+                if let migrationMessage { Text(migrationMessage).font(.footnote) }
+            }
             if storageMode == .syncedFolder {
                 Button("Change Shared Folder…", action: chooseSyncedFolder)
-                    .disabled(isPickingSharedFolder)
+                    .disabled(isPickingSharedFolder || migratingPDFs)
                     .accessibilityIdentifier("storage.changeSharedFolder")
             }
         } header: {
@@ -511,6 +533,20 @@ struct StorageSettingsTab: View {
             sharedFolderStatus = nil
             WebStorageRelocator.selectSyncedFolder(selection, coordinator: workspace.storageCoordinator)
             refreshSettings()
+        }
+    }
+
+    private func runPDFMigration(_ sources: [URL], rollback: Bool = false) {
+        guard !migratingPDFs else { return }
+        migratingPDFs = true
+        migrationMessage = nil
+        Task {
+            defer { migratingPDFs = false }
+            do {
+                try await workspace.migrateSharedPDFs(sources, rollback: rollback)
+                migrationMessage = rollback ? "PDF migration undone." : "PDF migration complete."
+                await reload()
+            } catch { migrationMessage = error.localizedDescription }
         }
     }
 
@@ -611,9 +647,10 @@ struct StorageSettingsTab: View {
 
     private func reload() async {
         isLoading = true
+        let coordinator = workspace.storageCoordinator
         let listing = await Task.detached(priority: .userInitiated) { () -> Listing in
             Listing(
-                documents: DocumentDataStore.listDocuments(),
+                documents: await DocumentDataStore.listDocuments(coordinator: coordinator),
                 web: WebLibrary.listSnapshotStorage(),
                 webRecordBytes: WebLibrary.totalRecordBytes(),
                 legacyScratchpad: ScratchpadPersistence.listLegacyEntries().map {
@@ -817,30 +854,11 @@ struct StorageSettingsTab: View {
         panel.allowedContentTypes = [.pdf]
         panel.prompt = "Relink"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let path = url.path
-        let key = row.key
-        let docIdKeyed = row.isDocIdKeyed
-        let title = row.title
         Task {
-            let verified = await Task.detached { () -> Bool in
-                // A docId-keyed entry can be proven: the picked PDF must carry
-                // the same embedded /VellumDocId. A path-hash fallback entry has
-                // no embedded id, so the user's pick is accepted as-is.
-                if docIdKeyed { return PdfMetadata.documentId(atPath: path) == key }
-                return true
-            }.value
-            guard verified else {
-                relinkFailureTitle = title
-                return
-            }
-            do {
-                try await DocumentDataStore.relink(
-                    forKey: key,
-                    newPath: path,
-                    coordinator: workspace.storageCoordinator)
-                await reload()
-            } catch {
-                relinkFailureTitle = title
+            switch await DocumentAccessResolver.live.relink(key: row.key, isDocIdKeyed: row.isDocIdKeyed,
+                                                            to: url, coordinator: workspace.storageCoordinator) {
+            case .success: await reload()
+            case .failure: relinkFailureTitle = row.title
             }
         }
     }

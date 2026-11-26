@@ -3,6 +3,7 @@ import AppKit
 #endif
 import Foundation
 import Observation
+import VellumCore
 
 // Window-level owner of the split-screen layout. Holds the pane tree, which pane
 // is focused, the one shared SessionService, and the app-global shell state that
@@ -502,6 +503,41 @@ final class WorkspaceStore {
                     self.recoveryDocumentIsClosed(key) && !self.recoveryHasPendingDrafts(key)
                 }
             }
+        }
+    }
+    #endif
+
+    #if os(macOS)
+    func migrateSharedPDFs(_ sources: [URL], rollback: Bool) async throws {
+        let coordinator = storageCoordinator
+        let location = try await DocumentAccessResolver.live.configured(for: coordinator).sharedPDFs
+        guard let location else { throw LibraryFileError.unavailable }
+        try await performStorageRecovery(key: nil, path: location.root.path) {
+            guard self.recoveryDocumentIsClosed(nil)
+            else { throw SessionServiceError.io("Close the open documents before migrating PDFs.") }
+            guard await self.flushScratchpadsForTermination(), await AiPersistence.awaitPendingFlush() else {
+                throw ConflictRecoveryError.pendingChanges
+            }
+            try await self.positions.store.prepareForExternalRekey()
+            guard self.recoveryDocumentIsClosed(nil), !self.recoveryHasPendingDrafts(nil) else {
+                throw ConflictRecoveryError.pendingChanges
+            }
+            let local = WebLibrary.storeDir.deletingLastPathComponent()
+            let result = await coordinator.performExclusiveSharedPDFOperation(root: location.root) {
+                do {
+                    let migration = try SharedPDFMigration(root: location.root, localData: local,
+                        journals: local.appendingPathComponent("PDF Migration Journals", isDirectory: true))
+                    if rollback { try await migration.rollback() }
+                    else {
+                        // Keep the selected external originals readable throughout planning and verification.
+                        let scopes = sources.filter { $0.startAccessingSecurityScopedResource() }
+                        defer { for url in scopes { url.stopAccessingSecurityScopedResource() } }
+                        try await migration.migrate(sources, readID: SharedPDFImport.readID)
+                    }
+                    return Result<Void, Error>.success(())
+                } catch { return .failure(error) }
+            }
+            try result.get()
         }
     }
     #endif
