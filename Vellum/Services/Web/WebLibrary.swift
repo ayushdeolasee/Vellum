@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import VellumCore
 
 // Webpage sidecar records + the saved-pages library — port of the storage half
 // of src-tauri/src/web_page.rs. Uses the exact same on-disk layout under the
@@ -413,6 +414,7 @@ enum WebLibrary {
         }
         var out = Set<String>()
         for name in names {
+            guard !SyncArtifact.matches(name) else { continue }
             // Ink sidecars (`<key>.ink.json`) also end in `.json` but are NOT
             // page records — they relocate through `WebInkStore.inkFileNames` /
             // `adoptInkFile` and must never be treated as (or decoded as) a

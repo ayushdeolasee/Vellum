@@ -24,17 +24,24 @@ struct ReadOnlyLibraryFileStoreTests {
             let record = positions.appendingPathComponent("a b#%.json", isDirectory: false)
             let bytes = Data("{malformed".utf8)
             try bytes.write(to: record)
-            let siblings = ["b.json", "notes.txt", ".hidden.json", "b.sync-conflict-1.json", ".syncthing.note.tmp"]
+            let conflict = "b.sync-conflict-20261126-174000-ABCDEFG.json"
+            let siblings = [
+                "b.json", "notes.txt", "notes.tmp-draft.pdf", ".hidden.json", conflict,
+                ".syncthing.note.tmp", ".b.json.tmp-123-abc", ".notes.pdf.vellum-abc.tmp", "b.json.tmp",
+            ]
             for name in siblings { try bytes.write(to: positions.appendingPathComponent(name)) }
 
             let files: any LibraryFileStore = store
             #expect(!files.isCoordinated)
             let entries = try await files.list(positions, suffix: ".json")
             #expect(entries.map(\.name) == [record.lastPathComponent, "b.json"])
+            #expect(try await files.list(positions, suffix: nil).map(\.name) ==
+                [record.lastPathComponent, "b.json", "notes.tmp-draft.pdf", "notes.txt"])
             let entry = try #require(entries.first)
             #expect(entry.url == record && entry.readiness.isReady)
             #expect(entry.byteSize == Int64(bytes.count) && entry.contentModifiedAt != nil)
             #expect(try await files.read(entry.url) == bytes)
+            #expect(try await files.read(positions.appendingPathComponent(conflict)) == bytes)
             let missing = positions.appendingPathComponent("missing")
             #expect(try await files.read(missing) == nil)
             #expect(try await files.list(missing, suffix: nil).isEmpty)
