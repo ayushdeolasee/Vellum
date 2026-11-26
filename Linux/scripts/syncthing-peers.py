@@ -1,12 +1,15 @@
 """Opt-in transport for roundtrip-e2e.sh. All daemon state dies with the containers."""
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid
 import xml.etree.ElementTree as ET
 
@@ -38,9 +41,9 @@ class Peer:
         (self.library / ".stfolder").mkdir()
         docker("run", "-d", "--pull", "never", "--network", network, "--name", name,
                "--user", "0", "--cpus", "1", "--env", "STNOUPGRADE=1", "--env", "STNODEFAULTFOLDER=1",
-               "--mount", f"type=bind,src={self.library},dst=/library",
                "vellum-linux-dev:6.4.3", "sleep", "infinity")
         cleanup.callback(docker, "rm", "-fv", name)
+        self.run("mkdir", "/library")
         docker("cp", binary, name + ":/tmp/syncthing")
         self.run("chmod", "755", "/tmp/syncthing")
         self.run("/tmp/syncthing", "generate", "--home=/tmp/config")
@@ -50,6 +53,27 @@ class Peer:
 
     def run(self, *args):
         docker("exec", self.name, *args)
+
+    def export(self):
+        # Only the synthetic daemon's library is copied. Colima needs no host mounts.
+        shutil.rmtree(self.library)
+        self.library.mkdir()
+        docker("cp", self.name + ":/library/.", self.library)
+
+    def install(self):
+        scratch = "/tmp/snapshot-" + uuid.uuid4().hex
+        docker("cp", self.library, self.name + ":" + scratch)
+        # Keep the marker continuously present while scanners are running.
+        self.run("python3", "-c", """
+import pathlib, shutil, sys
+source, target = pathlib.Path(sys.argv[1]), pathlib.Path('/library')
+for path in target.rglob('*'):
+    relative = path.relative_to(target)
+    if relative.parts[0] != '.stfolder' and path.is_file() and not (source / relative).exists():
+        path.unlink()
+shutil.copytree(source, target, dirs_exist_ok=True)
+shutil.rmtree(source)
+""", scratch)
 
     def start(self, other):
         assert other.device != self.device
@@ -74,6 +98,9 @@ class Peer:
         self.config.find("gui/address").text = "127.0.0.1:8384"
         docker("exec", "-i", self.name, "sh", "-c", "cat > /tmp/config/config.xml",
                input=ET.tostring(self.config))
+        self.launch()
+
+    def launch(self):
         docker("exec", "-d", self.name, "sh", "-c",
                "exec /tmp/syncthing serve --home=/tmp/config --no-browser --no-restart > /tmp/daemon.log 2>&1")
 
@@ -108,14 +135,12 @@ def run(stage, build_container, package):
     opts = ["swift", "test", "-j", "2", "--skip-build", "--force-resolved-versions",
             "--filter", "CrossPlatformRoundTripTests/exchange"]
     with ExitStack() as cleanup:
-        # The vellum profile shares the home directory; only these two newly
-        # created data directories are mounted, never home or an app library.
-        root = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix=".vellum-s9-", dir=Path.home())))
+        root = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="daemon-peers-", dir=stage)))
         (root / ".synthetic-s9").write_text("synthetic\n")
         token = "vellum-s9-" + uuid.uuid4().hex
         binary = os.environ.get("VELLUM_SYNCTHING_BINARY")
         if not binary:
-            image = os.environ.get("VELLUM_SYNCTHING_IMAGE", "syncthing/syncthing:latest")
+            image = os.environ.get("VELLUM_SYNCTHING_IMAGE", "syncthing/syncthing:1.30.0")
             donor = output("create", "--pull", "never", "--network", "none", image)
             cleanup.callback(docker, "rm", "-v", donor)
             binary = root / "syncthing"
@@ -124,7 +149,7 @@ def run(stage, build_container, package):
         cleanup.callback(docker, "network", "rm", token)
         mac = Peer(token + "-a", "mac", root, token, binary, cleanup)
         linux = Peer(token + "-b", "linux", root, token, binary, cleanup)
-        container_root = "/s9/daemon-test"
+        container_root = "/s9/" + token
         docker("exec", build_container, "mkdir", "-p", container_root)
         docker("cp", root / ".synthetic-s9", build_container + ":" + container_root + "/")
 
@@ -140,7 +165,7 @@ def run(stage, build_container, package):
                     command = ["xcodebuild", "-project", project, "-scheme", "Vellum Mac",
                                "-configuration", "Debug", "-destination", "platform=macOS",
                                "-derivedDataPath", derived, "-jobs", "2", "-parallel-testing-enabled", "NO",
-                               "-disableAutomaticPackageResolution", "-skipPackageUpdates",
+                               "OTHER_SWIFT_FLAGS=$(inherited) -j2", "-disableAutomaticPackageResolution", "-skipPackageUpdates",
                                "-only-testing:VellumMacTests/CrossPlatformRoundTripTests", "test"]
                     env.update({"TEST_RUNNER_" + k: v for k, v in env.items()})
                 else:
@@ -151,20 +176,39 @@ def run(stage, build_container, package):
                 # Export a fresh view each time. The build container has no network
                 # and has no host mounts. Copy back only the writer's changes.
                 target = container_root + "/linux"
-                docker("exec", build_container, "mkdir", "-p", target)
+                docker("exec", build_container, "python3", "-c",
+                       "import pathlib,shutil,sys; p=pathlib.Path(sys.argv[1]); "
+                       "shutil.rmtree(p) if p.exists() else None; p.mkdir()", target)
                 docker("cp", str(peer.library) + "/.", build_container + ":" + target)
                 env["VELLUM_S9_SANDBOX"] = container_root
                 args = [arg for k, v in env.items() for arg in ("-e", k + "=" + v)]
                 docker("exec", *args, build_container, *opts, "--package-path", "/s9/pkg", "--scratch-path", "/s9/build")
                 assert output("exec", build_container, "cat", container_root + "/completed-" + step) == step
-                if step != "recover":
-                    docker("cp", build_container + ":" + target + "/.", peer.library)
+                # No bind mount: replace the staging tree with the exact writer
+                # output, including the removal of resolved conflict siblings.
+                shutil.rmtree(peer.library)
+                peer.library.mkdir()
+                docker("cp", build_container + ":" + target + "/.", peer.library)
 
         phase(mac, "prepare")
         phase(linux, "prepare")
         phase(mac, "seed")
         peers = [mac, linux]
+        print(output("exec", mac.name, "/tmp/syncthing", "--version"), flush=True)
+        def ledger(peer):
+            files = {}
+            for file in peer.library.rglob("*"):
+                path = file.relative_to(peer.library)
+                if (not file.is_file() or path.parts[0] in (".stignore", ".stfolder")
+                        or str(path) == ".vellum/index.json.tmp"):
+                    continue
+                name = unicodedata.normalize("NFC", str(path))
+                assert name not in files, f"Duplicate archive spelling: {name}"
+                files[name] = hashlib.sha256(file.read_bytes()).hexdigest()
+            return files
         try:
+            for peer in peers:
+                peer.install()
             mac.start(linux)
             linux.start(mac)
             for peer in peers:
@@ -172,6 +216,7 @@ def run(stage, build_container, package):
             eventually("initial peer connection", lambda: mac.connected(linux) and linux.connected(mac))
             mac.scan()
             def baseline():
+                linux.export()
                 for file in mac.library.rglob("*"):
                     path = file.relative_to(mac.library)
                     if file.is_file() and path.parts[0] not in (".stignore", ".stfolder") and path.name != "index.json.tmp":
@@ -183,24 +228,58 @@ def run(stage, build_container, package):
             eventually("common indexed baseline", lambda: mac.up_to_date(linux) and linux.up_to_date(mac))
             assert not (linux.library / ".vellum/index.json.tmp").exists()
             assert (linux.library / ".stignore").read_bytes() != (mac.library / ".stignore").read_bytes()
+            print("Synthetic peers indexed the same baseline and retained their own .stignore.", flush=True)
             # Disconnect at the bridge, while both databases and scanners remain live.
+            mac.api("system/pause?device=" + linux.device, "POST")
+            linux.api("system/pause?device=" + mac.device, "POST")
             docker("network", "disconnect", token, linux.name)
             eventually("both devices offline", lambda: not mac.connected(linux) and not linux.connected(mac))
+            print("Both fresh device IDs disconnected:", mac.device[:7], linux.device[:7], flush=True)
+            for peer in peers:
+                peer.export()
             phase(mac, "mac-edit")
             phase(linux, "linux-edit")
             for peer in peers:
+                peer.install()
                 peer.scan()
                 assert not list(peer.library.rglob("*.sync-conflict-*"))
             docker("network", "connect", token, linux.name)
+            mac.api("system/resume?device=" + linux.device, "POST")
+            linux.api("system/resume?device=" + mac.device, "POST")
             eventually("both peers reconnected", lambda: mac.connected(linux) and linux.connected(mac))
-            eventually("six actual conflict siblings at both peers",
-                       lambda: all(len(list(p.library.rglob("*.sync-conflict-*"))) == 6 for p in peers))
+            def six_siblings():
+                for peer in peers:
+                    peer.export()
+                return all(len(list(p.library.rglob("*.sync-conflict-*"))) == 6 for p in peers)
+            eventually("six actual conflict siblings at both peers", six_siblings)
             eventually("both conflict directories fully replicated", lambda: mac.up_to_date(linux) and linux.up_to_date(mac))
+            print("Six real conflict siblings replicated to each peer.", flush=True)
             # Freeze the actual daemon outputs before independently consuming either side.
             for peer in peers:
-                docker("stop", peer.name)
+                docker("stop", "-t", "1", peer.name)
             for peer in peers:
+                peer.export()
                 phase(peer, "recover")
+            for peer in peers:
+                docker("start", peer.name)
+                peer.install()
+                peer.launch()
+                eventually(peer.role + " recovery restart", peer.ready)
+                peer.scan()
+            mac.api("system/resume?device=" + linux.device, "POST")
+            linux.api("system/resume?device=" + mac.device, "POST")
+            def restored():
+                for peer in peers:
+                    peer.export()
+                left, right = ledger(mac), ledger(linux)
+                return (left == right and not any(".sync-conflict-" in path for path in left)
+                        and mac.connected(linux) and linux.connected(mac)
+                        and mac.up_to_date(linux) and linux.up_to_date(mac))
+            eventually("restored canonical and archived bytes on both peers", restored)
+            for peer in peers:
+                files = ledger(peer)
+                print(f"{peer.role}: connected, idle, zero needed, {len(files)} identical files, "
+                      f"{sum('/conflicts/' in p for p in files)} archived, zero unresolved siblings.", flush=True)
         except BaseException:
             for peer in peers:
                 subprocess.run(["docker", "--context", "colima-vellum", "exec", peer.name, "tail", "-30", "/tmp/daemon.log"])

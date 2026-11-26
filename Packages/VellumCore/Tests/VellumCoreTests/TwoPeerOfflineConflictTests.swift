@@ -197,13 +197,17 @@ struct PeerLibrary {
     }
 
     // The Mac app injects its typed policies. Portable peers ship the Core preserve policy.
-    func recover() async throws {
-        #if SWIFT_PACKAGE
-        let container = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher(),
-                                               rescanInterval: .milliseconds(80))
+    func recover(macPeer: Bool = true) async throws {
+        let container: FolderSyncedContainer
+        #if !SWIFT_PACKAGE
+        if macPeer {
+            container = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher(),
+                                              rescanInterval: .milliseconds(80), merge: ConflictMerge.decide)
+        } else {
+            container = portableContainer()
+        }
         #else
-        let container = FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher(),
-                                               rescanInterval: .milliseconds(80), merge: ConflictMerge.decide)
+        container = portableContainer()
         #endif
         await container.resume()
         do {
@@ -229,6 +233,11 @@ struct PeerLibrary {
         await container.suspend()
     }
 
+    private func portableContainer() -> FolderSyncedContainer {
+        FolderSyncedContainer(root: root, store: store, watcher: FolderDirectoryWatcher(),
+                              rescanInterval: .milliseconds(80))
+    }
+
     func versions(_ path: String) throws -> [Data] {
         let canonical = url(path)
         let dir = canonical.deletingLastPathComponent().appendingPathComponent("conflicts")
@@ -239,7 +248,7 @@ struct PeerLibrary {
         return try [read(path)] + matches.map { try Data(contentsOf: $0.url) }
     }
 
-    func verifyRecovery() async throws {
+    func verifyRecovery(expectMergedMeta: Bool = true) async throws {
         let pages = try versions(Self.record).map { try JSONDecoder().decode(WebPageRecord.self, from: $0) }
         #expect(pages.map { $0.annotations.map(\.id) } == [["shared", "mac"], ["shared", "linux"]])
         #expect(pages.allSatisfy { $0.unknownFields["future"] == Self.future })
@@ -279,10 +288,12 @@ struct PeerLibrary {
             #expect(capture.snapshotHtml == "<html>\(peer)</html>")
         }
         #if !SWIFT_PACKAGE
-        let merged = try JSONDecoder().decode(DocumentDataStore.Meta.self, from: read(Self.meta))
-        #expect(merged.lastKnownPath == Self.address + "/mac")
-        #expect(merged.title == "Retained title")
-        #expect(merged.unknownFields == ["future_mac": .string("mac"), "future_linux": .string("linux")])
+        if expectMergedMeta {
+            let merged = try JSONDecoder().decode(DocumentDataStore.Meta.self, from: read(Self.meta))
+            #expect(merged.lastKnownPath == Self.address + "/mac")
+            #expect(merged.title == "Retained title")
+            #expect(merged.unknownFields == ["future_mac": .string("mac"), "future_linux": .string("linux")])
+        }
         #endif
         try await verifyPositions()
     }
@@ -315,10 +326,12 @@ struct TwoPeerOfflineConflictTests {
         try await a.edit("mac")
         try await b.edit("linux")
         #expect(try await transport.sync() == PeerLibrary.conflictingPaths)
-        for library in [a, b] {
-            try await library.recover()
-            try await library.verifyRecovery()
-        }
-        #expect(try await transport.sync().isEmpty)
+        try await a.recover()
+        try await b.recover(macPeer: false)
+        try await a.verifyRecovery()
+        try await b.verifyRecovery(expectMergedMeta: false)
+        let remainingConflicts = try await transport.sync()
+        #expect(remainingConflicts == [])
+        for library in [a, b] { try await library.verifyRecovery() }
     }
 }
