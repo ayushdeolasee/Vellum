@@ -209,7 +209,7 @@ enum WebStorageRelocator {
     }
 
     static func pickSyncedFolder() async -> FolderSelection? {
-        await pickFolder(message: "Save a folder for shared-library setup. This build will use local storage for your library.")
+        await pickFolder(message: "Choose where Vellum should keep the shared library.")
     }
 
     private static func pickFolder(message: String) async -> FolderSelection? {

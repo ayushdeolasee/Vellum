@@ -13,6 +13,7 @@ import SwiftUI
 struct StorageSettingsTab: View {
     @Environment(\.palette) private var palette
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(\.scenePhase) private var scenePhase
 
     // Joined-list sources (each listed off-main in `reload`).
     @State private var docEntries: [DocumentDataStore.DocumentDataEntry] = []
@@ -23,6 +24,8 @@ struct StorageSettingsTab: View {
     @State private var legacyAi: [LegacyRow] = []
     @State private var archivedConflicts: [StorageCoordinator.ArchivedConflict] = []
     @State private var showsConflictsSheet = false
+    @State private var showsScratchpadMaintenance = false
+    @State private var sharedFolderIsActive = false
     @State private var isLoading = true
 
     @State private var sortOrder: StorageInventory.SortOrder = .size
@@ -31,6 +34,7 @@ struct StorageSettingsTab: View {
 
     // Storage-location + housekeeping controls.
     @State private var storageMode: WebStorageMode = .local
+    @State private var sharedFolderStatus: StorageCoordinator.Status?
     @State private var autoSavePages = false
     @State private var retentionMonths: Int? = StorageHousekeeping.defaultMonths
     @State private var isCleaningUp = false
@@ -74,6 +78,7 @@ struct StorageSettingsTab: View {
             summaryTilesSection
             documentsSection
             if !archivedConflicts.isEmpty { syncConflictsSection }
+            if storageMode == .syncedFolder, sharedFolderIsActive { scratchpadMaintenanceSection }
             if hasOrphanSection { orphansSection }
             housekeepingSection
             removeStoredDataSection
@@ -82,7 +87,13 @@ struct StorageSettingsTab: View {
         .frame(height: 520)
         .task {
             refreshSettings()
+            await refreshSharedFolderStatus(recheckRoot: true)
             await reload()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active, storageMode == .syncedFolder,
+                  !isPickingSharedFolder, !relocationStatus.isInProgress else { return }
+            scheduleStorageReload(recheckSharedFolder: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumStorageRelocationChanged)) { _ in
             handleRelocationStatusChange()
@@ -94,8 +105,26 @@ struct StorageSettingsTab: View {
             StorageConflictsView(conflicts: $archivedConflicts)
                 .frame(minWidth: 440, minHeight: 420)
         }
+        .sheet(isPresented: $showsScratchpadMaintenance, onDismiss: {
+            Task { await reload() }
+        }) {
+            SharedScratchpadMaintenanceView()
+        }
         .onDisappear {
             relocationReloadTask?.cancel()
+        }
+    }
+
+    private var scratchpadMaintenanceSection: some View {
+        Section {
+            Button {
+                showsScratchpadMaintenance = true
+            } label: {
+                Label("Scratchpad Attachments…", systemImage: "photo.on.rectangle")
+            }
+            .accessibilityIdentifier("storage.scratchpadAttachments")
+        } footer: {
+            Text("Move unused images to recovery or restore images from an earlier cleanup.")
         }
     }
 
@@ -337,7 +366,7 @@ struct StorageSettingsTab: View {
                 Text("iCloud Drive").tag(WebStorageMode.icloud)
                 Text("Custom Folder").tag(WebStorageMode.custom)
                 Text("This Mac").tag(WebStorageMode.local)
-                Text("Shared Folder (Preview)").tag(WebStorageMode.syncedFolder)
+                Text("Shared Folder").tag(WebStorageMode.syncedFolder)
                     .disabled(relocationStatus.isInProgress || relocationStatus.needsRecovery)
             }
             .accessibilityIdentifier("storage.locationPicker")
@@ -366,17 +395,20 @@ struct StorageSettingsTab: View {
             }
 
             if storageMode != .local, let path = currentLocationPath {
-                LabeledContent("Folder") {
+                let folderIsActive = storageMode != .syncedFolder || sharedFolderStatus?.activeSharedFolderRoot != nil
+                LabeledContent(folderIsActive ? "Folder" : "Selected Folder") {
                     Text(path)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Button("Show in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting(
-                        [URL(fileURLWithPath: path, isDirectory: true)])
+                if folderIsActive {
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [URL(fileURLWithPath: path, isDirectory: true)])
+                    }
+                    .accessibilityIdentifier("storage.showInFinder")
                 }
-                .accessibilityIdentifier("storage.showInFinder")
             }
             if storageMode == .custom {
                 Button("Change Folder…") {
@@ -399,7 +431,7 @@ struct StorageSettingsTab: View {
         } footer: {
             Text(locationFooterText)
                 .font(.footnote)
-                .foregroundStyle(WebStorageSettings.modeIsDegraded ? .orange : Color.secondary)
+                .foregroundStyle(locationIsDegraded ? .orange : Color.secondary)
         }
     }
 
@@ -407,13 +439,20 @@ struct StorageSettingsTab: View {
         switch storageMode {
         case .icloud: return WebStorageSettings.icloudVellumRoot?.path
         case .custom: return AppDefaults.current.string(forKey: WebStorageSettings.customPathKey)
-        case .syncedFolder: return AppDefaults.current.string(forKey: WebStorageSettings.syncedFolderPathKey)
+        case .syncedFolder:
+            return sharedFolderStatus?.activeSharedFolderRoot?.path
+                ?? AppDefaults.current.string(forKey: WebStorageSettings.syncedFolderPathKey)
         case .local: return nil
         }
     }
 
+    private var locationIsDegraded: Bool {
+        guard storageMode == .syncedFolder else { return WebStorageSettings.modeIsDegraded }
+        return sharedFolderStatus?.effectiveMode == .local
+    }
+
     private var locationFooterText: String {
-        if WebStorageSettings.modeIsDegraded {
+        if locationIsDegraded {
             switch storageMode {
             case .icloud:
                 return "iCloud Drive isn't available right now (signed out, or iCloud Drive is off). Vellum is storing everything on this Mac until it comes back."
@@ -431,7 +470,7 @@ struct StorageSettingsTab: View {
         case .local:
             return "Everything stays in Vellum's private app folder on this Mac. No syncing."
         case .syncedFolder:
-            return "Vellum saved this folder for shared-library setup. Your library uses local storage in this build."
+            return StorageLocationCopy.sharedFolderFooter(status: sharedFolderStatus, deviceName: "Mac")
         }
     }
 
@@ -469,6 +508,7 @@ struct StorageSettingsTab: View {
         Task {
             defer { isPickingSharedFolder = false }
             guard let selection = await WebStorageRelocator.pickSyncedFolder() else { return }
+            sharedFolderStatus = nil
             WebStorageRelocator.selectSyncedFolder(selection, coordinator: workspace.storageCoordinator)
             refreshSettings()
         }
@@ -509,6 +549,14 @@ struct StorageSettingsTab: View {
         retentionMonths = StorageHousekeeping.retentionMonths
     }
 
+    private func refreshSharedFolderStatus(recheckRoot: Bool = false) async {
+        guard storageMode == .syncedFolder else { return }
+        if recheckRoot { await workspace.reconfigureStorageCoordinator() }
+        let status = await workspace.storageCoordinator.currentStatus()
+        guard !Task.isCancelled, storageMode == .syncedFolder else { return }
+        sharedFolderStatus = status.chosenMode == .syncedFolder ? status : nil
+    }
+
     /// A relocation notification is also used for progress, so only its
     /// terminal states may refresh the inventory. The terminal notification is
     /// posted after a successful move, an interrupted move, or an unavailable
@@ -521,6 +569,10 @@ struct StorageSettingsTab: View {
             return
         }
 
+        scheduleStorageReload()
+    }
+
+    private func scheduleStorageReload(recheckSharedFolder: Bool = false) {
         // Several state changes can arrive in one main-loop turn (for example,
         // a recovered launch move followed by a location change). Yield once so
         // they collapse to one inventory read, and cancel any superseded read
@@ -528,6 +580,8 @@ struct StorageSettingsTab: View {
         relocationReloadTask?.cancel()
         relocationReloadTask = Task {
             await Task.yield()
+            guard !Task.isCancelled else { return }
+            await refreshSharedFolderStatus(recheckRoot: recheckSharedFolder)
             guard !Task.isCancelled else { return }
             await reload()
         }
@@ -577,6 +631,7 @@ struct StorageSettingsTab: View {
         legacyAi = listing.legacyAi
         cacheEntries = cache
         archivedConflicts = await workspace.storageCoordinator.archivedConflicts()
+        sharedFolderIsActive = await workspace.storageCoordinator.currentStatus().effectiveMode == .syncedFolder
         isLoading = false
     }
 

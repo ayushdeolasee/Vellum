@@ -11,11 +11,40 @@ enum ScratchpadAttachmentCleanup {
         var name: String { directory.lastPathComponent }
     }
 
+    struct Inventory: Sendable {
+        struct Document: Identifiable, Sendable {
+            struct Batch: Identifiable, Sendable {
+                let id: String
+                let retainUntil: Date
+                let files: [String]
+
+                var movedAt: Date { retainUntil.addingTimeInterval(-minimumRetention) }
+            }
+
+            let id: String
+            let title: String
+            let hasAttachments: Bool
+            let batches: [Batch]
+        }
+
+        let generation: Int
+        let root: URL
+        let scannedAt: Date
+        let documents: [Document]
+    }
+
+    struct RestoreResult: Sendable {
+        var restored = 0
+        var keptInRecovery = 0
+    }
+
     enum CleanupError: Error {
         case sharedFolderRequired
         case invalidStorageKey
         case unsafeItem(URL)
         case incompleteScan(URL)
+        case documentOpen
+        case staleSelection
         case partialCleanup(RecoveryBatch, cause: any Error)
     }
 
@@ -25,12 +54,83 @@ enum ScratchpadAttachmentCleanup {
     private static let directoryFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
 
     static func moveUnreferencedAttachments(
-        forKey key: String, coordinator: StorageCoordinator
+        forKey key: String, coordinator: StorageCoordinator,
+        inventory: Inventory? = nil,
+        admissionAllowed: @escaping @Sendable () async -> Bool = { true }
     ) async throws -> RecoveryBatch? {
-        try await withSharedFolder(forKey: key, coordinator: coordinator) { layout in
+        if let inventory, !inventory.documents.contains(where: { $0.id == key && $0.hasAttachments }) {
+            throw CleanupError.staleSelection
+        }
+        return try await withSharedFolder(
+            forKey: key, coordinator: coordinator,
+            expectedGeneration: inventory?.generation, expectedRoot: inventory?.root,
+            admissionAllowed: admissionAllowed
+        ) { layout in
             try moveUnreferencedAttachments(
                 forKey: key, root: layout.rootDir,
-                localFallback: WebLibrary.storeDir.deletingLastPathComponent())
+                localFallback: WebLibrary.storeDir.deletingLastPathComponent(),
+                listedAt: inventory?.scannedAt)
+        }
+    }
+
+    static func inventory(coordinator: StorageCoordinator) async throws -> Inventory {
+        try await coordinator.withStorageContext(expectedGeneration: nil) { context, generation in
+            guard context.layout.backend == .syncedFolder else { throw CleanupError.sharedFolderRequired }
+            return try await Task.detached(priority: .utility) {
+                let scannedAt = Date()
+                let root = try Directory(opening: context.layout.rootDir)
+                guard let metadata = try root.optionalChild(".vellum") else {
+                    return Inventory(generation: generation, root: root.url, scannedAt: scannedAt, documents: [])
+                }
+                let documents = try metadata.optionalChild("documents")
+                let recovery = try metadata.optionalChild("trash")?.optionalChild("scratchpad-attachments")
+                let keys = Set(try (documents?.entries() ?? []).map(\.lastPathComponent))
+                    .union(try (recovery?.entries() ?? []).map(\.lastPathComponent))
+                let rows = try keys.filter(DocumentIdentity.isCanonicalKey).compactMap { key -> Inventory.Document? in
+                    let document = try documents?.optionalChild(key)
+                    let attachments = try document?.optionalChild("attachments")
+                    let hasAttachments = try !(attachments?.attachmentFiles() ?? []).isEmpty
+                    let stored = try recovery?.optionalChild(key)
+                    let batches = try (stored?.entries() ?? []).compactMap { url -> Inventory.Document.Batch? in
+                        let name = url.lastPathComponent
+                        guard let retainUntil = batchDeadline(name),
+                              let batch = try stored?.optionalChild(name) else { return nil }
+                        let files = try batch.attachmentFiles()
+                        guard !files.isEmpty else { return nil }
+                        return .init(id: name, retainUntil: retainUntil, files: files)
+                    }.sorted { $0.retainUntil > $1.retainUntil }
+                    guard hasAttachments || !batches.isEmpty else { return nil }
+                    let title = (try? document?.readRegularFile("meta.json", limit: 65_536))
+                        .flatMap { try? JSONDecoder().decode(DocumentDataStore.Meta.self, from: $0) }?.title
+                    return .init(id: key, title: title.flatMap { $0.isEmpty ? nil : $0 } ?? key,
+                                 hasAttachments: hasAttachments, batches: batches)
+                }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+                return Inventory(generation: generation, root: root.url, scannedAt: scannedAt, documents: rows)
+            }.value
+        }
+    }
+
+    static func restoreBatch(
+        named name: String, forKey key: String, inventory: Inventory, coordinator: StorageCoordinator,
+        admissionAllowed: @escaping @Sendable () async -> Bool
+    ) async throws -> RestoreResult {
+        guard let batch = inventory.documents.first(where: { $0.id == key })?
+            .batches.first(where: { $0.id == name }) else { throw CleanupError.staleSelection }
+        return try await withSharedFolder(
+            forKey: key, coordinator: coordinator,
+            expectedGeneration: inventory.generation, expectedRoot: inventory.root,
+            admissionAllowed: admissionAllowed
+        ) { layout in
+            var result = RestoreResult()
+            for file in batch.files {
+                do {
+                    try restoreAttachment(named: file, fromBatch: batch.id, forKey: key, root: layout.rootDir)
+                    result.restored += 1
+                } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EEXIST) {
+                    result.keptInRecovery += 1
+                }
+            }
+            return result
         }
     }
 
@@ -47,16 +147,23 @@ enum ScratchpadAttachmentCleanup {
 
     private static func withSharedFolder<T: Sendable>(
         forKey key: String, coordinator: StorageCoordinator,
+        expectedGeneration: Int? = nil,
+        expectedRoot: URL? = nil,
+        admissionAllowed: @escaping @Sendable () async -> Bool = { true },
         _ operation: @escaping @Sendable (WebStorageLayout) throws -> T
     ) async throws -> T {
         guard DocumentIdentity.isCanonicalKey(key) else { throw CleanupError.invalidStorageKey }
         return try await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
             forKeys: [key], invalidatingQueuedWrites: false
         ) {
-            try await coordinator.withStorageContext { context in
+            try await coordinator.withStorageContext(expectedGeneration: expectedGeneration) { context, _ in
                 guard context.layout.backend == .syncedFolder else {
                     throw CleanupError.sharedFolderRequired
                 }
+                if let expectedRoot, context.layout.rootDir.standardizedFileURL != expectedRoot.standardizedFileURL {
+                    throw CleanupError.staleSelection
+                }
+                guard await admissionAllowed() else { throw CleanupError.documentOpen }
                 return try await Task.detached(priority: .utility) {
                     try operation(context.layout)
                 }.value
@@ -65,7 +172,7 @@ enum ScratchpadAttachmentCleanup {
     }
 
     static func moveUnreferencedAttachments(
-        forKey key: String, root: URL, localFallback: URL? = nil
+        forKey key: String, root: URL, localFallback: URL? = nil, listedAt: Date? = nil
     ) throws -> RecoveryBatch? {
         guard DocumentIdentity.isCanonicalKey(key) else { throw CleanupError.invalidStorageKey }
         let root = try Directory(opening: root)
@@ -81,11 +188,11 @@ enum ScratchpadAttachmentCleanup {
             fallback = nil
         }
         let referenced = try protectedIDs(in: document).union(protectedIDs(in: fallback))
-        let candidates = try attachments.entries().filter { url in
-            guard let id = attachmentID(url.lastPathComponent), !referenced.contains(id) else {
-                return false
-            }
-            return try attachments.isRegularFile(url.lastPathComponent)
+        let candidates = try attachments.attachmentFiles().compactMap { name -> (String, FileStamp)? in
+            guard let id = attachmentID(name), !referenced.contains(id),
+                  let stamp = try attachments.fileStamp(name),
+                  listedAt.map({ stamp.latestChange <= $0 }) ?? true else { return nil }
+            return (name, stamp)
         }
         guard !candidates.isEmpty else { return nil }
 
@@ -101,9 +208,9 @@ enum ScratchpadAttachmentCleanup {
         let currentReferences = try protectedIDs(in: document).union(protectedIDs(in: fallback))
         var moved = false
         do {
-            for url in candidates {
-                let name = url.lastPathComponent
+            for (name, stamp) in candidates {
                 guard let id = attachmentID(name), !currentReferences.contains(id) else { continue }
+                guard try attachments.fileStamp(name) == stamp else { continue }
                 try attachments.moveFile(name, to: batchDir)
                 moved = true
             }
@@ -121,13 +228,9 @@ enum ScratchpadAttachmentCleanup {
     ) throws {
         guard DocumentIdentity.isCanonicalKey(key) else { throw CleanupError.invalidStorageKey }
         let root = try Directory(opening: root)
-        let nameParts = batch.split(separator: "-", maxSplits: 1)
-        guard attachmentID(name) != nil, nameParts.count == 2,
-              let deadline = Int64(nameParts[0]), deadline > 0,
-              String(deadline) == nameParts[0],
-              let id = UUID(uuidString: String(nameParts[1])),
-              id.uuidString.lowercased() == nameParts[1]
-        else { throw CleanupError.unsafeItem(root.url) }
+        guard attachmentID(name) != nil, batchDeadline(batch) != nil else {
+            throw CleanupError.unsafeItem(root.url)
+        }
 
         let internalDir = try root.child(".vellum")
         let trash = try trashDirectory(in: internalDir, forKey: key, create: false)
@@ -138,6 +241,14 @@ enum ScratchpadAttachmentCleanup {
         let attachments = try internalDir.createChild("documents").createChild(key)
             .createChild("attachments")
         try source.moveFile(name, to: attachments)
+    }
+
+    private static func batchDeadline(_ name: String) -> Date? {
+        let parts = name.split(separator: "-", maxSplits: 1)
+        guard parts.count == 2, let deadline = Int64(parts[0]), deadline > 0,
+              String(deadline) == parts[0], let id = UUID(uuidString: String(parts[1])),
+              id.uuidString.lowercased() == parts[1] else { return nil }
+        return Date(timeIntervalSince1970: Double(deadline))
     }
 
     private static func trashDirectory(
@@ -194,6 +305,27 @@ enum ScratchpadAttachmentCleanup {
     /// Pin each directory and reject symlink components below the selected
     /// root. All reads and moves use those descriptors, including when a peer
     /// changes directory names during the scan.
+    private struct FileStamp: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let modified: timespec
+        let changed: timespec
+
+        var latestChange: Date {
+            let dates = [modified, changed].map {
+                Date(timeIntervalSince1970: Double($0.tv_sec) + Double($0.tv_nsec) / 1e9)
+            }
+            return max(dates[0], dates[1])
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.device == rhs.device && lhs.inode == rhs.inode && lhs.size == rhs.size
+                && lhs.modified.tv_sec == rhs.modified.tv_sec && lhs.modified.tv_nsec == rhs.modified.tv_nsec
+                && lhs.changed.tv_sec == rhs.changed.tv_sec && lhs.changed.tv_nsec == rhs.changed.tv_nsec
+        }
+    }
+
     private struct Directory {
         let url: URL
         private let handle: FileHandle
@@ -268,23 +400,47 @@ enum ScratchpadAttachmentCleanup {
             }
         }
 
-        func isRegularFile(_ name: String) throws -> Bool {
+        func attachmentFiles() throws -> [String] {
+            try entries().map(\.lastPathComponent).filter {
+                guard attachmentID($0) != nil else { return false }
+                return try isRegularFile($0)
+            }
+        }
+
+        func fileStamp(_ name: String) throws -> FileStamp? {
             var status = stat()
             guard fstatat(fd, name, &status, AT_SYMLINK_NOFOLLOW) == 0 else {
                 throw Self.systemError()
             }
-            return status.st_mode & S_IFMT == S_IFREG
+            guard status.st_mode & S_IFMT == S_IFREG else { return nil }
+            return .init(device: status.st_dev, inode: status.st_ino, size: status.st_size,
+                         modified: status.st_mtimespec, changed: status.st_ctimespec)
+        }
+
+        func isRegularFile(_ name: String) throws -> Bool {
+            try fileStamp(name) != nil
         }
 
         func readNote(_ name: String) throws -> String {
+            guard let text = String(data: try readRegularFile(name), encoding: .utf8) else {
+                throw CleanupError.incompleteScan(url.appendingPathComponent(name))
+            }
+            return text
+        }
+
+        func readRegularFile(_ name: String, limit: Int? = nil) throws -> Data {
             let descriptor = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
             guard descriptor >= 0 else { throw Self.systemError() }
             let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             var status = stat()
-            guard fstat(descriptor, &status) == 0, status.st_mode & S_IFMT == S_IFREG,
-                  let text = String(data: try file.readToEnd() ?? Data(), encoding: .utf8)
+            guard fstat(descriptor, &status) == 0, status.st_mode & S_IFMT == S_IFREG
             else { throw CleanupError.incompleteScan(url.appendingPathComponent(name)) }
-            return text
+            if let limit {
+                let data = try file.read(upToCount: limit + 1) ?? Data()
+                guard data.count <= limit else { throw CleanupError.incompleteScan(url.appendingPathComponent(name)) }
+                return data
+            }
+            return try file.readToEnd() ?? Data()
         }
 
         func moveFile(_ name: String, to destination: Self) throws {

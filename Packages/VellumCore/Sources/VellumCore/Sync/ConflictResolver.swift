@@ -65,6 +65,11 @@ public struct PreserveLosersConflictResolver: ConflictResolver {
         let ext = url.pathExtension
         let id = sanitized(version.id)
         let name = ext.isEmpty ? "\(stem).\(id)" : "\(stem).\(id).\(ext)"
+        if name.utf8.count > 255 {
+            // A legal UTF-8 title plus the version ID can exceed NAME_MAX.
+            let digest = DocumentIdentity.sha256Hex(url.lastPathComponent + "/" + version.id)
+            return directory.appendingPathComponent(ext.utf8.count <= 32 && !ext.isEmpty ? digest + "." + ext : digest)
+        }
         return directory.appendingPathComponent(name)
     }
 

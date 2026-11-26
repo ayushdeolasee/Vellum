@@ -387,7 +387,7 @@ final class WorkspaceStore {
         return root.allLeaves().allSatisfy { !$0.scratchpad.hasUncommittedChanges }
     }
 
-    @ObservationIgnored private var conflictRecoveryTask: Task<Void, any Error>?
+    @ObservationIgnored private var conflictRecoveryTask: Task<Void, Never>?
 
     enum ConflictRecoveryError: LocalizedError {
         case alreadyRunning
@@ -398,7 +398,7 @@ final class WorkspaceStore {
         var errorDescription: String? {
             switch self {
             case .appClosing: "Vellum is finishing pending saves. Wait until closing finishes before reviewing copies."
-            case .alreadyRunning: "Another preserved copy is being restored. Wait for it to finish."
+            case .alreadyRunning: "Another storage recovery action is running. Wait for it to finish."
             case .documentOpen: "Finish opening documents, then close the affected document before restoring a preserved copy. Your open drafts have not changed."
             case .pendingChanges: "This document has unsaved notes or chat. Restore storage access and save them before restoring a copy."
             }
@@ -408,50 +408,51 @@ final class WorkspaceStore {
     /// New opens join the same recovery operation before adopting a document.
     /// Recovery itself joins the teardown registry directly, avoiding self-wait.
     func awaitConflictRecovery() async {
-        try? await conflictRecoveryTask?.value
+        await conflictRecoveryTask?.value
     }
 
-    private func conflictDocumentIsClosed(_ conflict: StorageCoordinator.ArchivedConflict) -> Bool {
+    private func recoveryDocumentIsClosed(_ key: String?) -> Bool {
         guard !root.allLeaves().contains(where: { $0.app.hasPendingDocumentAdmission }) else { return false }
         let documents = root.allLeaves().flatMap { $0.app.tabs }.compactMap(\.document)
-        guard let key = conflict.storageKey else { return documents.isEmpty }
+        guard let key else { return documents.isEmpty }
         return !documents.contains { DocumentIdentity.storageKey(for: $0) == key }
     }
 
-    private func conflictHasPendingDrafts(_ conflict: StorageCoordinator.ArchivedConflict) -> Bool {
-        let chatPending = conflict.storageKey.map { AiPersistence.hasPendingChanges(forKey: $0) }
+    private func recoveryHasPendingDrafts(_ key: String?) -> Bool {
+        let chatPending = key.map { AiPersistence.hasPendingChanges(forKey: $0) }
             ?? AiPersistence.hasPendingChanges
         return chatPending || root.allLeaves().contains {
-            $0.scratchpad.hasPendingChanges(forKey: conflict.storageKey)
+            $0.scratchpad.hasPendingChanges(forKey: key)
         }
     }
 
     func keepCurrentForArchivedConflict(_ conflict: StorageCoordinator.ArchivedConflict) async throws {
-        try await performConflictOperation(conflict) {
+        try await performStorageRecovery(key: conflict.storageKey, path: conflict.originalURL.path) {
             try await self.storageCoordinator.keepCurrentForArchivedConflict(conflict)
         }
     }
 
     func deleteArchivedConflict(_ conflict: StorageCoordinator.ArchivedConflict) async throws {
-        try await performConflictOperation(conflict) {
+        try await performStorageRecovery(key: conflict.storageKey, path: conflict.originalURL.path) {
             try await self.storageCoordinator.deleteArchivedConflict(conflict)
         }
     }
 
     func restoreArchivedConflict(_ conflict: StorageCoordinator.ArchivedConflict) async throws {
-        guard conflictDocumentIsClosed(conflict) else { throw ConflictRecoveryError.documentOpen }
-        try await performConflictOperation(conflict) {
+        let key = conflict.storageKey
+        guard recoveryDocumentIsClosed(key) else { throw ConflictRecoveryError.documentOpen }
+        try await performStorageRecovery(key: key, path: conflict.originalURL.path) {
             await ScratchpadPersistence.awaitPendingFlush()
             await AiPersistence.awaitPendingFlush()
-            guard self.conflictDocumentIsClosed(conflict) else { throw ConflictRecoveryError.documentOpen }
-            guard !self.conflictHasPendingDrafts(conflict) else { throw ConflictRecoveryError.pendingChanges }
+            guard self.recoveryDocumentIsClosed(key) else { throw ConflictRecoveryError.documentOpen }
+            guard !self.recoveryHasPendingDrafts(key) else { throw ConflictRecoveryError.pendingChanges }
             do {
                 try await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
                     forKeys: conflict.storageKey.map { [$0] } ?? []
                 ) {
                     try await self.storageCoordinator.restoreArchivedConflict(conflict) {
                         await MainActor.run {
-                            self.conflictDocumentIsClosed(conflict) && !self.conflictHasPendingDrafts(conflict)
+                            self.recoveryDocumentIsClosed(key) && !self.recoveryHasPendingDrafts(key)
                         }
                     }
                 }
@@ -465,13 +466,53 @@ final class WorkspaceStore {
         }
     }
 
+    #if os(macOS)
+    func cleanSharedScratchpadAttachments(
+        forKey key: String, inventory: ScratchpadAttachmentCleanup.Inventory
+    ) async throws -> ScratchpadAttachmentCleanup.RecoveryBatch? {
+        try await performScratchpadMaintenance(key: key, inventory: inventory) { admission in
+            try await ScratchpadAttachmentCleanup.moveUnreferencedAttachments(
+                forKey: key, coordinator: self.storageCoordinator, inventory: inventory,
+                admissionAllowed: admission)
+        }
+    }
+
+    func restoreSharedScratchpadBatch(
+        named name: String, forKey key: String, inventory: ScratchpadAttachmentCleanup.Inventory
+    ) async throws -> ScratchpadAttachmentCleanup.RestoreResult {
+        try await performScratchpadMaintenance(key: key, inventory: inventory) { admission in
+            try await ScratchpadAttachmentCleanup.restoreBatch(
+                named: name, forKey: key, inventory: inventory, coordinator: self.storageCoordinator,
+                admissionAllowed: admission)
+        }
+    }
+
+    private func performScratchpadMaintenance<T: Sendable>(
+        key: String, inventory: ScratchpadAttachmentCleanup.Inventory,
+        operation: @escaping @MainActor (@escaping @Sendable () async -> Bool) async throws -> T
+    ) async throws -> T {
+        guard recoveryDocumentIsClosed(key) else { throw ScratchpadAttachmentCleanup.CleanupError.documentOpen }
+        let path = inventory.root.appendingPathComponent(".vellum/documents").appendingPathComponent(key).path
+        return try await performStorageRecovery(key: key, path: path) {
+            await ScratchpadPersistence.awaitPendingFlush()
+            guard self.recoveryDocumentIsClosed(key) else { throw ScratchpadAttachmentCleanup.CleanupError.documentOpen }
+            guard !self.recoveryHasPendingDrafts(key) else { throw ConflictRecoveryError.pendingChanges }
+            return try await operation {
+                await MainActor.run {
+                    self.recoveryDocumentIsClosed(key) && !self.recoveryHasPendingDrafts(key)
+                }
+            }
+        }
+    }
+    #endif
+
     /// Every user recovery mutation is joinable by opens, quit and background
     /// drains. Capture earlier tasks before registering this task to avoid
     /// waiting on its own drain handle.
-    private func performConflictOperation(
-        _ conflict: StorageCoordinator.ArchivedConflict,
-        operation: @escaping @MainActor () async throws -> Void
-    ) async throws {
+    private func performStorageRecovery<T: Sendable>(
+        key: String?, path: String,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
         // Join startup before registering recovery: startup may itself open a
         // document, whose admission joins recovery. Registering first deadlocks.
         await awaitMaintenance()
@@ -482,15 +523,15 @@ final class WorkspaceStore {
         let task = Task { @MainActor [self] in
             defer { tabTeardowns.finish(tabId: recoveryId) }
             for previous in pending { await previous.value }
-            try await operation()
+            return try await operation()
         }
-        conflictRecoveryTask = task
         let drain = Task { @MainActor in _ = try? await task.value }
+        conflictRecoveryTask = drain
         tabTeardowns.register(tabId: recoveryId,
-            document: DocumentInfo(kind: .pdf, pdfPath: conflict.originalURL.path,
-                title: nil, pageCount: nil, lastPage: nil, docId: conflict.storageKey), task: drain)
+            document: DocumentInfo(kind: .pdf, pdfPath: path,
+                title: nil, pageCount: nil, lastPage: nil, docId: key), task: drain)
         defer { conflictRecoveryTask = nil }
-        try await task.value
+        return try await task.value
     }
 
     private func refreshAfterConflictReplacement(_ conflict: StorageCoordinator.ArchivedConflict) {
