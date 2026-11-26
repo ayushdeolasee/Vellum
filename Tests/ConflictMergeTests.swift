@@ -122,10 +122,10 @@ struct ConflictMergeTests {
     func metadataUsesNewestVisit() async throws {
         let target = URL(fileURLWithPath: "/Vellum/.vellum/documents/key/meta.json")
         let current = DocumentDataStore.Meta(
-            version: 1, kind: "pdf", title: "Known title", lastKnownPath: "/old.pdf",
+            unknownFields: ["same": .null], version: 1, kind: "pdf", title: "Known title", lastKnownPath: "/old.pdf",
             lastOpened: "2026-08-05T08:00:00.000000+00:00")
         let loser = DocumentDataStore.Meta(
-            version: 1, kind: "pdf", title: nil, lastKnownPath: "/new.pdf",
+            unknownFields: ["same": .bool(true), "more": .int(4)], version: 1, kind: "pdf", title: nil, lastKnownPath: "/new.pdf",
             lastOpened: "2026-08-05T10:00:00.000000+00:00")
         let container = FakeSyncedContainer()
         container.seed(target, data: try JSONEncoder().encode(current))
@@ -140,6 +140,7 @@ struct ConflictMergeTests {
         #expect(merged.lastKnownPath == "/new.pdf")
         #expect(merged.lastOpened == loser.lastOpened)
         #expect(merged.title == "Known title")
+        #expect(merged.unknownFields == ["same": .null, "more": .int(4)])
     }
 
     @Test("Scratchpad conflicts preserve the losing bytes instead of merging text")
@@ -166,5 +167,91 @@ struct ConflictMergeTests {
 
     private func message(_ id: String, _ content: String, _ createdAt: String) -> AiMessage {
         AiMessage(id: id, role: .user, content: content, createdAt: createdAt)
+    }
+}
+
+extension ConflictMergeTests {
+    private func resolve<T: Codable>(current: T, loser: T, path: String) async throws -> T {
+        let target = URL(fileURLWithPath: "/Vellum/.vellum/" + path)
+        let container = FakeSyncedContainer()
+        container.seed(target, data: try JSONEncoder().encode(current))
+        container.injectConflict(at: target, versions: [Self.current, Self.loser],
+                                 payloads: ["loser": try JSONEncoder().encode(loser)])
+        let resolution = try await container.resolveConflict(event(target))
+        #expect(resolution == .merged(target))
+        return try JSONDecoder().decode(T.self, from: #require(container.peek(target)))
+    }
+
+    @Test("Newer annotation geometry wins while overlapping unknown keys keep the current value")
+    func nestedWebUnion() async throws {
+        var current = WebPageRecord(url: "https://example.test")
+        var a = annotation("a")
+        a.positionData = .init(rects: [.init(x: 1, y: 2, width: 3, height: 4)], pageWidth: 5, pageHeight: 6)
+        let own: [String: PositionJSON] = ["same": .null]
+        current.unknownFields = own
+        a.unknownFields = own
+        a.positionData?.unknownFields = own
+        a.positionData?.rects[0].unknownFields = own
+        current.annotations = [a]
+        let other: [String: PositionJSON] = ["same": .bool(false), "next": .int(Int.max)]
+        var incoming = current
+        incoming.unknownFields = other
+        incoming.annotations[0].updatedAt = "2026-08-06T10:00:00Z"
+        incoming.annotations[0].positionData?.rects[0].x = 100
+        incoming.annotations[0].unknownFields = other
+        incoming.annotations[0].positionData?.unknownFields = other
+        incoming.annotations[0].positionData?.rects[0].unknownFields = other
+        let result = try await resolve(current: current, loser: incoming, path: "records/key.json")
+        let ann = try #require(result.annotations.first)
+        let pos = try #require(ann.positionData)
+        #expect(pos.rects[0].x == 100)
+        for bag in [result.unknownFields, ann.unknownFields, pos.unknownFields, pos.rects[0].unknownFields] {
+            #expect(bag == ["same": .null, "next": .int(Int.max)])
+        }
+    }
+
+    @Test("Transcript merge and save caps preserve fields in matching reference, payload, image, source and usage")
+    func nestedConversationUnion() async throws {
+        let json = #"""
+        {"id":"m","createdAt":"t","role":"user","content":"old","same":null,
+         "usage":{"inputTokens":1,"cachedInputTokens":0,"cacheWriteTokens":0,"reasoningTokens":0,"outputTokens":0},
+         "references":[{"id":"r","kind":{"tag":"image","name":"photo","image":{"base64Data":"AQ==","mediaType":"png","width":1,"height":1}}}],
+         "toolSummaries":[{"id":"s","title":"tool","sources":[{"id":"url","excerpt":"here"}]}]}
+        """#
+        let current = try JSONDecoder().decode(AiMessage.self, from: Data(json.utf8))
+        let other = json.replacingOccurrences(of: "{", with: #"{"next":9223372036854775807,"#)
+            .replacingOccurrences(of: #""same":null"#, with: #""same":false"#)
+            .replacingOccurrences(of: #""content":"old""#, with: #""content":"loser""#)
+        let incoming = try JSONDecoder().decode(AiMessage.self, from: Data(other.utf8))
+        let merged = try await resolve(current: [current], loser: [incoming],
+                                       path: "documents/" + UUID().uuidString + "/conversations.json")
+        let message = try #require(AiPersistence.limitedMessages(merged).first)
+        #expect(message.content == "old")
+        #expect(message.unknownFields["same"] == .null)
+        let ref = try #require(message.references.first)
+        #expect(ref.image?.base64Data == "")
+        let source = try #require(message.toolSummaries?.first)
+        for bag in [message.unknownFields, message.usage?.unknownFields, ref.unknownFields,
+                    ref.kindUnknownFields, ref.image?.unknownFields, source.unknownFields,
+                    source.sources.first?.unknownFields] {
+            #expect(bag?["next"] == .int(Int.max))
+        }
+    }
+}
+
+extension ConflictMergeTests {
+    @Test("Ink conflicts archive original bytes without applying page defaults")
+    func inkConflictsKeepBothCanvases() async throws {
+        let url = URL(fileURLWithPath: "/Vellum/.vellum/records/key.ink.json")
+        let current = Data(#"{"url":"u","version":3,"clusters":[],"future":1}"#.utf8)
+        let loser = Data(#"{"url":"u","version":3,"clusters":[],"future":2}"#.utf8)
+        let container = FakeSyncedContainer()
+        container.seed(url, data: current)
+        container.injectConflict(at: url, versions: [Self.current, Self.loser], payloads: ["loser": loser])
+        let resolution = try await container.resolveConflict(event(url))
+        let archive = PreserveLosersConflictResolver.archiveURL(for: url, version: Self.loser)
+        #expect(resolution == .keptCurrent(archivedLosers: [archive]))
+        #expect(container.peek(url) == current)
+        #expect(container.peek(archive) == loser)
     }
 }

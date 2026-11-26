@@ -1,10 +1,13 @@
 import Foundation
+import VellumCore
 
 /// Provider-neutral token usage for one request, summed across every streamed
 /// response in the request's tool loop. Records token counts and provider-
 /// reported cost only — never prompt contents. Used to measure real cache
 /// economics (issue #37 review §4) instead of guessing at hit rates.
 struct AiUsage: Codable, Equatable, Sendable {
+    var unknownFields: [String: JSONValue] = [:]
+
     /// Total prompt tokens billed (includes the cached portion).
     var inputTokens = 0
     /// Portion of `inputTokens` served from the provider's prompt cache.
@@ -158,5 +161,33 @@ enum AiUsageLedger {
     private static func save(_ entries: [String: Entry]) {
         guard let data = try? JSONEncoder().encode(entries) else { return }
         AppDefaults.current.set(data, forKey: key)
+    }
+}
+
+extension AiUsage {
+    private enum CodingKeys: String, CodingKey {
+        case inputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, outputTokens, costUSD
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        inputTokens = try container.decode(Int.self, forKey: .inputTokens)
+        cachedInputTokens = try container.decode(Int.self, forKey: .cachedInputTokens)
+        cacheWriteTokens = try container.decode(Int.self, forKey: .cacheWriteTokens)
+        reasoningTokens = try container.decode(Int.self, forKey: .reasoningTokens)
+        outputTokens = try container.decode(Int.self, forKey: .outputTokens)
+        costUSD = try container.decodeIfPresent(Double.self, forKey: .costUSD)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(inputTokens, forKey: .inputTokens)
+        try container.encode(cachedInputTokens, forKey: .cachedInputTokens)
+        try container.encode(cacheWriteTokens, forKey: .cacheWriteTokens)
+        try container.encode(reasoningTokens, forKey: .reasoningTokens)
+        try container.encode(outputTokens, forKey: .outputTokens)
+        try container.encodeIfPresent(costUSD, forKey: .costUSD)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }

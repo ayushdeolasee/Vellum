@@ -220,7 +220,8 @@ actor CaptureIngestion {
             snapshotHtml: captured.html,
             pagesJson: pagesJSON,
             assets: captured.assets,
-            assetsSkipped: captured.skipped)
+            assetsSkipped: captured.skipped,
+            previous: try await storage.previousManifest(forKey: key.hash))
 
         // The managed archive is the durable commit. The derived installed
         // snapshot may land first, but the sidecar isn't marked saved until the
