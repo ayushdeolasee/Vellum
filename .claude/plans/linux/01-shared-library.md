@@ -77,6 +77,19 @@ versioned contract (`docs/library-format.md` when implemented) and a test suite 
 | AI conversations | Any device | Medium | Same rule as `meta.json` |
 | Page-text caches | Derived, per device | None today: already in the per-device Caches directory (`PageTextCache.defaultDirectory`) | Keep it that way on Linux (`$XDG_CACHE_HOME`) |
 
+## Identity risk: same PDF, two paths
+
+A PDF that has not been stamped with `/VellumDocId` yet is identified by a hash of its
+path (`DocumentIdentity`). The Syncthing folder will sit at different absolute paths on the
+Mac and on Linux, so one unstamped PDF gets **two different identities**, and its
+notes, scratchpad and conversations split in two.
+
+Rules:
+- Hash the path **relative to the library root**, not the absolute path, for anything in
+  the shared library. Or stamp every PDF on import into the shared library.
+- Until the cross-platform round-trip test passes, **only one machine writes** to the
+  shared library at a time. Linux starts read-only (layer 4, step 5).
+
 ## Work this layer implies (not done in this PR)
 
 - A Linux `SyncedContainer` adapter for a plain folder: inotify change watching,
