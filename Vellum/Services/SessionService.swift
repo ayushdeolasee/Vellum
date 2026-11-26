@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // Native replacement for the Tauri IPC command surface (src/lib/tauri-commands.ts
 // → src-tauri/src/commands.rs). One session = one open document, keyed by a
@@ -9,6 +10,17 @@ enum SessionServiceError: Error, LocalizedError {
     case sessionNotFound(String)
     case invalidDocument(String)
     case io(String)
+
+    static func translatingPdfErrors<T>(_ operation: () throws -> T) throws -> T {
+        do {
+            return try operation()
+        } catch let error as PdfCoreError {
+            switch error {
+            case .invalidDocument(let message): throw SessionServiceError.invalidDocument(message)
+            case .io(let message): throw SessionServiceError.io(message)
+            }
+        }
+    }
 
     var errorDescription: String? {
         switch self {
