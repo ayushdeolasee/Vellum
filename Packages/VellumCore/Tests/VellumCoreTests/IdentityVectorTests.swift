@@ -22,6 +22,25 @@ final class IdentityVectorTests: XCTestCase {
         XCTAssertFalse(DocumentIdentity.isCanonicalKey("Legacy-ID"))
     }
 
+    func testCanonicalKeyBoundaries() {
+        for (key, accepted) in [("deadbeef", true), ("deadbee", false), ("DEADBEEF", false),
+                                ("../deadbeef", false), (String(repeating: "a", count: 64), true),
+                                (String(repeating: "a", count: 65), false)] {
+            XCTAssertEqual(DocumentIdentity.isCanonicalKey(key), accepted, key)
+        }
+    }
+
+    func testPathEscapesAndControlCharacters() throws {
+        let cases = [
+            ("https://example.test/a\r\nb?x=y\r\nz", "https://example.test/a%0D%0Ab?x=y%0D%0Az"),
+            ("https://example.test/100%/bad%2G/%2f", "https://example.test/100%25/bad%252G/%2f"),
+            ("https://example.test/root/%2E/keep//child/.%2e/end/%2e%2E", "https://example.test/root/keep//")
+        ]
+        for (raw, expected) in cases {
+            XCTAssertEqual(try WebURLNormalizer.normalize(raw, httpsOnly: false), expected, raw)
+        }
+    }
+
     func testInternationalHostAndRawPath() throws {
         let url = try WebURLNormalizer.normalize("https://Mu\u{308}nchen.test/cafe\u{301}", httpsOnly: false)
         XCTAssertEqual(url, "https://xn--mnchen-3ya.test/cafe%CC%81")
@@ -35,12 +54,18 @@ final class IdentityVectorTests: XCTestCase {
                        "https://example.test/?b=%2B+a%26b%3Dc%2F%7E*&a=one+two&b=%25&flag=")
     }
 
-    func testHTTPPolicyPrecedesHostValidation() throws {
+    func testSchemeAndHostErrorPrecedence() throws {
         XCTAssertEqual(try WebURLNormalizer.normalize("HtTp://EXAMPLE.test:080/a", httpsOnly: false),
                        "http://example.test/a")
-        for (httpsOnly, message) in [(true, "Plain HTTP webpages aren't supported. Use an HTTPS address."),
-                                     (false, "Invalid URL: empty host")] {
-            XCTAssertThrowsError(try WebURLNormalizer.normalize("http://?x", httpsOnly: httpsOnly)) { error in
+        let cases = [
+            ("http://?x", true, "Plain HTTP webpages aren't supported. Use an HTTPS address."),
+            ("http://?x", false, "Invalid URL: empty host"),
+            ("FTP://?x", true, "Unsupported URL scheme: ftp"),
+            ("https://:bogus/?x", true, "Invalid URL: empty host"),
+            ("https://[::1:bogus/", true, "Invalid URL: invalid IPv6 address")
+        ]
+        for (raw, httpsOnly, message) in cases {
+            XCTAssertThrowsError(try WebURLNormalizer.normalize(raw, httpsOnly: httpsOnly)) { error in
                 guard case WebURLNormalizationError.invalidDocument(let reason) = error else {
                     return XCTFail("Unexpected error: \(error)")
                 }
