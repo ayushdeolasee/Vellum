@@ -45,8 +45,11 @@ def button(name):
 
 def select(name):
     rows = find("list")
-    index = next(i for i, row in enumerate(rows) if find("label", name, row) is not None)
-    assert rows.querySelection().selectChild(index), f"Could not select {name}"
+    for i, row in enumerate(rows):
+        if find("label", name, row) is not None:
+            assert rows.querySelection().selectChild(i), f"Could not select {name}"
+            return
+    raise RuntimeError(f"Library row {name!r} is missing from the mounted fixture")
 
 
 def page(number):
@@ -178,11 +181,17 @@ select(rotated)
 page(1)
 assert not find("push button", "Previous page").getState().contains(pyatspi.STATE_SENSITIVE)
 first = capture(1)
+next_button = find("push button", "Next page")
 button("Next page")
 page(2)
 second = capture(2)
+previous = find("push button", "Previous page")
+assert previous.getState().contains(pyatspi.STATE_SENSITIVE), "Previous is disabled on page 2"
 button("Previous page")
 page(1)
+capture(1)
+assert not previous.getState().contains(pyatspi.STATE_SENSITIVE), "Previous is enabled on page 1"
+assert next_button.getState().contains(pyatspi.STATE_SENSITIVE), "Next is disabled on page 1"
 if find("label", "harbor.vellumweb") is not None:
     harbor()
 button("Close")

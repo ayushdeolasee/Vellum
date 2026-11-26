@@ -75,6 +75,23 @@ run_case() (
     timeout -k 1 35 python3 "$(dirname "$0")/reader-acceptance.py" "$tmp/reader.png" >&2
     wait "$apid"
     apid=
+    cc -shared -fPIC "$(dirname "$0")/../Tests/GTKReader/pending-exit.c" \
+      $(pkg-config --cflags --libs gtk4 pdfium) -ldl -o "$tmp/pending-exit.so"
+    for action in close destroy quit; do
+      report="$tmp/pending-$action.log"
+      timeout -k 1 10 env LD_PRELOAD="$tmp/pending-exit.so" READER_TEST_EXIT="$action" \
+        G_DEBUG=fatal-criticals "$app" >"$report" 2>&1 || {
+        rc=$?
+        cat "$report" >&2
+        echo "Pending PDF $action test failed (exit $rc)" >&2
+        exit "$rc"
+      }
+      cat "$report" >&2
+      grep -Fxq "Drained pending PDF on $action" "$report" || {
+        echo "Reader exited before PDFium drained the pending page on $action" >&2
+        exit 1
+      }
+    done
   elif [[ $pump == auto && $load == busy ]]; then
     VELLUM_PROBE_CAPTURE_DIR="$tmp" timeout -k 1 12 "$app" --probe "$pump" "$load" >&2 &
     apid=$!

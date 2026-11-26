@@ -134,8 +134,7 @@ final class ReaderController {
         guard let file = selection, let store else { return }
         let title = file.lastPathComponent
         pageIndex = index
-        reader_set_message(window, title, "Loading page \(index + 1)…")
-        if pageCount > 0 { reader_set_position(window, Int32(index + 1), Int32(pageCount)) }
+        reader_page_message(window, title, "Loading page \(index + 1)…", Int32(index + 1), Int32(pageCount))
         replaceWork { token in
             do {
                 let data: Data
@@ -168,15 +167,20 @@ final class ReaderController {
                 let message: String
                 switch error {
                 case PdfiumError.passwordRequired: message = "This PDF requires a password."
+                case PdfiumError.invalidPage, PdfiumError.invalidDimensions:
+                    message = "Page \(index + 1) could not be displayed."
+                case PdfiumError.queueFull: message = "The PDF reader is busy. Open another file, then reopen this PDF."
+                case PdfiumError.unsupportedSecurity: message = "This PDF uses an unsupported security method."
+                case PdfiumError.engineFailure: message = "PDFium could not render this page."
+                case LibraryFileError.io(let reason): message = "Could not read this PDF: \(reason)"
+                case LibraryFileError.symbolicLink, LibraryFileError.outsideAllowedRoot:
+                    message = "Open a regular PDF inside the library’s PDFs folder."
                 case PdfiumError.invalidDocument: message = "This file could not be read as a PDF."
                 case ReaderFileError.fileTooLarge, PdfiumError.limitExceeded:
                     message = "This PDF exceeds the reader’s size limit."
                 default: message = "Could not open page \(index + 1): \(error.localizedDescription)"
                 }
-                reader_set_message(window, title, message)
-                if self.pageCount > 0 {
-                    reader_set_position(window, Int32(index + 1), Int32(self.pageCount))
-                }
+                reader_page_message(window, title, message, Int32(index + 1), Int32(self.pageCount))
             }
         }
     }

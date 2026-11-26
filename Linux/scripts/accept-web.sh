@@ -45,9 +45,10 @@ with zipfile.ZipFile(pages / "harbor.vellumweb") as source:
                 if item not in ("manifest.json", "ink.json"):
                     output.writestr(item, source.read(item))
 PYFIXTURE
-mkdir -p "$stage/runtime"/{scripts,Tests/CShellPump,Sources/CShell}
+mkdir -p "$stage/runtime"/{scripts,Tests/CShellPump,Tests/GTKReader,Sources/CShell}
 cp "$here"/{screenshot.sh,reader-acceptance.py} "$stage/runtime/scripts/"
 cp "$here/../Tests/CShellPump/scheduling.c" "$stage/runtime/Tests/CShellPump/"
+cp "$here/../Tests/GTKReader/pending-exit.c" "$stage/runtime/Tests/GTKReader/"
 cp -R "$here"/../Sources/CShell/{loop.c,include} "$stage/runtime/Sources/CShell/"
 
 # Export just the executable with the ordinary OCI profile. No writable checkout
