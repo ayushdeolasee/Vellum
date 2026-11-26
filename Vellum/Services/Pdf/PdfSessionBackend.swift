@@ -52,7 +52,7 @@ final class PdfSessionBackend {
         }
 
         let sharedPDF = DocumentAccessResolver.openingSharedPDF
-        let (canonical, info) = try await offMainRead { () -> (String, DocumentInfo) in
+        let (canonical, info, editAccess) = try await offMainRead { () -> (String, DocumentInfo, SharedPDFEditAccess?) in
             let canonical = try PdfDocumentLoader.canonicalize(path)
             var isDirectory: ObjCBool = false
             let exists = FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory)
@@ -60,7 +60,7 @@ final class PdfSessionBackend {
                 throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
             }
 
-            let bytes = sharedPDF ? try PdfDocumentLoader.readFile(canonical) : nil
+            let bytes = sharedPDF != nil ? try PdfDocumentLoader.readFile(canonical) : nil
             let document: CGPDFDocument
             if let bytes {
                 guard let raw = PdfDocumentLoader.cgDocument(from: bytes) else {
@@ -76,7 +76,17 @@ final class PdfSessionBackend {
             // one, else the path hash. A docId stamped later this session must
             // NOT change it — the lookup and persister keyed the whole session
             // by this value.
-            let docId = bytes.map { SharedPDFIdentity.storageKey(in: $0, readerID: embedded) } ?? embedded
+            let docId: String?
+            let editAccess: SharedPDFEditAccess?
+            if let bytes, let sharedPDF {
+                let stamp = SharedPDFIdentity.stamp(in: bytes, readerID: embedded)
+                docId = try SharedPDFImport.key(for: bytes, verifiedStamp: stamp,
+                    at: URL(fileURLWithPath: canonical), in: sharedPDF)
+                editAccess = SharedPDFEditAccess(location: sharedPDF, stamp: stamp == docId ? stamp : nil)
+            } else {
+                docId = embedded
+                editAccess = nil
+            }
             let cacheKey = (docId?.isEmpty == false) ? docId! : PageTextCache.pathKey(canonical)
             PdfSessionCacheKeys.register(path: canonical, key: cacheKey)
             return (canonical, DocumentInfo(
@@ -85,10 +95,10 @@ final class PdfSessionBackend {
                 title: title,
                 pageCount: pageCount,
                 lastPage: lastPage,
-                docId: docId))
+                docId: docId), editAccess)
         }
 
-        return PdfDocumentSession(path: canonical, info: info, sharedPDF: sharedPDF)
+        return PdfDocumentSession(path: canonical, info: info, editAccess: editAccess)
     }
 }
 
@@ -232,6 +242,27 @@ private func offMainRead<T: Sendable>(
     try await Task.detached(priority: .userInitiated, operation: body).value
 }
 
+/// A legacy hash session stays read-only for its lifetime. A stamped session
+/// rechecks the active record and original bytes before each embedded PDF edit.
+fileprivate struct SharedPDFEditAccess: Sendable {
+    let location: SharedPDFLocation
+    let stamp: String?
+
+    func source(at path: String) throws -> Data {
+        let url = URL(fileURLWithPath: path)
+        guard let relative = location.relativePath(for: url), let file = location.resolve(relative),
+              let original = try LocalFolderFileStore(root: location.root).readRegularFile(file) else {
+            throw DocumentAccessError.unavailable(path)
+        }
+        guard let stamp, SharedPDFImport.stamp(in: original) == stamp,
+              try SharedPDFImport.key(for: original, verifiedStamp: stamp, at: file, in: location) == stamp,
+              PdfEditEligibility.classify(original) == .editable else {
+            throw SessionServiceError.io("This shared PDF is read-only. Its notes and conversations can still be edited.")
+        }
+        return original
+    }
+}
+
 // MARK: - Session
 
 @MainActor
@@ -244,10 +275,10 @@ final class PdfDocumentSession: DocumentSession {
     /// commit macOS gets from `PdfDocumentIO.commitStamp`.
     private var resolvedDocId: String?
 
-    private let sharedPDF: Bool
+    private let editAccess: SharedPDFEditAccess?
 
-    init(path: String, info: DocumentInfo, sharedPDF: Bool = false) {
-        self.sharedPDF = sharedPDF
+    fileprivate init(path: String, info: DocumentInfo, editAccess: SharedPDFEditAccess?) {
+        self.editAccess = editAccess
         self.path = path
         self.info = info
     }
@@ -278,9 +309,8 @@ final class PdfDocumentSession: DocumentSession {
     /// bookmarks to outline creation. Saves the file; returns the full record.
     func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
         let path = self.path
-        let expectedID = sharedPDF ? info.docId : nil
-        return try await PdfFileGate.shared.perform {
-            try Self.performCreate(path: path, input: input, sharedID: expectedID)
+        return try await PdfFileGate.shared.perform { [editAccess] in
+            try Self.performCreate(path: path, input: input, editAccess: editAccess)
         }
     }
 
@@ -288,9 +318,8 @@ final class PdfDocumentSession: DocumentSession {
     /// always refresh. Returns false when the id is unknown.
     func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
         let path = self.path
-        let expectedID = sharedPDF ? info.docId : nil
-        return try await PdfFileGate.shared.perform {
-            try Self.performUpdate(path: path, input: input, sharedID: expectedID)
+        return try await PdfFileGate.shared.perform { [editAccess] in
+            try Self.performUpdate(path: path, input: input, editAccess: editAccess)
         }
     }
 
@@ -298,9 +327,8 @@ final class PdfDocumentSession: DocumentSession {
     /// false when the id is unknown.
     func deleteAnnotation(id: String) async throws -> Bool {
         let path = self.path
-        let expectedID = sharedPDF ? info.docId : nil
-        return try await PdfFileGate.shared.perform {
-            try Self.performDelete(path: path, id: id, sharedID: expectedID)
+        return try await PdfFileGate.shared.perform { [editAccess] in
+            try Self.performDelete(path: path, id: id, editAccess: editAccess)
         }
     }
 
@@ -308,20 +336,9 @@ final class PdfDocumentSession: DocumentSession {
     /// Info dictionary and rewrites the file.
     func setMetadata(key: String, value: String) async throws {
         let path = self.path
-        let expectedID = sharedPDF ? info.docId : nil
-        try await PdfFileGate.shared.perform {
-            try Self.performSetMetadata(path: path, key: key, value: value, sharedID: expectedID)
+        try await PdfFileGate.shared.perform { [editAccess] in
+            try Self.performSetMetadata(path: path, key: key, value: value, editAccess: editAccess)
         }
-    }
-
-    nonisolated private static func sharedEditSource(path: String, expected: String?) throws -> Data? {
-        guard let expected else { return nil }
-        let original = try PdfDocumentLoader.readFile(path)
-        guard SharedPDFIdentity.stamp(in: original, readerID: SharedPDFImport.readID(original)) == expected,
-              PdfEditEligibility.classify(original) == .editable else {
-            throw SessionServiceError.io("This shared PDF is read-only. Its notes and conversations can still be edited.")
-        }
-        return original
     }
 
     // MARK: Document identity
@@ -388,8 +405,9 @@ final class PdfDocumentSession: DocumentSession {
 
     /// create_annotation: embed a /Highlight or /Text annotation, or divert
     /// bookmarks to outline creation. Saves the file; returns the full record.
-    nonisolated static func performCreate(path: String, input: CreateAnnotationInput, sharedID: String? = nil) throws -> Annotation {
-        let sharedSource = try sharedEditSource(path: path, expected: sharedID)
+    nonisolated private static func performCreate(path: String, input: CreateAnnotationInput, editAccess: SharedPDFEditAccess?) throws -> Annotation {
+        let sharedSource = try editAccess?.source(at: path)
+        let sharedID = editAccess?.stamp
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path, original: sharedSource)
         let sourceId = PdfMetadata.documentId(raw)
         let existingAnnotations = Self.annotationMetadataRecords(in: raw)
@@ -472,8 +490,9 @@ final class PdfDocumentSession: DocumentSession {
     /// included; un-NM'd ones get stamped with their derived id). Never
     /// matches outline bookmarks. Only provided fields change; /M and
     /// /VellumUpdatedAt always refresh.
-    nonisolated static func performUpdate(path: String, input: UpdateAnnotationInput, sharedID: String? = nil) throws -> Bool {
-        let sharedSource = try sharedEditSource(path: path, expected: sharedID)
+    nonisolated private static func performUpdate(path: String, input: UpdateAnnotationInput, editAccess: SharedPDFEditAccess?) throws -> Bool {
+        let sharedSource = try editAccess?.source(at: path)
+        let sharedID = editAccess?.stamp
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path, original: sharedSource)
         let sourceId = PdfMetadata.documentId(raw)
         var records = Self.annotationMetadataRecords(in: raw)
@@ -581,8 +600,9 @@ final class PdfDocumentSession: DocumentSession {
 
     /// delete_annotation: outline bookmarks first, then page annotations;
     /// false when the id is unknown.
-    nonisolated static func performDelete(path: String, id: String, sharedID: String? = nil) throws -> Bool {
-        let sharedSource = try sharedEditSource(path: path, expected: sharedID)
+    nonisolated private static func performDelete(path: String, id: String, editAccess: SharedPDFEditAccess?) throws -> Bool {
+        let sharedSource = try editAccess?.source(at: path)
+        let sharedID = editAccess?.stamp
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path, original: sharedSource)
         let sourceId = PdfMetadata.documentId(raw)
         let originalData = sharedSource ?? (pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil)
@@ -648,8 +668,9 @@ final class PdfDocumentSession: DocumentSession {
 
     /// set_metadata: `page_count` is ignored; everything else lands in the
     /// Info dictionary and rewrites the file.
-    nonisolated static func performSetMetadata(path: String, key: String, value: String, sharedID: String? = nil) throws {
-        let sharedSource = try sharedEditSource(path: path, expected: sharedID)
+    nonisolated private static func performSetMetadata(path: String, key: String, value: String, editAccess: SharedPDFEditAccess?) throws {
+        let sharedSource = try editAccess?.source(at: path)
+        let sharedID = editAccess?.stamp
         if key == "page_count" { return }
         if let sharedID, key == "doc_id", value != sharedID {
             throw SessionServiceError.io("A shared PDF’s document ID cannot be changed.")

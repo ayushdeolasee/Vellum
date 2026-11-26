@@ -166,7 +166,7 @@ enum ScratchpadPersistence {
         coordinator: StorageCoordinator
     ) async -> String? {
         return await ScratchpadWriteCoordinator.shared.enqueueCommit(forKey: key) {
-            try? await DocumentDataStore.withScratchpadWriteAdmission(
+            try? await DocumentDataStore.withSidecarWriteAdmission(
                 forKey: key, document: document, coordinator: coordinator
             ) { () async throws -> String? in
                 let durable = relativeToScheme(try await DocumentDataStore.loadScratchpad(
@@ -308,7 +308,7 @@ enum ScratchpadPersistence {
             let fallback = (try? legacySnapshot(entry)) ?? LegacySnapshot(
                 key: entry.key, text: entry.text, attachments: [])
 
-            return (try? await DocumentDataStore.withScratchpadWriteAdmission(
+            return (try? await DocumentDataStore.withSidecarWriteAdmission(
                 forKey: key, document: document, coordinator: coordinator
             ) { () async throws -> MigrationResult in
                 let snapshot = try legacySnapshot(entry)

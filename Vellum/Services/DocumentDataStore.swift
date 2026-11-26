@@ -310,10 +310,10 @@ enum DocumentDataStore {
 
     // MARK: - scratchpad.md
 
-    /// Check membership against the active layout before any scratchpad sidecar
+    /// Check the active PDF identity before any document sidecar
     /// is changed. Hold the lease until the write finishes, so a storage switch
     /// cannot send the admitted write to a different shared root.
-    static func withScratchpadWriteAdmission<T: Sendable>(
+    static func withSidecarWriteAdmission<T: Sendable>(
         forKey key: String,
         document: DocumentInfo,
         coordinator: StorageCoordinator,
@@ -321,12 +321,9 @@ enum DocumentDataStore {
     ) async throws -> T {
         guard document.kind == .pdf else { return try await operation() }
         return try await withAccess(coordinator: coordinator) { access in
-            if let location = access.sharedPDFs {
-                let path = try metadataPath(for: document, in: access)
-                guard document.docId == key, DocumentIdentity.isCanonicalKey(key),
-                      let pdf = location.resolve(path),
-                      try pdf.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
-                else { throw DocumentAccessError.unavailable(document.pdfPath) }
+            if access.sharedPDFs != nil {
+                guard document.docId == key else { throw DocumentAccessError.unavailable(document.pdfPath) }
+                _ = try metadataPath(for: document, in: access)
             }
             return try await operation()
         }
@@ -334,7 +331,9 @@ enum DocumentDataStore {
 
     private static func metadataPath(for document: DocumentInfo, in access: Access) throws -> String {
         guard document.kind == .pdf, let location = access.sharedPDFs else { return document.pdfPath }
-        guard let relative = location.relativePath(for: URL(fileURLWithPath: document.pdfPath)) else {
+        let url = URL(fileURLWithPath: document.pdfPath)
+        guard let relative = location.relativePath(for: url),
+              try SharedPDFImport.key(at: url, in: location) == document.docId else {
             throw DocumentAccessError.unavailable(document.pdfPath)
         }
         return relative
@@ -458,6 +457,34 @@ enum DocumentDataStore {
         let operation = try ConversationOperationJournal.prepareReplacement(key, data: data)
         try writeAtomic(data, to: path, label: "conversations")
         if let operation { try ConversationOperationJournal.finish(key, id: operation) }
+    }
+
+    /// A peer may create the transcript after a cold load saw it missing.
+    /// Only a successful exclusive creation transfers ownership from legacy preferences.
+    static func createLegacyConversationIfAbsent(
+        forKey key: String, data: Data, exactPath: Bool, coordinator: StorageCoordinator
+    ) async throws -> (created: Bool, bytes: Data?) {
+        try await withAccess(coordinator: coordinator) { access in
+            // Filename recovery belongs to private app-container relocation.
+            guard exactPath || access.sharedPDFs == nil else { return (false, nil) }
+            let name = "conversations.json"
+            if let current = try await readData(forKey: key, relativeName: name, access: access) {
+                return (false, current)
+            }
+            guard try ConversationOperationJournal.read(key) == nil else { throw LibraryFileError.retryable }
+            let url = documentDir(forKey: key, root: access.documentsRoot).appendingPathComponent(name)
+            let created: Bool
+            if let coordinated = access.store as? CoordinatedLibraryFileStore {
+                created = try await coordinated.container.replace(url, with: data, ifCurrent: nil)
+            } else {
+                created = try await LocalFolderFileStore(root: access.documentsRoot).replace(url, with: data, ifCurrent: nil)
+            }
+            if created { return (true, data) }
+            guard let winner = try await readData(forKey: key, relativeName: name, access: access) else {
+                throw LibraryFileError.retryable
+            }
+            return (false, winner)
+        }
     }
 
     static func saveConversationsData(
