@@ -266,7 +266,7 @@ enum PdfAnnotationWriter {
         geometry: PageGeometry,
         id: String,
         now: String
-    ) throws -> (annotation: PDFAnnotation, position: PositionData, color: String?, content: String?, patches: [PdfBytePatch]) {
+    ) throws -> (annotation: PDFAnnotation, position: PositionData, color: String?, content: String?, patches: [PdfBytePatch], bounds: CGRect) {
         let position = input.positionData ?? defaultPosition(input: input, geometry: geometry)
         let color = input.color ?? PdfColor.defaultHex(for: input.type)
 
@@ -299,9 +299,9 @@ enum PdfAnnotationWriter {
         let subtype: PDFAnnotationSubtype = input.type == .highlight ? .highlight : .text
         let annotation = PDFAnnotation(bounds: .zero, forType: subtype, withProperties: properties)
         annotation.color = PdfColor.annotationColor(fromHex: color)
-        try applyPosition(annotation, geometry: geometry, position: position, isHighlight: input.type == .highlight)
+        let bounds = try applyPosition(annotation, geometry: geometry, position: position, isHighlight: input.type == .highlight)
 
-        return (annotation, position, color, input.content, patches)
+        return (annotation, position, color, input.content, patches, bounds)
     }
 
     /// default_position: zero-size anchor at the origin (bookmarks would anchor
@@ -332,7 +332,7 @@ enum PdfAnnotationWriter {
         geometry: PageGeometry,
         position: PositionData,
         isHighlight: Bool
-    ) throws {
+    ) throws -> CGRect {
         if isHighlight {
             guard !position.rects.isEmpty else {
                 throw SessionServiceError.invalidDocument("Highlight has no rectangles")
@@ -362,6 +362,7 @@ enum PdfAnnotationWriter {
                 NSValue(cgPoint: CGPoint(x: $0.0 - bounds.origin.x, y: $0.1 - bounds.origin.y))
                 #endif
             }
+            return bounds
         } else {
             guard let anchor = position.rects.first else {
                 throw SessionServiceError.invalidDocument("Note has no position")
@@ -372,7 +373,9 @@ enum PdfAnnotationWriter {
             let bottomRight = geometry.uiToPdf(
                 anchor.x + PdfAnnotationDefaults.noteSize, anchor.y + PdfAnnotationDefaults.noteSize,
                 pageWidth: position.pageWidth, pageHeight: position.pageHeight)
-            annotation.bounds = boundingBox(of: [topLeft, bottomRight])
+            let bounds = boundingBox(of: [topLeft, bottomRight])
+            annotation.bounds = bounds
+            return bounds
         }
     }
 

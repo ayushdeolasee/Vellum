@@ -536,6 +536,17 @@ public struct PdfDictSource {
 /// /Annots. Element grammar mirrors PdfDictSource.valueSpan: names, strings,
 /// hex strings, nested arrays/dictionaries, and "N G R" indirect references.
 public enum PdfArraySource {
+    public static func encoding(numbers values: [Double]) -> [UInt8] {
+        Array(("[ " + values.map(numberToken).joined(separator: " ") + " ]").utf8)
+    }
+
+    /// PDF numbers cannot use exponent notation. Keep Double round-trip precision.
+    public static func numberToken(_ value: Double) -> String {
+        let decimal = String(value)
+        guard let e = decimal.firstIndex(of: "e"), let exponent = Int(decimal[decimal.index(after: e)...]) else { return decimal }
+        return String(format: "%.*f", CInt(max(1, 17 - exponent)), value)
+    }
+
     /// Byte ranges of the array's top-level elements (brackets excluded);
     /// nil when the source is not a well-formed array.
     static func elementSpans(inArray bytes: [UInt8]) -> [Range<Int>]? {
@@ -567,8 +578,12 @@ public enum PdfArraySource {
     /// Indirect object numbers in an array, in source order. Direct values are
     /// ignored; PDFKit writes page annotation arrays as indirect references.
     public static func references(inArray bytes: [UInt8]) -> [Int]? {
-        guard let spans = elementSpans(inArray: bytes) else { return nil }
-        return spans.compactMap { PdfDictSource.parseReference(Array(bytes[$0])) }
+        referenceSlots(inArray: bytes)?.compactMap { $0 }
+    }
+
+    /// Keep the raw index even for a null or direct annotation.
+    public static func referenceSlots(inArray bytes: [UInt8]) -> [Int?]? {
+        elementSpans(inArray: bytes)?.map { PdfDictSource.parseReference(Array(bytes[$0])) }
     }
 }
 

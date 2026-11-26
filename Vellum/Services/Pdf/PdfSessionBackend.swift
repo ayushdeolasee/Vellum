@@ -394,7 +394,7 @@ final class PdfDocumentSession: DocumentSession {
     nonisolated static func performCreate(path: String, input: CreateAnnotationInput) throws -> Annotation {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         let sourceId = PdfMetadata.documentId(raw)
-        let existingAnnotations = Self.annotationMetadataRecords(in: raw)
+        let existingAnnotations = pdfKitDropsCustomKeys ? try Self.annotationMetadataRecords(in: raw) : []
         let existingBookmarks = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
         let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
         guard input.pageNumber >= 1, input.pageNumber <= raw.numberOfPages else {
@@ -438,7 +438,7 @@ final class PdfDocumentSession: DocumentSession {
             throw SessionServiceError.invalidDocument("Page \(input.pageNumber) does not exist")
         }
         let geometry = try PageGeometry(pageDictionary: pageDictionary)
-        let (annotation, position, color, content, patches) = try PdfAnnotationWriter.makeAnnotation(
+        let (annotation, position, color, content, patches, bounds) = try PdfAnnotationWriter.makeAnnotation(
             input: input, geometry: geometry, id: id, now: now)
         page.addAnnotation(annotation)
 
@@ -455,8 +455,7 @@ final class PdfDocumentSession: DocumentSession {
         if pdfKitDropsCustomKeys {
             data = try Self.rehydrateAnnotationMetadata(
                 normalizedData: data,
-                records: existingAnnotations + [AnnotationMetadataRecord(
-                    annotation: created, shouldRehydrate: true)])
+                records: existingAnnotations + [AnnotationMetadataRecord(created: created, bounds: bounds)])
             data = try Self.rehydrateBookmarkMetadata(
                 normalizedData: data, bookmarks: existingBookmarks)
             if let originalData {
@@ -477,14 +476,15 @@ final class PdfDocumentSession: DocumentSession {
     nonisolated static func performUpdate(path: String, input: UpdateAnnotationInput) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         let sourceId = PdfMetadata.documentId(raw)
-        var records = Self.annotationMetadataRecords(in: raw)
+        var records = pdfKitDropsCustomKeys ? try Self.annotationMetadataRecords(in: raw) : []
         let bookmarks = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
         let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
 
         if let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) {
             PdfAnnotationWriter.setText(annotation, "NM", input.id)
             PdfAnnotationWriter.setText(annotation, "M", PdfDates.pdfDateNow())
-            PdfAnnotationWriter.setText(annotation, "VellumUpdatedAt", PdfDates.rfc3339Now())
+            let updatedAt = PdfDates.rfc3339Now()
+            PdfAnnotationWriter.setText(annotation, "VellumUpdatedAt", updatedAt)
 
             if let color = input.color {
                 annotation.color = PdfColor.annotationColor(fromHex: color)
@@ -495,13 +495,14 @@ final class PdfDocumentSession: DocumentSession {
             if let isPinned = input.isPinned {
                 PdfAnnotationWriter.setValue(annotation, "VellumPinned", (isPinned ? 1 : 0) as NSNumber)
             }
+            var requestedBounds: CGRect?
             if let position = input.positionData {
                 guard let pageDictionary = raw.page(at: pageIndex + 1)?.dictionary else {
                     throw SessionServiceError.invalidDocument("Failed to read PDF page: missing page dictionary")
                 }
                 let geometry = try PageGeometry(pageDictionary: pageDictionary)
                 let isHighlight = annotation.type == "Highlight"
-                try PdfAnnotationWriter.applyPosition(
+                requestedBounds = try PdfAnnotationWriter.applyPosition(
                     annotation, geometry: geometry, position: position, isHighlight: isHighlight)
                 if let selectedText = position.selectedText {
                     PdfAnnotationWriter.setText(annotation, "VellumSelectedText", selectedText)
@@ -509,21 +510,14 @@ final class PdfDocumentSession: DocumentSession {
             }
 
             var data = try serialize(document)
-            if pdfKitDropsCustomKeys,
-               let index = records.firstIndex(where: { $0.annotation.id == input.id }) {
-                let current = records[index].annotation
-                records[index] = AnnotationMetadataRecord(
-                    annotation: Annotation(
-                        id: current.id,
-                        type: current.type,
-                        pageNumber: current.pageNumber,
-                        color: input.color ?? current.color,
-                        content: input.content ?? current.content,
-                        positionData: input.positionData ?? current.positionData,
-                        createdAt: current.createdAt,
-                        updatedAt: PdfDates.rfc3339Now(),
-                        isPinned: input.isPinned ?? current.isPinned),
-                    shouldRehydrate: true)
+            if pdfKitDropsCustomKeys {
+                let matches = records.indices.filter { records[$0].id == input.id }
+                guard matches.count <= 1 else {
+                    throw SessionServiceError.invalidDocument("Could not uniquely match the annotation to update")
+                }
+                if let index = matches.first {
+                    records[index].apply(input, requestedBounds: requestedBounds, updatedAt: updatedAt)
+                }
                 data = try Self.rehydrateAnnotationMetadata(
                     normalizedData: data, records: records)
                 data = try Self.rehydrateBookmarkMetadata(
@@ -641,8 +635,8 @@ final class PdfDocumentSession: DocumentSession {
         page.removeAnnotation(annotation)
         var data = try serialize(document)
         if pdfKitDropsCustomKeys {
-            let remaining = Self.annotationMetadataRecords(in: raw).filter {
-                $0.annotation.id != id
+            let remaining = try Self.annotationMetadataRecords(in: raw).filter {
+                $0.id != id
             }
             data = try Self.rehydrateAnnotationMetadata(
                 normalizedData: data, records: remaining)
@@ -906,121 +900,170 @@ final class PdfDocumentSession: DocumentSession {
     }
 
     private struct AnnotationMetadataRecord {
-        var annotation: Annotation
-        var shouldRehydrate: Bool
+        let id: String
+        let page: Int
+        let subtype: String
+        var content: String?
+        var rect: [Double]
+        var derivedSlot: Int?
+        var fields: [String: [UInt8]] = [:]
+
+        // PDFKit's sticky icon grows toward +x and -y on iPadOS 26. Its left
+        // and top PDF edges survive, even on a rotated or cropped page.
+        var witness: Witness { Witness(subtype: subtype, content: content ?? "") }
+        struct Witness: Hashable {
+            let subtype: String
+            let content: String
+        }
+
+        static func coordinates(_ bounds: CGRect) -> [Double] {
+            [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY]
+        }
+
+        init(created: Annotation, bounds: CGRect) {
+            id = created.id
+            page = created.pageNumber
+            subtype = created.type == .highlight ? "Highlight" : "Text"
+            rect = Self.coordinates(bounds)
+            content = created.content
+            fields["NM"] = PdfTextString.encode(id)
+            fields["T"] = PdfTextString.encode("Vellum")
+            fields["VellumCreatedAt"] = PdfTextString.encode(created.createdAt)
+            fields["VellumUpdatedAt"] = PdfTextString.encode(created.updatedAt)
+            fields["VellumSelectedText"] = created.positionData?.selectedText.map(PdfTextString.encode)
+            if created.type == .highlight { fields["CA"] = Array(".4".utf8) }
+            else { fields["Name"] = Array("/Note".utf8) }
+        }
+
+        init(dictionary: CGPDFDictionaryRef, page: Int, slot: Int, subtype: String) throws {
+            self.page = page
+            self.subtype = subtype
+            id = PdfAnnotationReader.annotationId(dictionary: dictionary, pageNumber: page, index: slot)
+            content = CgPdf.string(dictionary, "Contents")
+            guard let rect = Self.readRect(dictionary) else {
+                throw SessionServiceError.invalidDocument("Invalid annotation rectangle on page \(page)")
+            }
+            self.rect = rect
+            // Preserve string bytes, including the encoding of a foreign ID.
+            for key in ["NM", "T", "VellumCreatedAt", "VellumUpdatedAt", "VellumSelectedText"] where CgPdf.has(dictionary, key) {
+                var string: CGPDFStringRef?
+                guard CGPDFDictionaryGetString(dictionary, key, &string), let string else {
+                    throw SessionServiceError.invalidDocument("Invalid annotation /\(key) on page \(page)")
+                }
+                let bytes = UnsafeBufferPointer(start: CGPDFStringGetBytePtr(string), count: CGPDFStringGetLength(string))
+                fields[key] = Array(("<" + bytes.map { String(format: "%02x", $0) }.joined() + ">").utf8)
+            }
+            if fields["NM"] == nil { derivedSlot = slot }
+            if let pin = CgPdf.integer(dictionary, "VellumPinned") {
+                fields["VellumPinned"] = Array(String(pin).utf8)
+            }
+            if CgPdf.name(dictionary, "VellumType") == "Bookmark" { fields["VellumType"] = Array("/Bookmark".utf8) }
+            if subtype == "Highlight", let object = CgPdf.object(dictionary, "CA"),
+               let opacity = CgPdf.objectNumber(object), opacity.isFinite {
+                fields["CA"] = Array(PdfArraySource.numberToken(opacity).utf8)
+            }
+            if subtype == "Text", CgPdf.name(dictionary, "Name") == "Note" {
+                fields["Name"] = Array("/Note".utf8)
+            }
+        }
+
+        static func readRect(_ dict: CGPDFDictionaryRef) -> [Double]? {
+            guard let array = CgPdf.array(dict, "Rect"), CgPdf.count(array) == 4 else { return nil }
+            let values = (0..<4).compactMap { CgPdf.numberAt(array, $0) }
+            return values.count == 4 && values.allSatisfy(\.isFinite) ? values : nil
+        }
+
+        mutating func apply(_ input: UpdateAnnotationInput, requestedBounds: CGRect?, updatedAt: String) {
+            if derivedSlot != nil {
+                fields["NM"] = PdfTextString.encode(id)
+                derivedSlot = nil
+            }
+            if let value = input.content { content = value }
+            if fields["VellumUpdatedAt"] != nil || fields["VellumCreatedAt"] != nil {
+                fields["VellumUpdatedAt"] = PdfTextString.encode(updatedAt)
+            }
+            if let pin = input.isPinned { fields["VellumPinned"] = pin ? Array("1".utf8) : nil }
+            if let position = input.positionData, let requestedBounds {
+                rect = Self.coordinates(requestedBounds)
+                fields["VellumSelectedText"] = position.selectedText.map(PdfTextString.encode)
+            }
+        }
     }
 
-    /// Restore Vellum's custom keys after an iPadOS 26 PDFKit rewrite. All
-    /// supported records participate in positional matching, but only records
-    /// already owned by Vellum (or the annotation explicitly being created or
-    /// edited) are stamped. This preserves third-party annotation identity and
-    /// authorship during unrelated Vellum mutations.
     nonisolated private static func rehydrateAnnotationMetadata(
-        normalizedData: Data,
-        records: [AnnotationMetadataRecord]
+        normalizedData: Data, records: [AnnotationMetadataRecord]
     ) throws -> Data {
+        guard !records.isEmpty else { return normalizedData }
         let file = try ClassicPdfFile(appleData: normalizedData)
-        guard let catalogNumber = file.rootNumber,
-              let catalog = file.objectSource(catalogNumber) else {
+        guard let root = file.rootNumber, let catalog = file.objectSource(root),
+              let raw = PdfDocumentLoader.cgDocument(from: normalizedData) else {
             throw SessionServiceError.invalidDocument("Failed to restore annotation metadata")
         }
+        defer { withExtendedLifetime(raw) {} }
         var increment = PdfIncrement(file: file)
-        let maximumPage = records.map(\.annotation.pageNumber).max() ?? 0
-        if maximumPage > 0 {
-            for pageNumber in 1...maximumPage {
-                let pageRecords = records.filter {
-                    $0.annotation.pageNumber == pageNumber
-                        && ($0.annotation.type == .highlight || $0.annotation.type == .note)
+        var patched = Set<Int>()
+        for (pageNumber, records) in Dictionary(grouping: records, by: \.page) {
+            let mismatch = SessionServiceError.invalidDocument("Could not uniquely match rewritten annotations on page \(pageNumber)")
+            guard let number = PdfOutlineIncrement.pageObjectNumber(in: file, catalog: catalog, pageNumber: pageNumber),
+                  let page = file.objectSource(number),
+                  let annots = page.inlineArray(forKey: "Annots")
+                      ?? page.reference(forKey: "Annots").flatMap(file.rawObjectValue),
+                  let references = PdfArraySource.referenceSlots(inArray: annots),
+                  let dict = raw.page(at: pageNumber)?.dictionary, let entries = CgPdf.array(dict, "Annots"),
+                  references.count == CgPdf.count(entries) else { throw mismatch }
+            let byWitness = Dictionary(grouping: records.indices, by: { records[$0].witness })
+            var seen = Set<Int>()
+            for (slot, reference) in references.enumerated() {
+                guard let candidate = CgPdf.dictionaryAt(entries, slot),
+                      let subtype = CgPdf.name(candidate, "Subtype"),
+                      ["Text", "FreeText", "Highlight"].contains(subtype) else { continue }
+                let key = AnnotationMetadataRecord.Witness(subtype: subtype, content: CgPdf.string(candidate, "Contents") ?? "")
+                guard var matches = byWitness[key], let actual = AnnotationMetadataRecord.readRect(candidate) else { throw mismatch }
+                if CgPdf.has(candidate, "NM") {
+                    guard let id = CgPdf.string(candidate, "NM") else { throw mismatch }
+                    matches = matches.filter { records[$0].id == id }
                 }
-                guard !pageRecords.isEmpty else { continue }
-                guard let pageObjectNumber = PdfOutlineIncrement.pageObjectNumber(
-                          in: file, catalog: catalog, pageNumber: pageNumber),
-                      let page = file.objectSource(pageObjectNumber),
-                      let annotsNumber = page.reference(forKey: "Annots"),
-                      let annots = file.rawObjectValue(annotsNumber),
-                      let references = PdfArraySource.references(inArray: annots)
-                else {
-                    throw SessionServiceError.invalidDocument(
-                        "Failed to restore annotation metadata on page \(pageNumber)")
-                }
-                var recordIndex = 0
-                for annotationNumber in references {
-                    guard recordIndex < pageRecords.count,
-                          var source = file.objectSource(annotationNumber),
-                          let subtype = source.name(forKey: "Subtype"),
-                          subtype == "Highlight" || subtype == "Text" || subtype == "FreeText"
-                    else { continue }
-                    let metadata = pageRecords[recordIndex]
-                    recordIndex += 1
-                    guard metadata.shouldRehydrate else { continue }
-                    let record = metadata.annotation
-                    source.setValue(forKey: "NM", raw: PdfTextString.encode(record.id))
-                    source.setValue(forKey: "M", raw: PdfTextString.encode(PdfDates.pdfDateNow()))
-                    source.setInteger(forKey: "F", to: 4)
-                    source.setValue(forKey: "T", raw: PdfTextString.encode("Vellum"))
-                    source.setValue(
-                        forKey: "VellumCreatedAt", raw: PdfTextString.encode(record.createdAt))
-                    source.setValue(
-                        forKey: "VellumUpdatedAt", raw: PdfTextString.encode(record.updatedAt))
-                    if record.pinned {
-                        source.setInteger(forKey: "VellumPinned", to: 1)
-                    } else {
-                        source.removeEntry(forKey: "VellumPinned")
+                if subtype == "Text" || matches.count > 1 {
+                    matches = matches.filter {
+                        let expected = records[$0].rect
+                        return abs(expected[0] - actual[0]) < 0.001 && abs(expected[3] - actual[3]) < 0.001
                     }
-                    if let selectedText = record.positionData?.selectedText {
-                        source.setValue(
-                            forKey: "VellumSelectedText", raw: PdfTextString.encode(selectedText))
-                    } else {
-                        source.removeEntry(forKey: "VellumSelectedText")
-                    }
-                    if record.type == .highlight {
-                        source.setValue(forKey: "CA", raw: Array(".4".utf8))
-                    } else {
-                        source.setValue(forKey: "Name", raw: Array("/Note".utf8))
-                    }
-                    increment.setObject(annotationNumber, source: source.sourceBytes)
                 }
-                guard recordIndex == pageRecords.count else {
-                    throw SessionServiceError.invalidDocument(
-                        "Failed to match all annotations on page \(pageNumber)")
+                guard matches.count == 1, let index = matches.first, seen.insert(index).inserted,
+                      let reference, patched.insert(reference).inserted,
+                      var source = file.objectSource(reference) else { throw mismatch }
+                let record = records[index]
+                if let originalSlot = record.derivedSlot, originalSlot != slot { throw mismatch }
+                for key in ["NM", "T", "VellumCreatedAt", "VellumUpdatedAt", "VellumSelectedText", "VellumPinned"] where record.fields[key] == nil {
+                    source.removeEntry(forKey: key)
                 }
+                for (key, value) in record.fields.sorted(by: { $0.key < $1.key }) {
+                    source.setValue(forKey: key, raw: value)
+                }
+                if subtype == "Text" { source.setValue(forKey: "Rect", raw: PdfArraySource.encoding(numbers: record.rect)) }
+                increment.setObject(reference, source: source.sourceBytes)
             }
+            guard seen.count == records.count else { throw mismatch }
         }
         return increment.appended()
     }
 
-    /// Supported page annotations in raw page order (bookmarks excluded), plus
-    /// whether each raw dictionary carries Vellum ownership metadata.
     nonisolated private static func annotationMetadataRecords(
         in document: CGPDFDocument
-    ) -> [AnnotationMetadataRecord] {
-        var result: [AnnotationMetadataRecord] = []
-        guard document.numberOfPages > 0 else { return result }
-        for pageNumber in 1...document.numberOfPages {
-            guard let dictionary = document.page(at: pageNumber)?.dictionary,
-                  let geometry = try? PageGeometry(pageDictionary: dictionary),
+    ) throws -> [AnnotationMetadataRecord] {
+        var records: [AnnotationMetadataRecord] = []
+        for pageIndex in 0..<document.numberOfPages {
+            let page = pageIndex + 1
+            guard let dictionary = document.page(at: page)?.dictionary,
                   let entries = CgPdf.array(dictionary, "Annots") else { continue }
-            for index in 0..<CgPdf.count(entries) {
-                guard let rawAnnotation = CgPdf.dictionaryAt(entries, index),
-                      let annotation = PdfAnnotationReader.annotation(
-                          from: rawAnnotation,
-                          pageNumber: pageNumber,
-                          index: index,
-                          geometry: geometry)
-                else { continue }
-                // `/T` is the standard PDF author/title field; an unrelated
-                // reviewer can legitimately be named "Vellum". Ownership must
-                // therefore be proven by an application-specific key.
-                let isVellumOwned = CgPdf.has(rawAnnotation, "VellumCreatedAt")
-                    || CgPdf.has(rawAnnotation, "VellumUpdatedAt")
-                    || CgPdf.has(rawAnnotation, "VellumSelectedText")
-                    || CgPdf.has(rawAnnotation, "VellumPinned")
-                result.append(AnnotationMetadataRecord(
-                    annotation: annotation,
-                    shouldRehydrate: isVellumOwned))
+            for slot in 0..<CgPdf.count(entries) {
+                guard let annotation = CgPdf.dictionaryAt(entries, slot),
+                      let subtype = CgPdf.name(annotation, "Subtype"),
+                      ["Text", "FreeText", "Highlight"].contains(subtype) else { continue }
+                records.append(try AnnotationMetadataRecord(dictionary: annotation, page: page, slot: slot, subtype: subtype))
             }
         }
-        return result
+        return records
     }
 
     /// Restore Vellum outline keys that iPadOS 26 strips while preserving the

@@ -170,21 +170,10 @@ public enum PdfAnnotationIncrement {
         return formatter.string(from: date)
     }
 
-    private static func numbers(_ values: [Double]) -> [UInt8] {
-        let items = values.map { value -> String in
-            let decimal = String(value)
-            // Swift's shortest round-trip decimal may use an exponent. PDF
-            // number tokens cannot, so expand those values at Double precision.
-            guard let e = decimal.firstIndex(of: "e"), let exponent = Int(decimal[decimal.index(after: e)...]) else { return decimal }
-            return String(format: "%.*f", CInt(max(1, 17 - exponent)), value)
-        }
-        return Array(("[ " + items.joined(separator: " ") + " ]").utf8)
-    }
-
     private static func setColor(_ color: String, in dict: inout PdfDictSource) {
         let hex = color.hasPrefix("#") ? color.dropFirst() : color[...]
         let rgb = hex.count == 6 ? UInt32(hex, radix: 16) ?? 0xfef08a : 0xfef08a
-        dict.setValue(forKey: "C", raw: numbers([16, 8, 0].map { Double((rgb >> $0) & 255) / 255 }))
+        dict.setValue(forKey: "C", raw: PdfArraySource.encoding(numbers: [16, 8, 0].map { Double((rgb >> $0) & 255) / 255 }))
     }
 
     private static func setPosition(_ position: PositionData, highlight: Bool,
@@ -218,8 +207,8 @@ public enum PdfAnnotationIncrement {
                 }
             }
         }
-        dict.setValue(forKey: "Rect", raw: numbers([left, bottom, right, top]))
-        if highlight { dict.setValue(forKey: "QuadPoints", raw: numbers(quads)) }
+        dict.setValue(forKey: "Rect", raw: PdfArraySource.encoding(numbers: [left, bottom, right, top]))
+        if highlight { dict.setValue(forKey: "QuadPoints", raw: PdfArraySource.encoding(numbers: quads)) }
         if let text = position.selectedText { dict.setTextString(forKey: "VellumSelectedText", to: text) }
     }
 }
