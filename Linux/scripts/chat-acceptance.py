@@ -272,6 +272,7 @@ def exercise_recovery():
         with recovery_reader():
             fail_save("Recover this?")
             assert get("Question").queryEditableText().setTextContents(draft)
+            capture("reader-chat-retry.png")
             select("harbor.vellumweb")
             wait(lambda: "Apple history" in transcript(), "leave after failed PDF save")
             select("classic-two-column.pdf")
@@ -304,6 +305,7 @@ def exercise_recovery():
         wait(lambda: has_status("Saved history could not be read.") and "Force quit recovery?" in transcript(),
              "forced exit retained turns during persistent failure")
         assert draft_text() == "Forced exit draft"
+        fail_save("Oversized recovery?")
         peer = original[:-1] + b',{"id":"recovery-peer", "role":"assistant", "createdAt":"peer", "content":"Peer", "opaque":1.2300}'
         conversation.write_bytes(peer + b"]")
         click("Retry Save")
@@ -311,7 +313,8 @@ def exercise_recovery():
              "retry succeeds against peer bytes")
         assert conversation.read_bytes().startswith(peer + b",")
         turns = json.loads(conversation.read_bytes())
-        assert [m["content"] for m in turns[-4:]] == ["Recover this?", "First café done", "Force quit recovery?", "First café done"]
+        assert [m["content"] for m in turns[-6:]] == ["Recover this?", "First café", "Force quit recovery?",
+                                                       "First café", "Oversized recovery?", "First café"]
         assert len({m["id"] for m in turns}) == len(turns)
         assert get("Question").queryEditableText().setTextContents("")
         click("Close")
@@ -326,6 +329,8 @@ def exercise_recovery():
         with recovery_reader(XDG_STATE_HOME=str(blocked)):
             fail_save("Explicit discard?")
             click("Close")
+            get("Stay Here")
+            capture("reader-chat-close.png")
             click("Stay Here")
             wait(lambda: "Explicit discard?" in transcript(), "stay keeps unsaved chat")
             click("Close")

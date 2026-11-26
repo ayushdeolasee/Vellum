@@ -110,7 +110,7 @@ final class ReaderController {
         case READER_CHAT_DRAFT:
             chat.draftChanged(reader_chat_panel(window))
         case READER_CHAT_RETRY:
-            chat.save(panel: reader_chat_panel(window))
+            chat.save(panel: reader_chat_panel(window), retry: true)
         case READER_CHAT_STOP:
             chat.stop(panel: reader_chat_panel(window))
         case READER_SELECT:

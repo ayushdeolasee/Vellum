@@ -164,7 +164,7 @@ final class ReaderChatController {
         let destination: String
         if saveFailed {
             destination = writer == nil ? "Unsaved chat is kept on this device. Enable shared editing to retry."
-                : "Chat has unsaved messages. You can switch documents and retry here later."
+                : "Chat has unsaved messages. Check folder access and the 32 MiB conversation limit, then retry. You can return to this document later."
         } else if canSave && !historyNotice.isEmpty {
             destination = "If a shared save fails, chat keeps your new messages for retry."
         } else {
@@ -208,12 +208,16 @@ final class ReaderChatController {
 
     /// Serialize append-only saves and keep the old document's owner alive
     /// across selection/close. A failed CAS leaves the turns in memory for retry.
-    func save(panel: OpaquePointer) {
+    func save(panel: OpaquePointer, retry: Bool = false) {
         guard let key = sessionKey, document?.key != nil, let store, let writer, pending[key]?.isEmpty == false else { return }
+        if retry { reader_chat_state(panel, "Retrying shared save…", false, false) }
         let prior = persistence
         persistence = Task {
             await prior?.value
-            guard let turns = pending[key], !turns.isEmpty else { return }
+            guard let turns = pending[key], !turns.isEmpty else {
+                if retry, !closing, sessionKey == key, loaded { ready(panel: panel) }
+                return
+            }
             let previousNotice = historyNotice
             let previouslyFailed = saveFailed
             do {
@@ -235,7 +239,7 @@ final class ReaderChatController {
                 guard !closing, sessionKey == key, loaded else { return }
                 saveFailed = true
             }
-            if !busy && (previousNotice != historyNotice || previouslyFailed != saveFailed) { ready(panel: panel) }
+            if !busy && (retry || previousNotice != historyNotice || previouslyFailed != saveFailed) { ready(panel: panel) }
         }
     }
 
