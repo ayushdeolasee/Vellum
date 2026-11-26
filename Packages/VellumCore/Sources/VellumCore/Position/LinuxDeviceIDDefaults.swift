@@ -31,9 +31,7 @@ public struct LinuxDeviceIDDefaults: DeviceIDDefaults {
         let lock = open(directory.appendingPathComponent("device-id.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lock >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { _ = close(lock) }
-        while flock(lock, LOCK_EX) != 0 {
-            if errno != EINTR { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        }
+        try lockLinuxFile(lock)
         let url = directory.appendingPathComponent("device-id")
         let stored: String
         do {

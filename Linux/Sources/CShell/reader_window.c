@@ -7,11 +7,12 @@ struct ReaderWindow {
     GtkWidget *search, *no_matches;
     GtkWidget *title, *page, *previous, *next, *message, *picture, *stack, *status;
     GtkStack *screens;
-    GtkWidget *paging, *body, *settings_button;
+    GtkWidget *paging, *body, *settings_button, *notice;
     ReaderSettings *settings;
     ScratchpadPanel *scratchpad;
     ReaderCallback callback;
     void *context;
+    GCancellable *leave_dialog;
     gboolean closing, drained, editing;
 };
 
@@ -58,6 +59,7 @@ static void clicked(GtkButton *button, ReaderWindow *r) {
 static void begin_close(ReaderWindow *r) {
     if (!r->window || r->closing) return;
     r->closing = TRUE;
+    if (r->leave_dialog) g_cancellable_cancel(r->leave_dialog);
     reader_settings_dismiss(r->settings);
     notify(r, READER_CLOSE, -1);
 }
@@ -79,6 +81,52 @@ ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *r) {
 void reader_set_close_pending(ReaderWindow *r, bool pending) {
     g_assert(shell_on_gtk_thread());
     if (!r->closing) gtk_widget_set_sensitive(GTK_WIDGET(r->window), !pending);
+}
+
+typedef struct {
+    ReaderWindow *reader;
+    ReaderLeaveReply reply;
+    void *context;
+    ReaderRecoveryReply recovered;
+} LeaveRequest;
+
+static void leave_answered(GObject *source, GAsyncResult *result, gpointer data) {
+    g_autofree LeaveRequest *request = data;
+    int answer = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source), result, NULL);
+    g_clear_object(&request->reader->leave_dialog);
+    if (request->recovered) request->recovered(request->context, answer);
+    else request->reply(request->context, answer == 1);
+}
+
+void reader_confirm_leave(ReaderWindow *r, bool scratchpad, ReaderLeaveReply reply, void *context) {
+    if (r->closing || r->leave_dialog) { reply(context, false); return; }
+    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("%s", scratchpad
+        ? "Some scratchpad changes could not be saved." : "Your reading position could not be saved.");
+    gtk_alert_dialog_set_detail(dialog, scratchpad
+        ? "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk."
+        : "You can stay and retry, or continue with the last saved position.");
+    const char *buttons[] = {"Stay Here", scratchpad ? "Discard Unsaved Drafts" : "Continue Without Saving Position", NULL};
+    gtk_alert_dialog_set_buttons(dialog, buttons);
+    gtk_alert_dialog_set_cancel_button(dialog, 0);
+    gtk_alert_dialog_set_default_button(dialog, 0);
+    LeaveRequest *request = g_new(LeaveRequest, 1);
+    *request = (LeaveRequest){r, reply, context};
+    r->leave_dialog = g_cancellable_new();
+    gtk_alert_dialog_choose(dialog, r->window, r->leave_dialog, leave_answered, request);
+}
+
+void reader_confirm_recovered(ReaderWindow *r, ReaderRecoveryReply reply, void *context) {
+    if (r->closing || r->leave_dialog) { reply(context, 0); return; }
+    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("Scratchpad changes saved on this device");
+    gtk_alert_dialog_set_detail(dialog, "Reopen the document in this folder to recover the draft. The shared note is still on disk.");
+    const char *buttons[] = {"Stay Here", "Leave With Local Copy", "Discard Unsaved Drafts", NULL};
+    gtk_alert_dialog_set_buttons(dialog, buttons);
+    gtk_alert_dialog_set_cancel_button(dialog, 0);
+    gtk_alert_dialog_set_default_button(dialog, 0);
+    LeaveRequest *request = g_new(LeaveRequest, 1);
+    *request = (LeaveRequest){r, NULL, context, reply};
+    r->leave_dialog = g_cancellable_new();
+    gtk_alert_dialog_choose(dialog, r->window, r->leave_dialog, leave_answered, request);
 }
 
 void reader_commit_close(ReaderWindow *r) {
@@ -208,6 +256,16 @@ void reader_set_editing(ReaderWindow *r, bool enabled, bool available) {
     reader_settings_set_editing(r->settings, enabled, available);
 }
 
+void reader_notice(ReaderWindow *r, const char *message) {
+    gtk_label_set_text(GTK_LABEL(r->notice), message);
+    gtk_widget_set_visible(r->notice, TRUE);
+}
+
+void reader_article_location(ReaderWindow *r, int page, int percent) {
+    g_autofree char *text = g_strdup_printf("Page %d · %d%%", page, percent);
+    gtk_label_set_text(GTK_LABEL(r->page), text);
+}
+
 void reader_show_status(ReaderWindow *r, const char *message) {
     gtk_label_set_text(GTK_LABEL(r->status), message);
 }
@@ -316,7 +374,14 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     r->screens = GTK_STACK(gtk_stack_new());
     gtk_stack_set_hhomogeneous(r->screens, FALSE);
     gtk_stack_set_vhomogeneous(r->screens, FALSE);
-    gtk_window_set_child(r->window, GTK_WIDGET(r->screens));
+    GtkWidget *screen_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    r->notice = gtk_label_new(NULL);
+    gtk_label_set_wrap(GTK_LABEL(r->notice), TRUE);
+    gtk_widget_set_visible(r->notice, FALSE);
+    gtk_box_append(GTK_BOX(screen_box), r->notice);
+    gtk_widget_set_vexpand(GTK_WIDGET(r->screens), TRUE);
+    gtk_box_append(GTK_BOX(screen_box), GTK_WIDGET(r->screens));
+    gtk_window_set_child(r->window, screen_box);
     gtk_stack_add_child(r->screens, body);
     r->settings = reader_settings_new(r->window, r, settings_event);
     gtk_stack_add_child(r->screens, reader_settings_page(r->settings));
