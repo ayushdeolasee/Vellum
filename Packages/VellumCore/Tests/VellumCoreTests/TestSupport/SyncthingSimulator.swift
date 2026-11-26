@@ -78,6 +78,9 @@ struct SyncthingSimulator {
 
     @discardableResult
     mutating func sync() async throws -> Set<String> {
+        // This shared baseline models only paths both peers accept. Syncthing
+        // indexes each peer's local rules separately. Asymmetric index state,
+        // changing rules and later unignores are outside this simulator.
         let rules = try await ignores(a) + ignores(b)
         let left = try snapshot(a, rules: rules)
         let right = try snapshot(b, rules: rules)

@@ -178,7 +178,10 @@ struct PeerLibrary {
 
     func verifyPositions() async throws {
         let files = try FileManager.default.contentsOfDirectory(atPath: positions.root.path)
-        let records = await positions.loadAll()
+        let records = try files.map { name in
+            let file = try #require(PositionLayout.parseFileName(name))
+            return try file.decode(Data(contentsOf: positions.root.appendingPathComponent(name)))
+        }
         #expect(records.count == 2)
         let merged = PositionMerge.merge(records)[Self.key]?.readingPosition
         #expect(merged?.device.platform == "linux")
@@ -238,6 +241,21 @@ struct PeerLibrary {
                               rescanInterval: .milliseconds(80))
     }
 
+    // Walk the unfiltered trees, including hidden directories and archived files.
+    func conflictSiblings() throws -> Set<String> {
+        var pending = [root]
+        var found = Set<String>()
+        while let directory = pending.popLast() {
+            for entry in try store.contents(of: directory) {
+                if entry.isDirectory { pending.append(entry.url) }
+                if entry.url.lastPathComponent.contains(".sync-conflict-") {
+                    found.insert(entry.url.pathComponents.dropFirst(root.pathComponents.count).joined(separator: "/"))
+                }
+            }
+        }
+        return found
+    }
+
     func versions(_ path: String) throws -> [Data] {
         let canonical = url(path)
         let dir = canonical.deletingLastPathComponent().appendingPathComponent("conflicts")
@@ -275,26 +293,30 @@ struct PeerLibrary {
         let keys = ["mac", "linux"].map { DocumentKey.web(normalizedURL: Self.address + "/" + $0).hash }.sorted()
         let expectedNames = [keys[0]: "Café.vellumweb", keys[1]: "Café (\(keys[1].prefix(6))).vellumweb", Self.longKey: Self.longName]
         #expect(index.entries == expectedNames)
-        try await verifyLongCapture()
+        // Read the stored index and its ZIPs directly. Catalog lookup can repair them.
+        let longName = try #require(index.entries[Self.longKey])
+        try #require(longName == Self.longName)
+        let long = try ArchiveCodec.decode(read("Web Pages/" + longName))
+        #expect(long.manifest.title == Self.longTitle)
+        #expect(long.manifest.canonicalUrl == Self.address + "/long")
         for peer in ["mac", "linux"] {
             let address = Self.address + "/" + peer
             let key = DocumentKey.web(normalizedURL: address).hash
-            let found = try #require(try await catalog.lookup(forKey: key))
-            #expect(found.name == expectedNames[key])
-            #expect(found.bytes == (try read("Web Pages/" + found.name)))
-            let capture = try ArchiveCodec.decode(found.bytes)
+            let name = try #require(index.entries[key])
+            try #require(name == expectedNames[key])
+            let capture = try ArchiveCodec.decode(read("Web Pages/" + name))
             #expect(capture.manifest.canonicalUrl == address && capture.manifest.title == Self.title)
             #expect(capture.annotations.map(\.id) == [peer])
             #expect(capture.snapshotHtml == "<html>\(peer)</html>")
         }
-        #if !SWIFT_PACKAGE
-        if expectMergedMeta {
-            let merged = try JSONDecoder().decode(DocumentDataStore.Meta.self, from: read(Self.meta))
-            #expect(merged.lastKnownPath == Self.address + "/mac")
-            #expect(merged.title == "Retained title")
-            #expect(merged.unknownFields == ["future_mac": .string("mac"), "future_linux": .string("linux")])
-        }
-        #endif
+        let metadata = try versions(Self.meta).map { try JSONDecoder().decode([String: JSONValue].self, from: $0) }
+        let current = try #require(metadata.first)
+        #expect(current["last_known_path"] == .string(Self.address + "/mac"))
+        #expect(current["future_mac"] == .string("mac"))
+        #expect(current["title"] == (expectMergedMeta ? .string("Retained title") : nil))
+        #expect(current["future_linux"] == (expectMergedMeta ? .string("linux") : nil))
+        #expect(metadata.dropFirst().contains { $0["last_known_path"] == .string(Self.address + "/linux")
+            && $0["future_linux"] == .string("linux") && $0["title"] == .string("Retained title") })
         try await verifyPositions()
     }
 }
@@ -326,12 +348,29 @@ struct TwoPeerOfflineConflictTests {
         try await a.edit("mac")
         try await b.edit("linux")
         #expect(try await transport.sync() == PeerLibrary.conflictingPaths)
+        let siblings = Set(PeerLibrary.conflictingPaths.map { path in
+            let file = path as NSString
+            return file.deletingPathExtension + ".sync-conflict-20260101-000002-LNXPEER." + file.pathExtension
+        })
+        try #require(try a.conflictSiblings() == siblings)
+        try #require(try b.conflictSiblings() == siblings)
         try await a.recover()
+        try #require(try a.conflictSiblings().isEmpty)
+        try #require(try b.conflictSiblings() == siblings)
         try await b.recover(macPeer: false)
-        try await a.verifyRecovery()
+        try #require(try b.conflictSiblings().isEmpty)
+        #if SWIFT_PACKAGE
+        let typedMac = false
+        #else
+        let typedMac = true
+        #endif
+        try await a.verifyRecovery(expectMergedMeta: typedMac)
         try await b.verifyRecovery(expectMergedMeta: false)
         let remainingConflicts = try await transport.sync()
         #expect(remainingConflicts == [])
-        for library in [a, b] { try await library.verifyRecovery() }
+        for library in [a, b] {
+            try #require(try library.conflictSiblings().isEmpty)
+            try await library.verifyRecovery(expectMergedMeta: typedMac)
+        }
     }
 }

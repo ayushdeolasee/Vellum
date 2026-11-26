@@ -18,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT
 image=vellum-linux-dev:6.4.3
-"${dockerctl[@]}" run --detach --pull never --cpus 2 --network none --user 0 --name "$linux" "$image" sleep infinity >/dev/null
+"${dockerctl[@]}" run --detach --pull never --cpus 2 --network none --mount type=volume,destination=/s9/live --user 0 --name "$linux" "$image" sleep infinity >/dev/null
 # Transfer only package source, synthetic fixtures and the two pinned dependency repositories.
 # Neither host settings nor a host filesystem mount is visible to the build container.
 mkdir -p "$stage/build/repositories" "$stage/exchange/mac"

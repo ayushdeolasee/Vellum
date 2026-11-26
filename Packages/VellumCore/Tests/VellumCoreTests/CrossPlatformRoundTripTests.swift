@@ -43,7 +43,11 @@ import VellumCore
             try await library.edit(phase == "mac-edit" ? "mac" : "linux")
         case "recover":
             try await library.recover()
-            try await library.verifyRecovery()
+            try #require(try library.conflictSiblings().isEmpty)
+            try await library.verifyRecovery(expectMergedMeta: library.root.lastPathComponent == "mac")
+        case "verify-merged", "verify-preserved":
+            try #require(try library.conflictSiblings().isEmpty)
+            try await library.verifyRecovery(expectMergedMeta: phase == "verify-merged")
         case "send":
             #if os(macOS)
             try await library.seed()
