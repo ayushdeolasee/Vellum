@@ -1,6 +1,13 @@
 import Foundation
+import VellumCore
 import PDFKit
 import CoreGraphics
+
+private extension ClassicPdfFile {
+    init(appleData: Data) throws {
+        self = try SessionServiceError.translatingPdfErrors { try ClassicPdfFile(data: appleData) }
+    }
+}
 
 // PDF document sessions — port of src-tauri/src/pdf_session.rs plus the
 // command surface of pdf_annotations.rs (open/validate, get/create/update/
@@ -507,7 +514,7 @@ final class PdfDocumentSession: DocumentSession {
 
             if let content = input.content {
                 let pageNumber = bookmarks.first { $0.id == input.id }?.pageNumber ?? 1
-                let defaultTitle = PdfBookmarks.defaultTitle(pageNumber: pageNumber)
+                let defaultTitle = PdfOutlineIncrement.defaultTitle(pageNumber: pageNumber)
                 let now = PdfDates.rfc3339Now()
                 if let originalData,
                    let patched = try? PdfBookmarks.updateBookmarkIncrement(
@@ -738,10 +745,10 @@ final class PdfDocumentSession: DocumentSession {
         }
         guard let slot else { return nil }
 
-        let file = try ClassicPdfFile(data: normalizedData)
+        let file = try ClassicPdfFile(appleData: normalizedData)
         guard let catalogNumber = file.rootNumber,
               let catalog = file.objectSource(catalogNumber),
-              let pageObjectNumber = PdfBookmarks.pageObjectNumber(
+              let pageObjectNumber = PdfOutlineIncrement.pageObjectNumber(
                 in: file, catalog: catalog, pageNumber: pageNumber),
               var pageSource = file.objectSource(pageObjectNumber),
               let annots = pageSource.inlineArray(forKey: "Annots"),
@@ -881,7 +888,7 @@ final class PdfDocumentSession: DocumentSession {
         normalizedData: Data,
         records: [AnnotationMetadataRecord]
     ) throws -> Data {
-        let file = try ClassicPdfFile(data: normalizedData)
+        let file = try ClassicPdfFile(appleData: normalizedData)
         guard let catalogNumber = file.rootNumber,
               let catalog = file.objectSource(catalogNumber) else {
             throw SessionServiceError.invalidDocument("Failed to restore annotation metadata")
@@ -895,7 +902,7 @@ final class PdfDocumentSession: DocumentSession {
                         && ($0.annotation.type == .highlight || $0.annotation.type == .note)
                 }
                 guard !pageRecords.isEmpty else { continue }
-                guard let pageObjectNumber = PdfBookmarks.pageObjectNumber(
+                guard let pageObjectNumber = PdfOutlineIncrement.pageObjectNumber(
                           in: file, catalog: catalog, pageNumber: pageNumber),
                       let page = file.objectSource(pageObjectNumber),
                       let annotsNumber = page.reference(forKey: "Annots"),
@@ -998,7 +1005,7 @@ final class PdfDocumentSession: DocumentSession {
         bookmarks: [Annotation]
     ) throws -> Data {
         guard !bookmarks.isEmpty else { return normalizedData }
-        let file = try ClassicPdfFile(data: normalizedData)
+        let file = try ClassicPdfFile(appleData: normalizedData)
         guard let catalogNumber = file.rootNumber,
               let catalog = file.objectSource(catalogNumber),
               let rootNumber = catalog.reference(forKey: "Outlines"),
@@ -1044,7 +1051,7 @@ final class PdfDocumentSession: DocumentSession {
                 source.removeEntry(forKey: "VellumContent")
                 source.setTextString(
                     forKey: "Title",
-                    to: PdfBookmarks.defaultTitle(pageNumber: bookmark.pageNumber))
+                    to: PdfOutlineIncrement.defaultTitle(pageNumber: bookmark.pageNumber))
             }
             source.setInteger(forKey: "VellumPinned", to: bookmark.pinned ? 1 : 0)
             increment.setObject(number, source: source.sourceBytes)
@@ -1059,12 +1066,12 @@ final class PdfDocumentSession: DocumentSession {
         from originalData: Data,
         into normalizedData: Data
     ) throws -> Data {
-        let original = try ClassicPdfFile(data: originalData)
+        let original = try ClassicPdfFile(appleData: originalData)
         guard let originalInfoNumber = original.infoNumber,
               let originalInfo = original.objectSource(originalInfoNumber)
         else { return normalizedData }
 
-        let normalized = try ClassicPdfFile(data: normalizedData)
+        let normalized = try ClassicPdfFile(appleData: normalizedData)
         var increment = PdfIncrement(file: normalized)
         let targetNumber: Int
         if let existing = normalized.infoNumber {

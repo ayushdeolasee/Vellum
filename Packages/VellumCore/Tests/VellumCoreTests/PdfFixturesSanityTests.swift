@@ -4,7 +4,30 @@ import XCTest
 import PDFKit
 #endif
 
+#if !SWIFT_PACKAGE
+import VellumCore
+@testable import Vellum
+#endif
+
 final class PdfFixturesSanityTests: XCTestCase {
+    #if !SWIFT_PACKAGE
+    func testCoreAndAppleGeometryAgreeOnRotatedFixture() throws {
+        let url = try PdfFixtureBuilder.fixtureURL("rotated-all-angles")
+        let file = try ClassicPdfFile(data: Data(contentsOf: url))
+        let document = try XCTUnwrap(CGPDFDocument(url as CFURL))
+        for number in 1...4 {
+            let core = try PageGeometry(pageNumber: number, in: file)
+            let apple = try PageGeometry(pageDictionary: XCTUnwrap(document.page(at: number)?.dictionary))
+            XCTAssertEqual(core.left, apple.left)
+            XCTAssertEqual(core.bottom, apple.bottom)
+            XCTAssertEqual(core.width, apple.width)
+            XCTAssertEqual(core.height, apple.height)
+            XCTAssertEqual(core.rotation, apple.rotation)
+            XCTAssertEqual(core.userUnit, apple.userUnit)
+        }
+    }
+    #endif
+
     func testBundledNonInkFixtures() throws {
         let generated = [
             "classic-two-column": PdfFixtureBuilder.twoColumnPdf(),

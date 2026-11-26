@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import VellumCore
 
 // Page geometry + raw CGPDF read helpers — port of the coordinate machinery in
 // src-tauri/src/pdf_annotations.rs (PageGeometry, page_geometry, inherited_object,
@@ -130,19 +131,7 @@ enum CgPdf {
     }
 }
 
-/// Per-page coordinate transformer — exact port of the Rust PageGeometry.
-///
-/// UI space: top-left origin, y down, PDF points at zoom 1 with rotation and
-/// /UserUnit folded in. PDF space: bottom-left origin, page-box units.
-struct PageGeometry {
-    let left: Double
-    let bottom: Double
-    let width: Double
-    let height: Double
-    /// 0/90/180/270 (any other /Rotate value behaves as 0, like the Rust match).
-    let rotation: Int
-    let userUnit: Double
-
+extension PageGeometry {
     /// Mirrors page_geometry(): inherited /CropBox falling back to inherited
     /// /MediaBox, per-element defaults 0/0/612/792, /Rotate rem_euclid(360),
     /// /UserUnit > 0 else 1.0.
@@ -162,62 +151,10 @@ struct PageGeometry {
 
         let rawRotation = CgPdf.inherited(pageDictionary, "Rotate")
             .flatMap(CgPdf.objectInteger) ?? 0
-        // rem_euclid(360): always in 0..<360.
-        let rotation = ((rawRotation % 360) + 360) % 360
-
         let userUnit = CgPdf.inherited(pageDictionary, "UserUnit")
-            .flatMap(CgPdf.objectNumber)
-            .flatMap { $0 > 0 ? $0 : nil } ?? 1.0
+            .flatMap(CgPdf.objectNumber) ?? 1.0
 
-        self.left = left
-        self.bottom = bottom
-        self.width = abs(right - left)
-        self.height = abs(top - bottom)
-        self.rotation = rotation
-        self.userUnit = userUnit
-    }
-
-    var right: Double { left + width }
-    var top: Double { bottom + height }
-
-    var displayWidth: Double {
-        rotation == 90 || rotation == 270 ? height * userUnit : width * userUnit
-    }
-
-    var displayHeight: Double {
-        rotation == 90 || rotation == 270 ? width * userUnit : height * userUnit
-    }
-
-    func pdfToUi(_ x: Double, _ y: Double) -> (x: Double, y: Double) {
-        switch rotation {
-        case 90:
-            return ((y - bottom) * userUnit, (x - left) * userUnit)
-        case 180:
-            return ((right - x) * userUnit, (y - bottom) * userUnit)
-        case 270:
-            return ((top - y) * userUnit, (right - x) * userUnit)
-        default:
-            return ((x - left) * userUnit, (top - y) * userUnit)
-        }
-    }
-
-    /// UI → PDF. Rects are first rescaled by the stored page size so old
-    /// annotations survive page-box changes (rescale-by-stored-page-size step).
-    func uiToPdf(_ x: Double, _ y: Double, pageWidth: Double, pageHeight: Double) -> (x: Double, y: Double) {
-        let displayX = x * displayWidth / max(pageWidth, .ulpOfOne)
-        let displayY = y * displayHeight / max(pageHeight, .ulpOfOne)
-        let xUnits = displayX / userUnit
-        let yUnits = displayY / userUnit
-
-        switch rotation {
-        case 90:
-            return (left + yUnits, bottom + xUnits)
-        case 180:
-            return (right - xUnits, bottom + yUnits)
-        case 270:
-            return (right - yUnits, top - xUnits)
-        default:
-            return (left + xUnits, top - yUnits)
-        }
+        self.init(left: left, bottom: bottom, width: abs(right - left), height: abs(top - bottom),
+                  rotation: rawRotation, userUnit: userUnit)
     }
 }
