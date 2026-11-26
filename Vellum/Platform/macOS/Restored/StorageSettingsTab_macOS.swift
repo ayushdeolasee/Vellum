@@ -557,9 +557,10 @@ struct StorageSettingsTab: View {
 
     private func reload() async {
         isLoading = true
+        let coordinator = workspace.storageCoordinator
         let listing = await Task.detached(priority: .userInitiated) { () -> Listing in
             Listing(
-                documents: DocumentDataStore.listDocuments(),
+                documents: await DocumentDataStore.listDocuments(coordinator: coordinator),
                 web: WebLibrary.listSnapshotStorage(),
                 webRecordBytes: WebLibrary.totalRecordBytes(),
                 legacyScratchpad: ScratchpadPersistence.listLegacyEntries().map {
@@ -762,30 +763,11 @@ struct StorageSettingsTab: View {
         panel.allowedContentTypes = [.pdf]
         panel.prompt = "Relink"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let path = url.path
-        let key = row.key
-        let docIdKeyed = row.isDocIdKeyed
-        let title = row.title
         Task {
-            let verified = await Task.detached { () -> Bool in
-                // A docId-keyed entry can be proven: the picked PDF must carry
-                // the same embedded /VellumDocId. A path-hash fallback entry has
-                // no embedded id, so the user's pick is accepted as-is.
-                if docIdKeyed { return PdfMetadata.documentId(atPath: path) == key }
-                return true
-            }.value
-            guard verified else {
-                relinkFailureTitle = title
-                return
-            }
-            do {
-                try await DocumentDataStore.relink(
-                    forKey: key,
-                    newPath: path,
-                    coordinator: workspace.storageCoordinator)
-                await reload()
-            } catch {
-                relinkFailureTitle = title
+            switch await DocumentAccessResolver.live.relink(key: row.key, isDocIdKeyed: row.isDocIdKeyed,
+                                                            to: url, coordinator: workspace.storageCoordinator) {
+            case .success: await reload()
+            case .failure: relinkFailureTitle = row.title
             }
         }
     }

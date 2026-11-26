@@ -1034,7 +1034,14 @@ final class AppStore {
                             url: savedDocument.pdfPath, sessionId: sessionId)
                     }
                 } else {
-                    opened = try await documentAccess.restoreSavedPDF(
+                    let access = try await documentAccess.configured(for: workspace?.storageCoordinator)
+                    var savedDocument = savedDocument
+                    if let shared = access.sharedPDFs, let id = savedDocument.docId, let coordinator = workspace?.storageCoordinator,
+                       let meta = try await DocumentDataStore.loadMeta(forKey: id, coordinator: coordinator) {
+                        guard let url = shared.resolve(meta.lastKnownPath) else { throw DocumentAccessError.unavailable(meta.lastKnownPath) }
+                        savedDocument.pdfPath = url.path
+                    }
+                    opened = try await access.restoreSavedPDF(
                         savedDocument,
                         sessionId: sessionId,
                         resolveExistingPath: resolveExistingDocumentPath
@@ -1442,13 +1449,21 @@ final class AppStore {
         if isArchive {
             doc = try await sessions.openVellumwebFile(path: path, sessionId: sessionId)
         } else {
-            doc = try await documentAccess.openPickedPDF(
+            let access = try await documentAccess.configured(for: workspace?.storageCoordinator)
+            doc = try await access.openPickedPDF(
                 url: URL(fileURLWithPath: path),
                 sessionId: sessionId
             ) { [sessions] path, sessionId in
                 try await sessions.openFile(path: path, sessionId: sessionId)
             } close: { [sessions] sessionId in
                 try? await sessions.closeFile(sessionId: sessionId)
+            }
+            if access.sharedPDFs != nil, let coordinator = workspace?.storageCoordinator {
+                do { try await DocumentDataStore.touch(document: doc, force: true, coordinator: coordinator) }
+                catch {
+                    try? await sessions.closeFile(sessionId: sessionId)
+                    throw error
+                }
             }
         }
         try await adoptOpenedDocument(doc, sessionId: sessionId)

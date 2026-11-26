@@ -26,6 +26,7 @@ enum DocumentDataStore {
     private struct Access: Sendable {
         let store: any LibraryFileStore
         let documentsRoot: URL
+        var sharedPDFs: SharedPDFLocation? = nil
         let fallbackRoot: URL?
     }
 
@@ -44,7 +45,8 @@ enum DocumentDataStore {
             return try await operation(Access(
                 store: context.fileStore,
                 documentsRoot: activeRoot,
-                fallbackRoot: localRoot.standardizedFileURL == activeRoot.standardizedFileURL
+                sharedPDFs: context.layout.pdfsDir.map { _ in SharedPDFLocation(root: context.layout.rootDir) },
+                fallbackRoot: context.layout.pdfsDir != nil || localRoot.standardizedFileURL == activeRoot.standardizedFileURL
                     ? nil : localRoot))
         }
     }
@@ -274,21 +276,25 @@ enum DocumentDataStore {
         coordinator: StorageCoordinator
     ) async throws {
         let key = DocumentIdentity.storageKey(for: document)
-        let existing = try await loadMeta(forKey: key, coordinator: coordinator)
-        if !force, existing == nil,
-           try await hasDataFiles(forKey: key, coordinator: coordinator) == false {
-            return
+        try await withAccess(coordinator: coordinator) { access in
+            let url = documentDir(forKey: key, root: access.documentsRoot).appendingPathComponent("meta.json")
+            let prior = try await access.store.read(url)
+            let existing = try prior.map { try JSONDecoder().decode(Meta.self, from: $0) }
+            if !force, existing == nil, access.sharedPDFs == nil {
+                guard try await hasDataFiles(forKey: key, access: access) else { return }
+            }
+            var path = document.pdfPath
+            if document.kind == .pdf, let location = access.sharedPDFs {
+                guard let relative = location.relativePath(for: URL(fileURLWithPath: path)) else {
+                    throw DocumentAccessError.unavailable(path)
+                }
+                path = relative
+            }
+            let meta = Meta(unknownFields: existing?.unknownFields ?? [:], version: 1,
+                            kind: document.kind.rawValue, title: document.title ?? existing?.title,
+                            lastKnownPath: path, lastOpened: WebLibrary.rfc3339Now())
+            try await access.store.replace(url, with: WebLibrary.jsonEncoderPretty.encode(meta))
         }
-        let meta = Meta(
-            unknownFields: existing?.unknownFields ?? [:],
-            version: 1,
-            kind: document.kind.rawValue,
-            title: document.title ?? existing?.title,
-            lastKnownPath: document.pdfPath,
-            lastOpened: WebLibrary.rfc3339Now())
-        try await replaceData(
-            try WebLibrary.jsonEncoderPretty.encode(meta), forKey: key,
-            relativeName: "meta.json", coordinator: coordinator)
     }
 
     // MARK: - scratchpad.md
@@ -473,14 +479,18 @@ enum DocumentDataStore {
         forKey key: String, coordinator: StorageCoordinator
     ) async throws -> Bool {
         try await withAccess(coordinator: coordinator) { access in
-            let directory = documentDir(forKey: key, root: access.documentsRoot)
-            let active = try await access.store.list(directory, suffix: nil)
-            if active.contains(where: { $0.name != "meta.json" }) { return true }
-            guard let fallbackRoot = access.fallbackRoot else { return false }
-            return try await DirectLibraryFileStore().list(
-                documentDir(forKey: key, root: fallbackRoot), suffix: nil
-            ).contains(where: { $0.name != "meta.json" })
+            try await hasDataFiles(forKey: key, access: access)
         }
+    }
+
+    private static func hasDataFiles(forKey key: String, access: Access) async throws -> Bool {
+        let directory = documentDir(forKey: key, root: access.documentsRoot)
+        let active = try await access.store.list(directory, suffix: nil)
+        if active.contains(where: { $0.name != "meta.json" }) { return true }
+        guard let fallbackRoot = access.fallbackRoot else { return false }
+        return try await DirectLibraryFileStore().list(
+            documentDir(forKey: key, root: fallbackRoot), suffix: nil
+        ).contains(where: { $0.name != "meta.json" })
     }
 
     /// Remove the whole document folder when it holds no data files (§8).
@@ -712,7 +722,7 @@ enum DocumentDataStore {
                     }
                 }
                 let meta: Meta? = if let data = try await readData(
-                    forKey: key, relativeName: "meta.json", coordinator: coordinator)
+                    forKey: key, relativeName: "meta.json", access: access)
                 {
                     try? JSONDecoder().decode(Meta.self, from: data)
                 } else {
@@ -721,6 +731,9 @@ enum DocumentDataStore {
                 let sourceExists: Bool = {
                     guard let meta else { return true }
                     if meta.kind == DocumentKind.web.rawValue { return true }
+                    if let shared = access.sharedPDFs {
+                        return documentAccess.scoped(to: shared.root).sourceExists(key: key, lastKnownPath: meta.lastKnownPath)
+                    }
                     return documentAccess.sourceExists(
                         key: key, lastKnownPath: meta.lastKnownPath)
                 }()
@@ -813,8 +826,12 @@ enum DocumentDataStore {
                 guard fileNames.contains("meta.json"),
                       let data = try await readData(
                         forKey: key, relativeName: "meta.json", access: access),
-                      let meta = try? JSONDecoder().decode(Meta.self, from: data)
+                      var meta = try? JSONDecoder().decode(Meta.self, from: data)
                 else { continue }
+                if meta.kind == "pdf", let location = access.sharedPDFs {
+                    guard let url = location.resolve(meta.lastKnownPath) else { continue }
+                    meta.lastKnownPath = url.path
+                }
                 entries.append(DocumentMetaEntry(
                     key: key,
                     meta: meta,
