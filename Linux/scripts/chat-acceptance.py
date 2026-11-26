@@ -1,8 +1,10 @@
 """Normal reader against isolated Secret Service, Weston and a loopback TLS provider."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import ssl
 import subprocess
 import threading
@@ -24,6 +26,23 @@ provider = "gemini"
 finished = threading.Event()
 release = threading.Event()
 errors = []
+
+writable = os.environ.get("VELLUM_EXPECT_CHAT_SAVE") == "1"
+root = Path("/library")
+if writable:
+    root = Path("/tmp/vellum-485-fixture")
+    shutil.copytree("/library", root)
+    (root / ".chat-qualification").write_text("disposable #485\n")
+    # Stamp only the copy of the fixed six-object, classic-xref test PDF.
+    pdf = root / "PDFs/classic-two-column.pdf"
+    original = pdf.read_bytes()
+    assert b"/Size 6 /Root 1 0 R" in original and original[705:709] == b"xref"
+    info = b"6 0 obj\n<< /VellumDocId (4850abcd) >>\nendobj\n"
+    trailer = (f"xref\n6 1\n{len(original):010} 00000 n \ntrailer\n<< /Size 7 /Prev 705 /Root 1 0 R /Info 6 0 R >>"
+               f"\nstartxref\n{len(original) + len(info)}\n%%EOF\n")
+    pdf.write_bytes(original + info + trailer.encode())
+saved_file, = [p for p in root.glob(".vellum/documents/*/conversations.json") if b"Apple history" in p.read_bytes()]
+original_history = saved_file.read_bytes()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -62,6 +81,8 @@ class Handler(BaseHTTPRequestHandler):
             question = prompt.split("Question:\n")[-1]
             if question == "Article?":
                 assert "Harbor café 東京" in prompt and "Apple history" in prompt and "Left column" not in prompt
+            elif question == "Safari?":
+                assert "Visible Safari fact" in prompt and "Hidden fixture text" not in prompt
             else:
                 assert "Left column" in prompt and "First line of evidence" in prompt and "Apple history" not in prompt
             self.send_response(200)
@@ -157,7 +178,10 @@ def reply(question):
     release.set()
     title = {"gemini": "Gemini", "openai": "OpenAI", "openrouter": "OpenRouter",
              "opencode": "OpenCode Zen", "opencodeGo": "OpenCode Go"}[provider]
-    get(f"Send shares document text and recent chat with {title}. New messages stay in this session.")
+    damaged = question == "Safari?"
+    notice = "Saved history could not be read. " if damaged else ""
+    destination = "New messages save to this library." if writable and not damaged else "New messages stay in this session."
+    get(f"{notice}Send shares document text and recent chat with {title}. {destination}")
     assert finished.is_set()
 
 
@@ -185,13 +209,13 @@ def exercise():
         config = Path(os.environ["XDG_CONFIG_HOME"]) / "vellum"
         config.mkdir(parents=True, exist_ok=True)
         (config / "ai-provider").write_text(provider)
-        app = subprocess.Popen(["/runtime/vellum-linux", "--library", "/library"])
+        app = subprocess.Popen(["/runtime/vellum-linux", "--library", str(root)])
         try:
             wait(lambda: has_status("PDF open"), "initial PDF")
             if provider == "gemini":
                 capture("reader-before.png")
             click("Chat")
-            wait(lambda: has_status("New messages stay"), "ready to send")
+            wait(lambda: has_status("Send shares document text"), "ready to send")
             if provider == "gemini":
                 send("PDF?")
                 wait(lambda: has_status("No Gemini key is saved"), "missing credential")
@@ -200,10 +224,10 @@ def exercise():
             if provider == "openai":
                 select("harbor.vellumweb")
                 wait(lambda: "Apple history" in transcript(), "saved history after relaunch")
-                assert "Article?" not in transcript()
+                assert ("Article?" in transcript()) == writable
                 select("classic-two-column.pdf")
-                wait(lambda: get("Send").getState().contains(pyatspi.STATE_SENSITIVE) and not transcript(),
-                     "fresh PDF session")
+                wait(lambda: get("Send").getState().contains(pyatspi.STATE_SENSITIVE) and (("Close?" in transcript()) if writable else not transcript()),
+                     "PDF session after relaunch")
             save_key("opencode-go" if provider == "opencodeGo" else provider)
             reply("PDF?")
             if provider == "gemini":
@@ -214,6 +238,9 @@ def exercise():
                 wait(lambda: finished.is_set() and "Apple history" in transcript(), "switch cancels transport and loads archive")
                 assert "PDF?" not in transcript()
                 reply("Article?")
+                select("safari.vellumweb")
+                wait(lambda: has_status("Saved history could not be read."), "session chat with damaged history")
+                reply("Safari?")
                 select("classic-two-column.pdf")
                 wait(lambda: "Switch?" in transcript(), "document-specific session")
                 assert "Apple history" not in transcript()
@@ -248,6 +275,19 @@ def exercise():
             assert app.wait(timeout=8) == 0
             if provider == "gemini":
                 wait(finished.is_set, "window close cancels transport")
+                if writable:
+                    assert saved_file.read_bytes().startswith(original_history[:-1] + b",")
+                    assert [m["content"] for m in json.loads(saved_file.read_bytes())] == [
+                        "Apple history", "Article?", "First café done"]
+                    turns = json.loads((root / ".vellum/documents/4850abcd/conversations.json").read_bytes())
+                    assert [m["content"] for m in turns] == ["PDF?", "First café done", "Switch?", "First café",
+                                                             "Stop?", "First café", "Reopen?", "First café",
+                                                             "Close?", "First café"]
+                    assert len({m["id"] for m in turns}) == len(turns)
+                else:
+                    assert saved_file.read_bytes() == original_history
+                broken_key = hashlib.sha256(b"https://fixture.test/safari").hexdigest()
+                assert (root / ".vellum/documents" / broken_key / "conversations.json").read_bytes() == b'{"cut":'
             print(provider, "passed", flush=True)
         finally:
             if app.poll() is None:

@@ -5,7 +5,7 @@
 # runtime files enter the container that permits WebKit's nested bubblewrap sandbox.
 set -euo pipefail
 mode=${1:-web}
-[[ $mode == web || $mode == chat ]] || exit 64
+[[ $mode == web || $mode == chat || $mode == chat-write ]] || exit 64
 here=$(cd "$(dirname "$0")" && pwd -P)
 repo=$(cd "$here/../.." && pwd -P)
 key=$(printf '%s' "$repo" | shasum -a 256 | cut -c1-16)
@@ -91,7 +91,8 @@ args=(--rm --platform linux/arm64 --network none --cap-drop ALL
       --mount "type=bind,src=$stage/runtime,dst=/runtime,readonly"
       --mount "type=bind,src=$stage/library,dst=/library,readonly"
       -e VELLUM_READER_BINARY=/runtime/vellum-linux)
-if [[ $mode == chat ]]; then
+if [[ $mode == chat || $mode == chat-write ]]; then
+  if [[ $mode == chat-write ]]; then args+=(-e VELLUM_EXPECT_CHAT_SAVE=1); fi
   # Only this container trusts the one-day fixture certificate. All provider
   # names resolve to loopback and the production binary has no endpoint override.
   cp "$here"/{chat-acceptance.py,with-test-keyring.sh} "$stage/runtime/"
@@ -105,8 +106,22 @@ if [[ $mode == chat ]]; then
   python3 - "$stage/library" <<'PYCHAT'
 import hashlib, json, pathlib, sys, zipfile
 root = pathlib.Path(sys.argv[1])
-with zipfile.ZipFile(root / "Web Pages/harbor.vellumweb") as z:
-    key = hashlib.sha256(json.loads(z.read("manifest.json"))["url"].encode()).hexdigest()
+pages = root / "Web Pages"
+with zipfile.ZipFile(pages / "harbor.vellumweb") as z:
+    manifest = json.loads(z.read("manifest.json"))
+    key = hashlib.sha256(manifest["url"].encode()).hexdigest()
+    html = b"<article>Visible Safari fact<span hidden>Hidden fixture text</span></article>"
+    capture = dict(manifest, url="https://fixture.test/safari", canonical_url="https://fixture.test/safari")
+    capture["hashes"] = dict(manifest["hashes"], snapshot_html="sha256:" + hashlib.sha256(html).hexdigest(),
+                             page_text="sha256:" + hashlib.sha256(b"[]").hexdigest())
+    with zipfile.ZipFile(pages / "safari.vellumweb", "w") as output:
+        for name in z.namelist():
+            data = {"manifest.json": json.dumps(capture).encode(), "text/pages.json": b"[]",
+                    "snapshot/index.html": html}.get(name, z.read(name))
+            output.writestr(name, data)
+broken = root / ".vellum/documents" / hashlib.sha256(capture["url"].encode()).hexdigest() / "conversations.json"
+broken.parent.mkdir(parents=True)
+broken.write_bytes(b'{"cut":')
 file = root / ".vellum/documents" / key / "conversations.json"
 file.parent.mkdir(parents=True)
 file.write_text('[{"id":"1","role":"assistant","content":"Apple history","createdAt":"2026-11-26T00:00:00.000Z","extra":1.000}]')

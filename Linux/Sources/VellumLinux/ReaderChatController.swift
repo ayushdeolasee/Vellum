@@ -7,6 +7,9 @@ import VellumCore
 final class ReaderChatController {
     private var document: ReaderChatDocument?
     private var store: ReadOnlyLibraryFileStore?
+    private var writer: LocalFolderFileStore?
+    private var persistence: Task<Void, Never>?
+    private var historyNotice = ""
     private var work: Task<Void, Never>?
     private struct SessionKey: Hashable {
         let library: URL
@@ -26,20 +29,25 @@ final class ReaderChatController {
     private var loaded = false
     private var busy = false
 
-    private func cancel() {
+    private func cancel(_ panel: OpaquePointer) {
         work?.cancel()
         if let key = sessionKey, !partial.isEmpty {
             append(.assistant, partial, key: key)
         }
         partial = ""
         busy = false
+        save(panel: panel)
     }
 
     @discardableResult
     func reset(_ panel: OpaquePointer) -> Task<Void, Never>? {
-        cancel()
+        cancel(panel)
         if let key = sessionKey { drafts[key] = String(cString: reader_chat_draft(panel)) }
+        let request = work, writes = persistence
+        work = Task { await request?.value; await writes?.value }
         document = nil
+        writer = nil
+        historyNotice = ""
         store = nil
         saved = []
         loaded = false
@@ -59,7 +67,7 @@ final class ReaderChatController {
 
     func show(provider: LinuxAIProvider, panel: OpaquePointer) {
         selectedProvider = provider
-        if !reader_chat_visible(panel) { cancel(); return }
+        if !reader_chat_visible(panel) { cancel(panel); return }
         guard let key = sessionKey, let store else {
             reader_chat_state(panel, "Open a document with a readable identity to chat.", false, false)
             return
@@ -72,24 +80,30 @@ final class ReaderChatController {
         reader_chat_state(panel, "Opening conversation…", false, false)
         reader_chat_set_draft(panel, drafts[key] ?? "")
         start {
-            do {
-                let messages: [ConversationText]
-                if let stableKey = self.document?.key {
-                    messages = try await ReaderConversation.load(key: stableKey, from: store).messages
-                } else { messages = [] }
-                try Task.checkCancellation()
-                self.saved = messages
-                self.loaded = true
-                self.render(key: key, panel: panel)
-                self.ready(panel: panel)
-            } catch {
-                if !Task.isCancelled { reader_chat_state(panel, "Could not read the saved conversation.", false, false) }
+            await self.persistence?.value
+            guard !Task.isCancelled else { return }
+            if let stableKey = self.document?.key {
+                do {
+                    let conversation = try await ReaderConversation.load(key: stableKey, from: store)
+                    let writer = await ReaderConversation.writer(for: store)
+                    try Task.checkCancellation()
+                    self.saved = conversation.messages
+                    self.writer = writer
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.historyNotice = "Saved history could not be read."
+                    self.writer = nil
+                }
             }
+            self.loaded = true
+            self.render(key: key, panel: panel)
+            self.ready(panel: panel)
+            self.save(panel: panel)
         }
     }
 
     func stop(panel: OpaquePointer) {
-        cancel()
+        cancel(panel)
         if let key = sessionKey { render(key: key, panel: panel) }
         ready(panel: panel, notice: "Stopped.")
     }
@@ -104,8 +118,10 @@ final class ReaderChatController {
     }
 
     private func ready(panel: OpaquePointer, notice: String = "") {
-        let disclosure = "Send shares document text and recent chat with \(selectedProvider.title). New messages stay in this session."
-        reader_chat_state(panel, notice.isEmpty ? disclosure : notice + " " + disclosure, loaded && !busy, busy)
+        let disclosure = "Send shares document text and recent chat with \(selectedProvider.title)."
+        let destination = writer == nil ? "New messages stay in this session." : "New messages save to this library."
+        let status = [notice, historyNotice, disclosure, destination].filter { !$0.isEmpty }.joined(separator: " ")
+        reader_chat_state(panel, status, loaded && !busy, busy)
     }
 
     func refreshProvider(_ provider: LinuxAIProvider, panel: OpaquePointer) {
@@ -129,6 +145,32 @@ final class ReaderChatController {
                                        content: ConversationText.limitedContent(content), createdAt: timestamp)
         session[key, default: []].append(message)
         if session[key, default: []].count > ConversationText.messageLimit { session[key]?.removeFirst() }
+    }
+
+    /// Serialize append-only saves and keep the old document's owner alive
+    /// across selection/close. A failed CAS leaves the turns in memory for retry.
+    private func save(panel: OpaquePointer) {
+        guard let key = sessionKey, let store, let writer, session[key]?.isEmpty == false else { return }
+        let prior = persistence
+        persistence = Task {
+            await prior?.value
+            guard let turns = session[key], !turns.isEmpty else { return }
+            do {
+                let latest = try await ReaderConversation.load(key: key.document, from: store)
+                let ids = Set(latest.messages.map(\.id))
+                let additions = turns.filter { !ids.contains($0.id) }
+                guard try await latest.save(appending: additions, to: writer) else { throw LibraryFileError.retryable }
+                let committed = Set(turns.map(\.id))
+                session[key]?.removeAll { committed.contains($0.id) }
+                guard sessionKey == key, loaded else { return }
+                saved = Array((latest.messages + additions).suffix(ConversationText.messageLimit))
+                historyNotice = ""
+            } catch {
+                guard sessionKey == key, loaded else { return }
+                historyNotice = "Saving failed. New messages remain in this session."
+            }
+            if !busy { ready(panel: panel) }
+        }
     }
 
     func send(provider: LinuxAIProvider, panel: OpaquePointer) {
@@ -170,6 +212,7 @@ final class ReaderChatController {
                 self.busy = false
                 self.render(key: key, panel: panel)
                 self.ready(panel: panel)
+                self.save(panel: panel)
             } catch {
                 guard !Task.isCancelled else { return }
                 if !self.partial.isEmpty { self.append(.assistant, self.partial, key: key) }
@@ -177,6 +220,7 @@ final class ReaderChatController {
                 self.busy = false
                 self.render(key: key, panel: panel)
                 self.ready(panel: panel, notice: error.localizedDescription)
+                self.save(panel: panel)
             }
         }
     }

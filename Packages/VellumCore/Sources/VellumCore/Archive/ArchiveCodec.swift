@@ -329,6 +329,9 @@ public enum ArchiveCodec {
               manifest.hashes.pageText == expected.pageText else {
             throw ArchiveCodecError.invalidDocument("The archive changed. Reopen the article before sending.")
         }
+        // Older captures may omit the optional index. The reader can use
+        // visible text from its already-validated, offline snapshot.
+        guard zip.contains("text/pages.json") else { return "" }
         let bytes = try zip.readCapped("text/pages.json", cap: 6 * maxSnapshotBytes)
         guard sha256Hex(bytes) == expected.pageText else {
             throw ArchiveCodecError.invalidDocument("Archived article text failed its integrity check.")

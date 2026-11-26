@@ -27,9 +27,22 @@ public struct ReaderConversation: Sendable {
         })
     }
 
-    // Only exercised with disposable storage. The reader has no writable
-    // backend until the two-peer qualification gate (#472) is satisfied.
-    func save(appending turns: [ConversationText], to store: any FolderFileStore) async throws -> Bool {
+    /// Release admission is tracked in #481/#472. An ordinary binary cannot
+    /// turn on writes through flags, preferences or a marker in a shared folder.
+    public static func writer(for files: ReadOnlyLibraryFileStore) async -> LocalFolderFileStore? {
+        #if DEBUG && CHAT_QUALIFICATION
+        let root = files.root.url
+        guard root.path == "/tmp/vellum-485-fixture",
+              let marker = try? await files.root.readRegularFile(root.appendingPathComponent(".chat-qualification"),
+                                                                 byteLimit: 32),
+              marker == Data("disposable #485\n".utf8) else { return nil }
+        return LocalFolderFileStore(root: root)
+        #else
+        return nil
+        #endif
+    }
+
+    public func save(appending turns: [ConversationText], to store: any FolderFileStore) async throws -> Bool {
         guard !turns.isEmpty else { return true }
         var bytes = original ?? Data("[]".utf8)
         guard let end = bytes.lastIndex(where: { ![9, 10, 13, 32].contains($0) }), bytes[end] == 93 else {
@@ -39,6 +52,7 @@ public struct ReaderConversation: Sendable {
         var addition = Data()
         if hasElements { addition.append(44) }
         addition.append(contentsOf: encoded.dropFirst().dropLast())
+        guard bytes.count + addition.count <= 32 * 1024 * 1024 else { throw ReaderFileError.fileTooLarge }
         bytes.insert(contentsOf: addition, at: end)
         return try await store.replace(url, with: bytes, ifCurrent: original)
     }

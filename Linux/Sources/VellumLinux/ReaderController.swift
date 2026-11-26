@@ -235,11 +235,12 @@ final class ReaderController {
                 let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
-                self.chat.bind(.article(resources.hashes, key: metadata.storageKey, title: metadata.displayTitle,
-                                        file: file, store: store),
-                               store: store, provider: self.settings.provider, panel: reader_chat_panel(window))
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
-                                           probe: self.webProbe) {
+                                           probe: self.webProbe) { [weak self] visibleText in
+                    guard let self, self.isCurrent(token) else { return }
+                    self.chat.bind(.article(resources.hashes, key: metadata.storageKey, title: metadata.displayTitle,
+                                            file: file, store: store, visibleText: visibleText),
+                                   store: store, provider: self.settings.provider, panel: reader_chat_panel(window))
                     let position = metadata.position.map { position in
                         "Saved page \(position.page)" + (position.pageCount.map { " of \($0)" } ?? "")
                     }

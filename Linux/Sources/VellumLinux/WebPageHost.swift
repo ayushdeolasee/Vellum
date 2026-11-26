@@ -10,7 +10,7 @@ final class WebPageHost {
         let uri: String
         let anchor: String
         let width, height: Int
-        let event: String?
+        let event, excerpt: String?
     }
 
     private static let script = """
@@ -19,17 +19,18 @@ final class WebPageHost {
             const text = document.querySelector('p, h1')?.textContent ?? '';
             window.webkit.messageHandlers.vellum.postMessage({
                 uri: location.href.split('#')[0], anchor: text.slice(0, 256),
-                width: img?.naturalWidth ?? 0, height: img?.naturalHeight ?? 0
+                width: img?.naturalWidth ?? 0, height: img?.naturalHeight ?? 0,
+                excerpt: (document.body?.innerText ?? '').slice(0, 12000)
             });
         }, {once: true});
         """
 
     private let resources: ArchiveResourceMap
-    private let onReady: () -> Void
+    private let onReady: (String) -> Void
     private let probe: WebProbe?
     private var reader: OpaquePointer?
 
-    init(stack: OpaquePointer, resources: ArchiveResourceMap, probe: WebProbe?, onReady: @escaping () -> Void) {
+    init(stack: OpaquePointer, resources: ArchiveResourceMap, probe: WebProbe?, onReady: @escaping (String) -> Void) {
         self.resources = resources
         self.onReady = onReady
         self.probe = probe
@@ -53,7 +54,7 @@ final class WebPageHost {
                 let host = Unmanaged<WebPageHost>.fromOpaque(owner!).takeUnretainedValue()
                 guard let body = try? JSONDecoder().decode(PageMessage.self, from: Data(String(cString: message!).utf8)),
                       body.uri == host.resources.documentURL.absoluteString else { return }
-                if body.event == nil { host.onReady() }
+                if body.event == nil { host.onReady(body.excerpt ?? "") }
                 host.probe?.received(body)
             }
         }, { owner, uri in
