@@ -44,15 +44,16 @@ public struct ScratchpadStorage: Sendable {
     }
 
     public var canEdit: Bool { replace != nil }
-    public var importDirectory: URL { files.root.url.appendingPathComponent("incoming", isDirectory: true) }
+    public let importDirectory: URL?
     private let files: ReadOnlyLibraryFileStore
     private let replace: Replace?
     private static let noteBytes = 4 * 1024 * 1024
     private static let imageBytes = 12 * 1024 * 1024
     private static let formats: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "heic"]
 
-    public init(files: ReadOnlyLibraryFileStore, replace: Replace? = nil) {
+    public init(files: ReadOnlyLibraryFileStore, importDirectory: URL? = nil, replace: Replace? = nil) {
         self.files = files
+        self.importDirectory = importDirectory
         self.replace = replace
     }
 
@@ -106,7 +107,7 @@ public struct ScratchpadStorage: Sendable {
     @concurrent
     public func prepareImage(_ url: URL) async throws -> Image {
         let ext = url.pathExtension.lowercased()
-        guard canEdit, Self.formats.contains(ext),
+        guard canEdit, let importDirectory, Self.formats.contains(ext),
               url.deletingLastPathComponent().path == importDirectory.path,
               let data = try await files.root.readRegularFile(url, byteLimit: Self.imageBytes)
         else { throw Failure.unsupportedImage }

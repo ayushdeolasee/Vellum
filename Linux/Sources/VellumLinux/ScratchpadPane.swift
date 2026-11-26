@@ -54,7 +54,9 @@ final class ScratchpadPane {
     init(panel: OpaquePointer, storage: ScratchpadStorage) {
         self.panel = panel
         self.storage = storage
-        if storage.canEdit { scratchpad_panel_set_import_directory(panel, storage.importDirectory.path) }
+        if let directory = storage.importDirectory {
+            scratchpad_panel_set_import_directory(panel, directory.path)
+        }
         scratchpad_panel_connect(panel, { event, text, context in
             precondition(shell_on_gtk_thread())
             MainActor.assumeIsolated {

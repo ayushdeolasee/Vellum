@@ -99,6 +99,31 @@ public struct ReaderMetadataCatalog: Sendable {
                                       position: peer?.readingPosition?.value, hasInkSidecar: false)
     }
 
+    /// A hash fallback is usable only for the exact selected bytes with a
+    /// matching S8 sidecar. Legacy resume still requires its typed stamp.
+    @concurrent
+    public func sharedPDF(bytes: Data, file: URL, stamp: String?,
+                          fallbackTitle: String) async throws -> ReaderDocumentMetadata {
+        let key = SharedPDFIdentity.storageKey(in: bytes, readerID: stamp)
+        let base = store.root.url.appendingPathComponent(".vellum/documents/").appendingPathComponent(key)
+        struct Meta: Decodable {
+            let kind: String
+            let title: String?
+            let last_known_path: String
+        }
+        let location = SharedPDFLocation(root: store.root.url)
+        if DocumentIdentity.isCanonicalKey(key),
+           let data = try await store.read(base.appendingPathComponent("meta.json")),
+           let meta = try? JSONDecoder().decode(Meta.self, from: data), meta.kind == "pdf",
+           let relative = location.relativePath(for: file), meta.last_known_path == relative {
+            let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
+            return ReaderDocumentMetadata(storageKey: result.storageKey,
+                                          displayTitle: Self.title(meta.title) ?? result.displayTitle,
+                                          position: result.position, hasInkSidecar: false)
+        }
+        return pdf(stableIdentifier: SharedPDFIdentity.stamp(in: bytes, readerID: stamp), fallbackTitle: fallbackTitle)
+    }
+
     private static func webKey(_ url: String) -> DocumentKey? {
         // A stored page URL is absolute. Bound work on untrusted URL text before
         // normalization. Only the resulting fixed-length hash reaches the store.

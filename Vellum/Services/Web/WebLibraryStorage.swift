@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 /// Async storage boundary for web sidecars, the pretty-name index, and managed
 /// `.vellumweb` archives. Callers name domain items (record key, index, managed
@@ -171,6 +172,10 @@ actor WebLibraryStorage {
                 try? FileManager.default.removeItem(at: WebLibrary.snapshotPath(forKey: key))
                 try? FileManager.default.removeItem(at: WebLibrary.managedArchivePath(forKey: key))
                 try? FileManager.default.removeItem(at: WebLibrary.archiveDir(forKey: key))
+                if let folder = container as? FolderSyncedContainer {
+                    try await folder.webArchives.remove(forKey: key)
+                    return
+                }
                 if let name = try await Self.indexFileName(
                     forKey: key,
                     layout: layout,
@@ -213,6 +218,10 @@ actor WebLibraryStorage {
         defer { releaseIndex() }
 
         return try await withStorageContext { context in
+            if case .coordinated(let folder as FolderSyncedContainer, _) = context {
+                let dest = try await folder.webArchives.save(data, forKey: key)
+                return (dest.path, data.count)
+            }
             let name = try await Self.managedArchiveName(forKey: key, context: context)
             switch context {
             case .direct(let layout):
@@ -242,6 +251,10 @@ actor WebLibraryStorage {
                 _ = WebICloud.materialize(at: path)
                 return try WebArchive.readManifest(at: path)
             case .coordinated(let container, let layout):
+                if let folder = container as? FolderSyncedContainer {
+                    guard let found = try await folder.webArchives.lookup(forKey: key) else { return nil }
+                    return try WebArchive.readManifest(data: found.bytes)
+                }
                 guard let item = try await Self.existingManagedArchiveMetadata(
                     forKey: key, layout: layout, container: container, readyOnly: false)
                 else { return nil }
@@ -269,6 +282,9 @@ actor WebLibraryStorage {
                     forKey: key, layout: layout) else { return nil }
                 return try Data(contentsOf: url)
             case .coordinated(let container, let layout):
+                if let folder = container as? FolderSyncedContainer {
+                    return try await folder.webArchives.lookup(forKey: key)?.bytes
+                }
                 guard let name = try await Self.indexFileName(
                     forKey: key,
                     layout: layout,
@@ -556,6 +572,9 @@ actor WebLibraryStorage {
         container: any SyncedContainer
     ) async throws -> String {
         guard let indexPath = layout.indexPath else { return "\(key).vellumweb" }
+        if let folder = container as? FolderSyncedContainer {
+            return try await folder.webArchives.reserve(forKey: key, title: title, url: url)
+        }
         var contents = try await loadIndexCoordinated(
             at: indexPath,
             container: container,
@@ -600,6 +619,9 @@ actor WebLibraryStorage {
         container: any SyncedContainer,
         materializing: Materialization
     ) async throws -> String? {
+        if let folder = container as? FolderSyncedContainer {
+            return try await folder.webArchives.lookup(forKey: key)?.name
+        }
         guard let indexPath = layout.indexPath else { return nil }
         let contents = try await loadIndexCoordinated(
             at: indexPath,

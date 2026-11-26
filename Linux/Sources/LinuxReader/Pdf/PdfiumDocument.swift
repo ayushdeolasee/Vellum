@@ -52,11 +52,7 @@ public enum PdfiumDocument {
             let id = withUnsafeBytes(of: out.document_id) { raw in
                 String(decoding: raw.bindMemory(to: UInt16.self).prefix(out.document_id_units), as: UTF16.self)
             }
-            guard DocumentIdentity.isCanonicalKey(id),
-                  ClassicPdfFile.currentInfoText(forKey: "VellumDocId", in: bytes) == id else {
-                return (Int(out.pages), nil)
-            }
-            return (Int(out.pages), id)
+            return (Int(out.pages), SharedPDFIdentity.stamp(in: bytes, readerID: id))
         }
     }
 

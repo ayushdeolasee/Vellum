@@ -220,16 +220,18 @@ final class ReaderController {
                     guard self.isCurrent(token) else { return }
                     let opening = try await PdfiumDocument.openingInfo(in: loaded)
                     guard self.isCurrent(token) else { return }
-                    if let id = opening.stableIdentifier,
-                       let catalog = try? await self.catalog(in: store, token: token) {
-                        let saved = catalog.pdf(stableIdentifier: id, fallbackTitle: title)
+                    var storageKey = opening.stableIdentifier
+                    if let catalog = try? await self.catalog(in: store, token: token),
+                       let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
+                                                               stamp: opening.stableIdentifier, fallbackTitle: title) {
+                        storageKey = saved.storageKey
                         title = saved.displayTitle
                         if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
                     }
                     guard self.isCurrent(token) else { return }
-                    self.scratchpad?.select(opening.stableIdentifier)
+                    self.scratchpad?.select(storageKey)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index

@@ -23,7 +23,8 @@ public actor ScratchpadQualification {
 
         let fixture = Self(root: root,
             failNextNote: ProcessInfo.processInfo.environment["VELLUM_484_PARTIAL_WRITE"] == "1")
-        return ScratchpadStorage(files: files) { url, data, baseline in
+        return ScratchpadStorage(files: files,
+            importDirectory: root.appendingPathComponent("incoming", isDirectory: true)) { url, data, baseline in
             try await fixture.replace(url, data, baseline)
         }
     }

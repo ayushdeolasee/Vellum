@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 enum DocumentAccessError: Error, Equatable, LocalizedError, Sendable {
     case unavailable(String)
@@ -115,7 +116,30 @@ struct DocumentAccessResolver: Sendable {
         self.appOwnedRootsOverride = appOwnedRoots
     }
 
+    private(set) var sharedPDFs: SharedPDFLocation?
+    @TaskLocal static var openingSharedPDF = false
+
+    func configured(for coordinator: StorageCoordinator?) async throws -> Self {
+        guard let coordinator, WebStorageSettings.chosenMode == .syncedFolder else { return self }
+        return try await coordinator.withStorageContext { context in
+            guard context.layout.pdfsDir != nil else {
+                throw DocumentAccessError.storeUnavailable("The selected shared folder is unavailable.")
+            }
+            return scoped(to: context.layout.rootDir)
+        }
+    }
+
+    func scoped(to root: URL) -> Self {
+        var copy = self
+        copy.sharedPDFs = SharedPDFLocation(root: root)
+        return copy
+    }
+
     func sourceExists(key: String, lastKnownPath: String) -> Bool {
+        if let sharedPDFs {
+            guard let url = sharedPDFs.resolve(lastKnownPath) else { return false }
+            return adapter.fileExists(url)
+        }
         if adapter.fileExists(URL(fileURLWithPath: lastKnownPath)) { return true }
         guard let entry = store.entry(forKey: key) else { return false }
         guard let resolved = resolveBookmark(entry.bookmarkData, preferred: [.local, .external]) else {
@@ -165,6 +189,22 @@ struct DocumentAccessResolver: Sendable {
         close: (String) async -> Void = { _ in }
     ) async throws -> DocumentInfo {
         let key = DocumentAccessBookmarkStore.key(for: savedDocument)
+
+        if let sharedPDFs {
+            // Saved absolute paths and bookmarks belong to this machine. A peer's
+            // metadata must resolve under the selected root, even when the old path exists.
+            let url = try await performFileOperation {
+                if let url = sharedPDFs.resolve(savedDocument.pdfPath) { return url }
+                guard savedDocument.pdfPath.hasPrefix("/") else { throw DocumentAccessError.unavailable(savedDocument.pdfPath) }
+                let local = URL(fileURLWithPath: savedDocument.pdfPath)
+                guard sharedPDFs.relativePath(for: local) != nil else {
+                    throw DocumentAccessError.unavailable(savedDocument.pdfPath)
+                }
+                return local
+            }
+            return try await openLocalPDF(url: url, localURL: url, expectedDocId: savedDocument.docId,
+                                          priorKey: nil, sessionId: sessionId, open: open, close: close)
+        }
 
         let entry = try await performFileOperation { store.entry(forKey: key) }
         try Task.checkCancellation()
@@ -238,6 +278,10 @@ struct DocumentAccessResolver: Sendable {
     ) async -> Result<Void, DocumentAccessError> {
         var stagedURL: URL?
         do {
+            let resolver = try await configured(for: coordinator)
+            if let shared = resolver.sharedPDFs {
+                return try await resolver.relinkShared(key: key, to: url, location: shared, coordinator: coordinator)
+            }
             let local = try await localReadableURL(for: url)
             stagedURL = local.staged ? local.url : nil
             if isDocIdKeyed {
@@ -296,6 +340,37 @@ struct DocumentAccessResolver: Sendable {
         }
     }
 
+    private func relinkShared(key: String, to url: URL, location: SharedPDFLocation,
+                              coordinator: StorageCoordinator?) async throws -> Result<Void, DocumentAccessError> {
+        guard DocumentIdentity.isCanonicalKey(key), let coordinator, let meta = try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)
+        else { throw DocumentAccessError.missingMetadata(key) }
+        let bytes = try await performFileOperation {
+            try withSecurityScopeIfNeeded(to: url, access: .external) {
+                let original = try Data(contentsOf: url)
+                let found = SharedPDFIdentity.storageKey(in: original, readerID: SharedPDFImport.readID(original))
+                guard found == key else { throw DocumentAccessError.identityMismatch(expected: key, found: found) }
+                return original
+            }
+        }
+        let destination: URL
+        if location.relativePath(for: url) != nil { destination = url }
+        else { destination = try await SharedPDFImport.copy(bytes, named: url.lastPathComponent, into: location) }
+        guard let relative = location.relativePath(for: destination) else { throw DocumentAccessError.unavailable(url.path) }
+        try await coordinator.withStorageContext { context in
+            guard context.layout.pdfsDir != nil, SharedPDFLocation(root: context.layout.rootDir).root.path == location.root.path,
+                  case .coordinated(let container, let layout) = context else { throw LibraryFileError.unavailable }
+            let target = layout.documentsDir.appendingPathComponent(key).appendingPathComponent("meta.json")
+            let prior = try await container.data(at: target)
+            var updated = try JSONDecoder().decode(DocumentDataStore.Meta.self, from: prior)
+            guard updated == meta else { throw LibraryFileError.retryable }
+            updated.lastKnownPath = relative
+            updated.lastOpened = WebLibrary.rfc3339Now()
+            guard try await container.replace(target, with: WebLibrary.jsonEncoderPretty.encode(updated), ifCurrent: prior)
+            else { throw LibraryFileError.retryable }
+        }
+        return .success(())
+    }
+
     @MainActor
     private func tryRestoreCandidate(
         bookmarkData: Data,
@@ -347,7 +422,9 @@ struct DocumentAccessResolver: Sendable {
         try Task.checkCancellation()
         var opened: DocumentInfo
         do {
-            opened = try await open(localURL.path, sessionId)
+            opened = try await Self.$openingSharedPDF.withValue(sharedPDFs != nil) {
+                try await open(localURL.path, sessionId)
+            }
         } catch {
             await close(sessionId)
             throw DocumentAccessError.unavailable(url.path)
@@ -355,6 +432,10 @@ struct DocumentAccessResolver: Sendable {
         do {
             try Task.checkCancellation()
             try validate(opened: opened, expectedDocId: expectedDocId)
+            if sharedPDFs != nil {
+                opened.bookmarkData = nil
+                return opened
+            }
             let key = DocumentAccessBookmarkStore.key(for: opened)
             let validatedDocument = opened
             let bookmarkCommitted = try await performFileOperation {
@@ -401,6 +482,38 @@ struct DocumentAccessResolver: Sendable {
         for url: URL,
         access: DocumentBookmarkAccess = .external
     ) async throws -> (url: URL, staged: Bool) {
+        if let sharedPDFs {
+            if let relative = sharedPDFs.relativePath(for: url), isAppOwnedURL(url),
+               let destination = sharedPDFs.resolve(relative) {
+                return (destination, false)
+            }
+            if url.standardizedFileURL.pathComponents.starts(with: sharedPDFs.root.pathComponents) {
+                throw DocumentAccessError.unavailable(url.path)
+            }
+            let localData = WebLibrary.storeDir.deletingLastPathComponent()
+            let migration = try SharedPDFMigration(root: sharedPDFs.root, localData: localData,
+                journals: localData.appendingPathComponent("PDF Migration Journals", isDirectory: true))
+            if let migrated = try await migration.migratedURL(for: url, readID: SharedPDFImport.readID) {
+                return (migrated, false)
+            }
+            let bytes = try await performFileOperation {
+                try withSecurityScopeIfNeeded(to: url, access: access) {
+                    let result = try SharedPDFImport.prepare(url)
+                    let localDocuments = localData.appendingPathComponent("documents")
+                    let keys = [DocumentIdentity.sha256Hex(url.path), DocumentIdentity.sha256Hex(normalizedPath(url)), result.key,
+                                adapter.documentId(atPath: url.path)].compactMap { $0 }
+                    if keys.contains(where: { DocumentIdentity.isCanonicalKey($0) &&
+                        FileManager.default.fileExists(atPath: localDocuments.appendingPathComponent($0).path) }) {
+                        throw DocumentAccessError.storeUnavailable("This PDF has local reading data. Use Migrate Local PDFs in Settings > Storage.")
+                    }
+                    return result
+                }
+            }
+            let destination = try await SharedPDFImport.copy(bytes.bytes, named: url.lastPathComponent, into: sharedPDFs)
+            // The PDF is now a published shared file. Ownership never passes
+            // to the managed-copy cleanup on cancellation, relink or failed open.
+            return (destination, false)
+        }
         let local = try await performFileOperation {
             if isAppOwnedURL(url) {
                 return (url: url, staged: false)
@@ -495,6 +608,7 @@ struct DocumentAccessResolver: Sendable {
     private func appOwnedRoots() -> [String] {
         let overrideRoots = appOwnedRootsOverride()
         var roots = [libraryDirectory()]
+        if let sharedPDFs { roots.append(sharedPDFs.root.appendingPathComponent("PDFs")) }
         if let overrideRoots {
             roots.append(contentsOf: overrideRoots)
         } else {
@@ -529,7 +643,7 @@ struct DocumentAccessResolver: Sendable {
 
     private func validate(url: URL, expectedDocId: String?) throws {
         guard let expectedDocId, expectedDocId.isEmpty == false else { return }
-        let found = adapter.documentId(atPath: url.path)
+        let found = sharedPDFs == nil ? adapter.documentId(atPath: url.path) : try SharedPDFImport.key(at: url)
         guard found == expectedDocId else {
             throw DocumentAccessError.identityMismatch(expected: expectedDocId, found: found)
         }
@@ -571,3 +685,44 @@ private let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
         .appendingPathComponent("Documents", isDirectory: true)
 }
 #endif
+
+enum SharedPDFImport {
+    static func readID(_ bytes: Data) -> String? {
+        PdfDocumentLoader.cgDocument(from: bytes).flatMap(PdfMetadata.documentId)
+    }
+
+    static func key(at url: URL) throws -> String {
+        let bytes = try Data(contentsOf: url)
+        return SharedPDFIdentity.storageKey(in: bytes, readerID: readID(bytes))
+    }
+
+    static func prepare(_ url: URL) throws -> (bytes: Data, key: String) {
+        let original = try Data(contentsOf: url)
+        guard PdfDocumentLoader.cgDocument(from: original) != nil else {
+            throw DocumentAccessError.unavailable(url.path)
+        }
+        return SharedPDFIdentity.prepare(original, writable: FileManager.default.isWritableFile(atPath: url.path),
+                                         readID: readID)
+    }
+
+    static func availableDestination(named filename: String, into location: SharedPDFLocation) async throws -> URL {
+        guard !filename.contains("/") else { throw DocumentAccessError.unavailable(filename) }
+        let store = LocalFolderFileStore(root: location.root)
+        let base = (filename as NSString).deletingPathExtension
+        var number = 1
+        while true {
+            try Task.checkCancellation()
+            let name = number == 1 ? filename : "\(base) \(number).pdf"
+            guard let url = location.resolve("PDFs/" + name) else { throw DocumentAccessError.unavailable(name) }
+            if try await store.read(url) == nil { return url }
+            number += 1
+        }
+    }
+
+    static func copy(_ bytes: Data, named filename: String, into location: SharedPDFLocation) async throws -> URL {
+        let store = LocalFolderFileStore(root: location.root)
+        let url = try await availableDestination(named: filename, into: location)
+        guard try await store.replace(url, with: bytes, ifCurrent: nil) else { throw LibraryFileError.retryable }
+        return url
+    }
+}
