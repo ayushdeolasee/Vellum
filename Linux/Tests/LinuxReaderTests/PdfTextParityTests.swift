@@ -51,7 +51,7 @@ extension PdfiumTests {
         let blankDrag = try #require(PdfTextLocatorPortable.locate(query: "Highlighted", in: blankDragSource))
         var observed: Set<String> = []
         var dragCount = 0
-        var midpointDifferences = 0
+        var midpointDifferences: Set<String> = []
         for file in files {
             let golden = try JSONDecoder().decode(PdfTextGolden.self, from: Data(contentsOf: file))
             try #require(golden.version == 1)
@@ -161,7 +161,7 @@ extension PdfiumTests {
                         let midpointDelta = abs(point - (origin + advance / 2))
                         #expect(midpointDelta < 0.001, "\(label) \(drag.name)")
                         #expect(abs(bounds.edge - advance) < 0.2, "\(label) \(drag.name) \(bounds.details)")
-                        midpointDifferences += 1
+                        midpointDifferences.insert("\(label) \(drag.name)")
                         print("ADVANCE MIDPOINT \(label) \(drag.name.debugDescription) delta=\(midpointDelta) pt \(bounds.details) \(expected.debugDescription) → \(actual.debugDescription)")
                     }
                 }
@@ -179,7 +179,10 @@ extension PdfiumTests {
             }
         }
         #expect(observed == knownDifferences, "Observed PDFKit/PDFium differences: \(observed.sorted())")
-        print("DRAG SUMMARY \(dragCount - midpointDifferences)/\(dragCount) exact outcomes, \(midpointDifferences) selection-box midpoint differences")
+        #expect(dragCount == 33)
+        #expect(midpointDifferences == knownMidpointDifferences,
+                "Observed selection-box midpoint differences: \(midpointDifferences.sorted())")
+        print("DRAG SUMMARY \(dragCount - midpointDifferences.count)/\(dragCount) exact outcomes, \(midpointDifferences.count) selection-box midpoint differences")
     }
 }
 
@@ -242,6 +245,14 @@ private var knownDifferences: Set<String> {
     result.insert("text-selection-edge-cases.pdf:3 PDFKit selection range left second")
     return result
 }
+
+private let knownMidpointDifferences: Set<String> = [
+    "rotated-all-angles.pdf:1 extend end on rotated page",
+    "rotated-all-angles.pdf:2 extend end on rotated page",
+    "rotated-all-angles.pdf:3 extend end on rotated page",
+    "rotated-all-angles.pdf:4 extend end on rotated page",
+    "text-selection-edge-cases.pdf:1 extend across lines"
+]
 
 private func sameUnits(_ a: String?, _ b: String?) -> Bool {
     switch (a, b) {
