@@ -56,6 +56,16 @@ struct PdfiumTests {
             let info = try await PdfiumDocument.pageInfo(in: bytes, at: index)
             #expect(info.pageCount == 4 && info.rotation == 90 * index)
             #expect(info.widthPt == Double(width) && info.heightPt == Double(height))
+            #expect(info.visibleLeft == 24 && info.visibleBottom == 36)
+            // PDFKit's characterBounds(at: 0) for "R" on each page is
+            // [73.2305,700,82.0408,710.042] before display rotation.
+            let text = try await PdfiumDocument.extractText(in: bytes, at: index)
+            let r = try #require(text.chars.first)
+            #expect(r.codeUnit == 82)
+            #expect(abs((r.left - info.visibleLeft) - 49.2305) < 1)
+            #expect(abs((r.bottom - info.visibleBottom) - 664) < 1)
+            #expect(abs((r.right - info.visibleLeft) - 58.0408) < 1)
+            #expect(abs((r.top - info.visibleBottom) - 674.042) < 1)
             let bitmap = try await PdfiumDocument.render(in: bytes, at: index, scale: 1)
             try #require(bitmap.width == width && bitmap.height == height)
             for mark in marks {
@@ -79,6 +89,47 @@ struct PdfiumTests {
             count + (72..<230).filter { x in bitmap.pixels[y * bitmap.bytesPerRow + x * 4] < 200 }.count
         }
         #expect(notePixels > 100)
+    }
+
+    // Interior landmarks from the unstripped macOS PDFKit renders, at one pixel per point.
+    @Test func rendersIPadInkIncludingMaskAndRotationBehavior() async throws {
+        let indigo: [UInt8] = [143, 65, 69, 255]
+        let red: [UInt8] = [48, 58, 178, 255]
+        let yellow: [UInt8] = [138, 240, 254, 255]
+        let gray: [UInt8] = [153, 153, 153, 255]
+
+        func render(_ name: String, rotated: Bool = false) async throws -> PdfiumBitmap {
+            let image = try await PdfiumDocument.render(in: fixture(name), at: 0, scale: 1)
+            try #require(image.width == (rotated ? 240 : 320) && image.height == (rotated ? 320 : 240))
+            return image
+        }
+
+        let pens = try await render("ipad-vellum-ink")
+        let foreign = bgra(pens, 50, 36)
+        #expect(foreign[0] == foreign[1] && foreign[1] == foreign[2] && foreign[2] < 65)
+        #expect(bgra(pens, 100, 84) == indigo)
+        #expect(bgra(pens, 100, 150) == red)
+
+        let full = try await render("pdf-ink-erased-full")
+        let partial = try await render("pdf-ink-erased-partial")
+        #expect(bgra(full, 100, 150) == red && bgra(partial, 100, 150) == red)
+        // Full erasure omits the indigo annotation. The partially erased PDF
+        // exports the whole line, including PencilKit's masked x=110...185 gap.
+        for x in 48..<240 {
+            let bare = bgra(full, x, 90)
+            #expect(bare[0] == bare[1] && bare[1] == bare[2])
+            #expect(bgra(partial, x, 90) == indigo)
+        }
+
+        let marker = try await render("pdf-ink-marker")
+        #expect(bgra(marker, 95, 90) == yellow)   // white paper underneath
+        #expect(bgra(marker, 84, 90) == yellow)   // gray bar underneath
+        #expect(bgra(marker, 144, 90) == yellow)  // two strokes cross on gray
+        #expect(bgra(marker, 84, 120) == gray)
+
+        let rotated = try await render("pdf-ink-rotated", rotated: true)
+        #expect(bgra(rotated, 156, 95) == indigo && bgra(rotated, 144, 237) == indigo)
+        #expect(bgra(rotated, 120, 84) == gray)
     }
 
     @Test func opensEncryptedBytesOnlyWithTheFullPassword() async throws {
@@ -168,6 +219,56 @@ struct PdfiumTests {
         try await interactive.value
         try await background.value
         #expect(order.withLock { $0 } == [0, 3, 1])
+    }
+
+    @Test func backgroundFloodLeavesAnInteractiveSlotAndReleasesBytesBeforeReturning() async throws {
+        let worker = PdfiumActor.shared
+        let maxBytes = PdfiumDocument.maxInputBytes
+        let activeStarted = Mutex(false)
+        let releaseActive = DispatchSemaphore(value: 0)
+        let releaseInteractive = DispatchSemaphore(value: 0)
+        let interactiveStarted = Mutex(false)
+        defer {
+            releaseActive.signal()
+            releaseInteractive.signal()
+        }
+        // The byte counts model maximum-size inputs without allocating the documents.
+        let consecutive = Task {
+            try await worker.run(priority: .background, byteCount: maxBytes) {
+                activeStarted.withLock { $0 = true }
+                #expect(releaseActive.wait(timeout: .now() + 10) == .success)
+            }
+            // At return, the first job's bytes must be available even though
+            // the other maximum-size job remains admitted and cannot finish.
+            try await worker.run(priority: .onDemand, byteCount: maxBytes) {}
+        }
+        try await waitUntil { activeStarted.withLock { $0 } }
+        await #expect(throws: PdfiumError.queueFull) {
+            try await worker.run(priority: .background, byteCount: 1) {}
+        }
+        let backlog = (0..<63).map { _ in
+            Task { try await worker.run(priority: .background, byteCount: 0) {} }
+        }
+        try await waitUntil { await worker.pendingCount == backlog.count }
+        await #expect(throws: PdfiumError.queueFull) {
+            try await worker.run(priority: .background, byteCount: 0) {}
+        }
+
+        let interactive = Task {
+            try await worker.run(priority: .onDemand, byteCount: maxBytes) {
+                interactiveStarted.withLock { $0 = true }
+                #expect(releaseInteractive.wait(timeout: .now() + 10) == .success)
+            }
+        }
+        try await waitUntil { await worker.pendingCount == 64 }
+        releaseActive.signal()
+        // Wait for the blocked interactive to take its slot AND the consecutive
+        // caller to refill the queue. The count alone also equals 64 before dequeue.
+        try await waitUntil { await worker.pendingCount == 64 && interactiveStarted.withLock { $0 } }
+        releaseInteractive.signal()
+        try await consecutive.value
+        try await interactive.value
+        for job in backlog { try await job.value }
     }
 
     private func waitUntil(_ ready: () async -> Bool) async throws {

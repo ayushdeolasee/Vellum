@@ -21,6 +21,7 @@ typedef struct {
 typedef struct {
     int pages, rotation;             // Clockwise degrees; dimensions are already rotated.
     double width_pt, height_pt;
+    double visible_left, visible_bottom; // Unrotated media/crop intersection in PDF user space.
     int width, height, stride;
     uint8_t *pixels;                 // Top-down opaque BGRA, malloc-owned.
     int character_count;
