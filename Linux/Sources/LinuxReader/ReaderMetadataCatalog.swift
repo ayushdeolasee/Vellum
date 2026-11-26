@@ -1,0 +1,129 @@
+import Foundation
+import VellumCore
+
+public struct ReaderDocumentMetadata: Sendable {
+    public let displayTitle: String
+    /// One-based. Legacy last_page supplies only a page and an optional page count.
+    public let position: ReadingPosition?
+    public var lastPage: Int? { position?.page }
+    /// A regular sidecar name existed at catalog load time. Its payload is not decoded.
+    public let hasInkSidecar: Bool
+}
+
+/// A library-scoped snapshot of peer positions and ink filenames. Archive listing and
+/// selection supply the manifest already decoded from their own root-confined bytes.
+public struct ReaderMetadataCatalog: Sendable {
+    private let store: ReadOnlyLibraryFileStore
+    private let peers: [DocumentKey: MergedDocumentPosition]
+    private let inkKeys: Set<DocumentKey>
+
+    @concurrent
+    public static func load(in store: ReadOnlyLibraryFileStore) async throws -> Self {
+        let positions = store.root.url.appendingPathComponent(".vellum/positions", isDirectory: true)
+        var records: [PositionDeviceRecord] = []
+        // Apple trims its device record to 512 documents. Limit decoded input retained
+        // for a single merge too, so many small files cannot bypass the store's file cap.
+        var remainingBytes = 32 * 1024 * 1024
+        for entry in try await store.list(positions, suffix: ".json") {
+            try Task.checkCancellation()
+            guard let name = PositionLayout.parseFileName(entry.name),
+                  name.version == PositionLayout.schemaVersion,
+                  PositionLayout.fileName(for: name.device) == entry.name,
+                  let bytes = try? await store.read(entry.url),
+                  var record = try? name.decode(bytes),
+                  name.device == record.deviceID, PositionMerge.isUsable(record) else { continue }
+            guard bytes.count <= remainingBytes else { throw ReaderFileError.fileTooLarge }
+            remainingBytes -= bytes.count
+            // A bad page must not win over an older usable position. The other
+            // independent fields in the same device record still participate.
+            for (key, entry) in record.documents {
+                if let position = entry.readingPosition, !usable(position.value) {
+                    record.documents[key]?.readingPosition = nil
+                }
+            }
+            records.append(record)
+        }
+
+        let directory = store.root.url.appendingPathComponent(".vellum/records", isDirectory: true)
+        let suffix = ".ink.json"
+        var inkKeys = Set<DocumentKey>()
+        for entry in try await store.list(directory, suffix: suffix) {
+            try Task.checkCancellation()
+            if let key = DocumentKey(rawValue: "web:" + entry.name.dropLast(suffix.count)) {
+                inkKeys.insert(key)
+            }
+        }
+        try Task.checkCancellation()
+        return Self(store: store, peers: PositionMerge.merge(records), inkKeys: inkKeys)
+    }
+
+    /// Apple opens an archive by normalizing manifest.url. Neither canonical_url, the
+    /// archive filename nor text from a sidecar is used as a path or a second identity.
+    @concurrent
+    public func web(manifest: ArchiveManifest, fallbackTitle: String) async throws -> ReaderDocumentMetadata {
+        try Task.checkCancellation()
+        let key = Self.webKey(manifest.url)
+        var record: WebPageRecord?
+        if let key {
+            let url = store.root.url.appendingPathComponent(".vellum/records/\(key.hash).json", isDirectory: false)
+            if let bytes = try? await store.read(url),
+               let decoded = try? JSONDecoder().decode(WebPageRecord.self, from: bytes),
+               Self.webKey(decoded.url) == key {
+                record = decoded
+            }
+        }
+        try Task.checkCancellation()
+        let peer = key.flatMap { peers[$0] }
+        let recordTitle = Self.title(record?.title)
+        let archiveTitle = Self.title(manifest.title)
+        let manualRecord = record?.titleIsUserDefined == true ? recordTitle : nil
+        // A missing flag on an old archive protects its existing title, as on Apple.
+        let manualArchive = manifest.titleIsUserDefined != false ? archiveTitle : nil
+        let displayTitle = manualRecord ?? manualArchive ?? recordTitle ?? archiveTitle
+            ?? Self.title(peer?.title?.value) ?? fallbackTitle
+        let position = peer?.readingPosition?.value
+            ?? Self.legacyPosition(page: record?.lastPage, count: record?.pageCount)
+            ?? Self.legacyPosition(page: manifest.lastPage, count: manifest.pageCount)
+        return ReaderDocumentMetadata(displayTitle: displayTitle, position: position,
+                                      hasInkSidecar: key.map { inkKeys.contains($0) } ?? false)
+    }
+
+    /// Pass the existing stamp from this PDF, if known. A relocated path, basename,
+    /// byte hash or metadata last_known_path cannot establish that identity.
+    public func pdf(stableIdentifier: String?, fallbackTitle: String) -> ReaderDocumentMetadata {
+        let peer = stableIdentifier.flatMap { id in
+            DocumentIdentity.isCanonicalKey(id) ? peers[.pdf(stableIdentifier: id)] : nil
+        }
+        return ReaderDocumentMetadata(displayTitle: Self.title(peer?.title?.value) ?? fallbackTitle,
+                                      position: peer?.readingPosition?.value, hasInkSidecar: false)
+    }
+
+    private static func webKey(_ url: String) -> DocumentKey? {
+        // A stored page URL is absolute. Bound work on untrusted URL text before
+        // normalization. Only the resulting fixed-length hash reaches the store.
+        guard url.utf8.count <= 8192 else { return nil }
+        let prefix = url.prefix(8).lowercased()
+        guard prefix.hasPrefix("https://") || prefix.hasPrefix("http://"),
+              let normalized = try? WebURLNormalizer.normalize(url, httpsOnly: false) else { return nil }
+        return .web(normalizedURL: normalized)
+    }
+
+    private static func title(_ text: String?) -> String? {
+        guard let text, !text.utf8.contains(0),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
+    }
+
+    private static func usable(_ position: ReadingPosition) -> Bool {
+        guard (1...Int(Int32.max)).contains(position.page) else { return false }
+        if let count = position.pageCount, !(position.page...Int(Int32.max)).contains(count) { return false }
+        if let fraction = position.scrollFraction, !(0...1).contains(fraction) { return false }
+        return position.viewportOffset?.isFinite != false
+    }
+
+    private static func legacyPosition(page: Int?, count: Int?) -> ReadingPosition? {
+        guard let page else { return nil }
+        let position = ReadingPosition(page: page, pageCount: count)
+        return usable(position) ? position : nil
+    }
+}
