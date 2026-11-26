@@ -19,7 +19,7 @@ if [[ ${VELLUM_OFFLINE:-0} == 1 ]]; then args+=(--network none); fi
 if [[ $# == 0 ]]; then set -- bash; fi
 
 # Use DOCKER_CONTEXT to select another local profile, e.g. colima-vellum.
-exec docker --context "${DOCKER_CONTEXT:-colima}" run "${args[@]}" vellum-linux-dev:6.4.3 \
+exec docker --context "${DOCKER_CONTEXT:-colima}" run "${args[@]}" "${VELLUM_DEV_IMAGE:-vellum-linux-dev:6.4.3}" \
   bash -eu -o pipefail -c '
     cd /work
     items=(Linux)

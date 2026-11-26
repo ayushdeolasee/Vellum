@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Inside dev-shell.sh, build the Debug executable into /build/linux first.
-# Write measurements to stderr and the auto/busy Weston screenshot to stdout.
+# Write diagnostics to stderr and the probe screenshot or reader page pair to stdout.
 set -euo pipefail
-[[ ${1:-probe} == probe && $# -le 1 ]] || { echo "usage: $0 probe" >&2; exit 64; }
+mode=${1:-probe}
+[[ ( $mode == probe || $mode == reader ) && $# -le 1 ]] || { echo "usage: $0 [probe|reader]" >&2; exit 64; }
 if [[ ${VELLUM_PRIVATE_BUS:-0} != 1 ]]; then
-  exec dbus-run-session -- env VELLUM_PRIVATE_BUS=1 bash "$0" probe
+  # Keep D-Bus activated services' stdout out of the PNG stream.
+  exec dbus-run-session -- env VELLUM_PRIVATE_BUS=1 bash -c 'exec bash "$@" >&3' -- "$0" "$mode" 3>&1 >&2
 fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -32,8 +34,13 @@ run_case() (
     wait 2>/dev/null || true
   }
   trap cleanup EXIT
-  weston --no-config --backend=headless --renderer=pixman --shell=kiosk-shell.so \
-    --socket="$WAYLAND_DISPLAY" --width=800 --height=480 --idle-time=0 \
+  shell=kiosk-shell.so width=800 height=480
+  if [[ $pump == reader ]]; then
+    shell=desktop-shell.so width=1100 height=760
+    export GTK_A11Y=atspi
+  fi
+  weston --no-config --backend=headless --renderer=pixman --shell="$shell" \
+    --socket="$WAYLAND_DISPLAY" --width="$width" --height="$height" --idle-time=0 \
     --debug >"$log" 2>&1 &
   wpid=$!
   for ((i=0; i<200; i++)); do
@@ -43,7 +50,14 @@ run_case() (
   done
   [[ -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]]
 
-  if [[ $pump == auto && $load == busy ]]; then
+  if [[ $pump == reader ]]; then
+    # Drive the normal executable (default root /library), including title-bar close.
+    timeout -k 1 40 "$app" >&2 &
+    apid=$!
+    timeout -k 1 35 python3 "$(dirname "$0")/reader-acceptance.py" "$tmp/reader.png" >&2
+    wait "$apid"
+    apid=
+  elif [[ $pump == auto && $load == busy ]]; then
     VELLUM_PROBE_CAPTURE_DIR="$tmp" timeout -k 1 12 "$app" --probe "$pump" "$load" >&2 &
     apid=$!
     until [[ -f $tmp/ready ]]; do
@@ -58,6 +72,11 @@ run_case() (
     timeout -k 1 12 "$app" --probe "$pump" "$load" >&2
   fi
 )
+if [[ $mode == reader ]]; then
+  run_case reader library
+  cat "$tmp/reader.png"
+  exit
+fi
 failed=0 unavailable=0
 for pump in auto timer missing eventfd; do
   for load in idle busy; do

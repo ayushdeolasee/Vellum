@@ -14,7 +14,8 @@ let package = Package(
                 dependencies: ["CPdfiumJob", "CShell", .product(name: "VellumCore", package: "VellumCore")],
                 swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "LinuxReaderTests", dependencies: ["LinuxReader"]),
-        .executableTarget(name: "VellumLinux", dependencies: ["CShell", "LinuxReader"],
+        .executableTarget(name: "VellumLinux",
+                          dependencies: ["CShell", "LinuxReader", .product(name: "VellumCore", package: "VellumCore")],
                           swiftSettings: [.swiftLanguageMode(.v5)])
     ]
 )
