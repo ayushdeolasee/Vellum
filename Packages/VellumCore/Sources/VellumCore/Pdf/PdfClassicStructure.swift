@@ -57,8 +57,8 @@ final class PdfClassicStructure {
 
     func inspect() throws {
         guard consume("%PDF-"), i + 3 < bytes.count,
-              [49, 50].contains(bytes[i]), bytes[i + 1] == 46,
-              PdfBytes.isDigit(bytes[i + 2]), [10, 13].contains(bytes[i + 3])
+              bytes[i + 1] == 46, [10, 13].contains(bytes[i + 3]),
+              (bytes[i] == 49 && (48...55).contains(bytes[i + 2])) || (bytes[i] == 50 && bytes[i + 2] == 48)
         else { throw Reason.malformed }
         i += 3
         var revisions = 0
@@ -160,7 +160,7 @@ final class PdfClassicStructure {
         guard let trailer = try value().dictionary else { throw Reason.malformed }
         if trailer["Encrypt"] != nil { throw Reason.encrypted }
         if trailer["XRefStm"] != nil { throw Reason.unsupportedXref }
-        guard pending.isEmpty, previousXref != nil || listed.contains(0),
+        guard !listed.isEmpty, pending.isEmpty, previousXref != nil || listed.contains(0),
               let size = trailer["Size"]?.integer, size >= previousSize, size <= objectLimit,
               size == max(previousSize, (listed.max() ?? -1) + 1),
               !hadInfo || trailer["Info"] != nil, !hadID || trailer["ID"] != nil,

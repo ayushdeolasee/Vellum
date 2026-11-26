@@ -37,9 +37,10 @@ extension PdfClassicStructure {
         try charge()
         switch value {
         case .dictionary(let dict):
+            let type = resolved(dict["Type"])?.name
+            if type == "XRef" || type == "ObjStm" { throw Reason.unsupportedXref }
             if dict["Perms"] != nil || dict["ByteRange"] != nil ||
-                resolved(dict["FT"])?.name == "Sig" ||
-                ["Sig", "DocTimeStamp"].contains(resolved(dict["Type"])?.name ?? "") {
+                resolved(dict["FT"])?.name == "Sig" || type == "Sig" || type == "DocTimeStamp" {
                 throw Reason.signed
             }
             if let flags = dict["SigFlags"] {

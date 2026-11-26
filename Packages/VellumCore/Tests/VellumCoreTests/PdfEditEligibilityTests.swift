@@ -61,6 +61,8 @@ final class PdfEditEligibilityTests: XCTestCase {
         let form = "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> >>"
         classify(PdfFixtureBuilder.classicObjects([form, pages, page(), "<< /FT 5 0 R /Kids [6 0 R] >>",
                                                    "/Sig", "<< /Parent 4 0 R >>"]), .readOnly(.signed))
+        classify(document(extra: ["<< /Type 5 0 R /Length 0 >>\nstream\n\nendstream", "/ObjStm"]),
+                 .readOnly(.unsupportedXref))
         let text = "/Type /Sig /ByteRange /Encrypt startxref"
         classify(document(extra: ["(\(text))", "<< /Length \(text.utf8.count) >>\nstream\n\(text)\nendstream"]), .editable)
     }
@@ -145,6 +147,7 @@ final class PdfEditEligibilityTests: XCTestCase {
 
     func testMalformedAndBudgetedInputs() throws {
         let base = document()
+        classify(try replacing("%PDF-1.7", with: "%PDF-2.9", in: base), .readOnly(.malformed))
         for n in [0, 1, 8, 12, base.count / 2, base.count - 4] {
             classify(base.prefix(n), .readOnly(.malformed))
         }
