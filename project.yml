@@ -156,9 +156,13 @@ targets:
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf
         type: folder
         buildPhase: resources
+      - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Ink
+        type: folder
+        buildPhase: resources
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Web
         type: folder
         buildPhase: resources
+      - path: Tests/Ink/PortableStrokeTests.swift
       - path: Tests/DocumentActionsTests.swift
       - path: Tests/PdfTextComparisonHarnessTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/PdfTextGolden
@@ -195,6 +199,9 @@ targets:
       - path: Packages/VellumCore/Tests/VellumCoreTests/PdfFixturesSanityTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/UnknownFieldsRoundTripTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf
+        type: folder
+        buildPhase: resources
+      - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Ink
         type: folder
         buildPhase: resources
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Web

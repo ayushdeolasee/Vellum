@@ -184,7 +184,11 @@ struct SyncedFolderStorageTests {
                 conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
             await coordinator.start()
             do {
-                #expect(await coordinator.currentStatus().effectiveMode == .syncedFolder)
+                let active = await coordinator.currentStatus()
+                #expect(active.effectiveMode == .syncedFolder)
+                #expect(active.activeSharedFolderRoot == shared)
+                #expect(StorageLocationCopy.sharedFolderFooter(status: active, deviceName: "Mac")
+                    .contains("shared library storage"))
                 let ignoreBytes = try Data(contentsOf: ignoreFile)
                 #expect(ignoreBytes.starts(with: userRules))
                 #expect(ignoreBytes.range(of: Data("// BEGIN VELLUM MANAGED".utf8)) != nil)
@@ -197,6 +201,14 @@ struct SyncedFolderStorageTests {
                 #expect(try Data(contentsOf: archived.archiveURL) == Data([2]))
                 #expect(try Data(contentsOf: canonical) == Data([1]))
                 #expect(!fm.fileExists(atPath: sibling.path))
+
+                try fm.removeItem(at: shared)
+                await coordinator.foreground()
+                let fallback = await coordinator.currentStatus()
+                #expect(fallback.activeSharedFolderRoot == nil)
+                #expect(fallback.availability == .degradedToLocal(.syncedFolderUnavailable))
+                #expect(StorageLocationCopy.sharedFolderFooter(status: fallback, deviceName: "Mac")
+                    .contains("private local storage"))
             } catch { await coordinator.stop(); throw error }
             await coordinator.stop()
         }
@@ -236,7 +248,8 @@ struct SyncedFolderStorageTests {
         if malformed { #expect(try Data(contentsOf: ignoreFile) == original) }
     }
 
-    @Test("Saving away an image before an offline conflict arrives keeps its bytes recoverable")
+    @MainActor
+    @Test("Storage settings actions recover an offline Scratchpad image after relaunch")
     func offlineScratchpadImage() async throws {
         let (root, key, attachments) = try scratchpadFixture()
         let fm = FileManager.default
@@ -254,6 +267,7 @@ struct SyncedFolderStorageTests {
             storeDir: local, modeProvider: { .syncedFolder },
             syncedFolderRootResolver: { root },
             conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager(), storageCoordinator: coordinator)
         let name = "abc.png"
         let file = attachments.appendingPathComponent(name)
         let documentDirectory = attachments.deletingLastPathComponent()
@@ -261,11 +275,14 @@ struct SyncedFolderStorageTests {
         let offlineNote = "![Image](attachments/\(name))"
         let bytes = Data([0, 1, 0xff])
         try bytes.write(to: file)
+        let collision = attachments.appendingPathComponent("ccc.png")
+        try bytes.write(to: collision)
         try Data(offlineNote.utf8).write(to: note)
         let document = DocumentInfo(
             kind: .pdf, pdfPath: root.appendingPathComponent("fixture.pdf").path,
             title: "Fixture", pageCount: 1, lastPage: 1, docId: key)
 
+        let batchID: String
         await coordinator.start()
         do {
             try #require(await coordinator.currentStatus().effectiveMode == .syncedFolder)
@@ -277,8 +294,16 @@ struct SyncedFolderStorageTests {
             #expect(try Data(contentsOf: note) == Data("Local edit".utf8))
             #expect(try Data(contentsOf: file) == bytes)
 
-            let batch = try #require(try await ScratchpadAttachmentCleanup
-                .moveUnreferencedAttachments(forKey: key, coordinator: coordinator))
+            let inventory = try await ScratchpadAttachmentCleanup.inventory(coordinator: coordinator)
+            #expect(inventory.documents.first?.title == "Fixture")
+            #expect(inventory.documents.first?.hasAttachments == true)
+            let newer = attachments.appendingPathComponent("ddd.png")
+            try bytes.write(to: newer)
+            try fm.setAttributes([.modificationDate: Date().addingTimeInterval(30)], ofItemAtPath: newer.path)
+            let batch = try #require(try await workspace
+                .cleanSharedScratchpadAttachments(forKey: key, inventory: inventory))
+            batchID = batch.name
+            #expect(try Data(contentsOf: newer) == bytes)
             #expect(try Data(contentsOf: batch.directory.appendingPathComponent(name)) == bytes)
             #expect(batch.retainUntil.timeIntervalSinceNow > 29 * 24 * 60 * 60)
             let arriving = documentDirectory.appendingPathComponent(
@@ -290,23 +315,49 @@ struct SyncedFolderStorageTests {
             }
             let archive = try #require(await coordinator.archivedConflicts().first)
             #expect(try Data(contentsOf: archive.archiveURL) == Data(offlineNote.utf8))
-            try await ScratchpadAttachmentCleanup.restoreAttachment(
-                named: name, fromBatch: batch.name, forKey: key, coordinator: coordinator)
-            #expect(try Data(contentsOf: file) == bytes)
-
             let conflicts = archive.archiveURL.deletingLastPathComponent()
             let archived = conflicts.appendingPathComponent("scratchpad.peer.md")
             let archivedFile = attachments.appendingPathComponent("def.png")
             try Data("50% done. ![Image](attachments/%64ef.png)".utf8).write(to: archived)
             try bytes.write(to: archivedFile)
-            #expect(try await ScratchpadAttachmentCleanup
-                .moveUnreferencedAttachments(forKey: key, coordinator: coordinator) == nil)
-            #expect(try Data(contentsOf: archivedFile) == bytes)
         } catch {
             await coordinator.stop()
             throw error
         }
         await coordinator.stop()
+
+        // A new coordinator and workspace have no in-memory batch history.
+        let relaunched = StorageCoordinator(
+            storeDir: local, modeProvider: { .syncedFolder },
+            syncedFolderRootResolver: { root },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        let reopened = WorkspaceStore(sessions: DocumentSessionManager(), storageCoordinator: relaunched)
+        await relaunched.start()
+        do {
+            let inventory = try await ScratchpadAttachmentCleanup.inventory(coordinator: relaunched)
+            let stored = try #require(inventory.documents.first?.batches.first)
+            #expect(stored.id == batchID)
+            #expect(stored.files == [name, "ccc.png"])
+            let newer = Data([9, 8, 7])
+            try newer.write(to: collision)
+            let result = try await reopened.restoreSharedScratchpadBatch(
+                named: stored.id, forKey: key, inventory: inventory)
+            #expect(result.restored == 1)
+            #expect(result.keptInRecovery == 1)
+            #expect(try Data(contentsOf: file) == bytes)
+            #expect(try Data(contentsOf: collision) == newer)
+            let remaining = try await ScratchpadAttachmentCleanup.inventory(coordinator: relaunched)
+            #expect(remaining.documents.first?.batches.first?.files == ["ccc.png"])
+            let secondCleanup = try await reopened.cleanSharedScratchpadAttachments(
+                forKey: key, inventory: inventory)
+            #expect(secondCleanup == nil)
+            let archivedFile = attachments.appendingPathComponent("def.png")
+            #expect(try Data(contentsOf: archivedFile) == bytes)
+        } catch {
+            await relaunched.stop()
+            throw error
+        }
+        await relaunched.stop()
     }
 
     @Test("Legacy attachment collection respects the selected storage mode")
