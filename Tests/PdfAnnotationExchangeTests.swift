@@ -174,4 +174,82 @@ final class PdfAnnotationExchangeTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: copy), source)
         }
     }
+
+    func testDeletionPreservesLaterUnnamedSlots() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let pdfs = root.appendingPathComponent("PDFs")
+        try FileManager.default.createDirectory(at: pdfs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = DocumentAccessResolver(store: .init(directory: root.appendingPathComponent("bookmarks")),
+            adapter: SystemDocumentAccessAdapter(), libraryDirectory: { pdfs }, appOwnedRoots: { [root] }).scoped(to: root)
+
+        func source(sparse: Bool, ambiguous: Bool = false) -> Data {
+            let extra = ambiguous ? "/Related 4 0 R" : ""
+            let name = sparse ? "" : "/NM (remove-me)"
+            let slots = sparse ? "[4 0 R null 5 0 R]" : "[4 0 R 5 0 R]"
+            return PdfFixtureBuilder.classicObjects([
+                "<< /Type /Catalog /Pages 2 0 R \(extra) >>", "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /CropBox [24 36 576 744] /Rotate 90 /Annots \(slots) >>",
+                "<< /Type /Annot /Subtype /Text \(name) /Rect [84 76 102 94] /Contents (remove) >>",
+                "<< /Type /Annot /Subtype /Text /Rect [50 63 68 81] /T (Foreign author) /Contents (survivor) >>"
+            ])
+        }
+
+        for shared in [false, true] {
+            for sparse in [false, true] {
+                let stamp = UUID().uuidString.lowercased()
+                let input = try PdfInfoIncrement.setMetadataIncrement(normalizedData: source(sparse: sparse), key: "doc_id", value: stamp)
+                let file = pdfs.appendingPathComponent(UUID().uuidString + ".pdf")
+                try input.write(to: file)
+                let backend = PdfSessionBackend()
+                let session: PdfDocumentSession
+                if shared {
+                    var opened: PdfDocumentSession?
+                    _ = try await resolver.openPickedPDF(url: file, sessionId: UUID().uuidString) { path, id in
+                        let value = try await backend.open(path: path, sessionId: id)
+                        opened = value
+                        return value.info
+                    }
+                    session = try XCTUnwrap(opened)
+                } else {
+                    session = try await backend.open(path: file.path, sessionId: UUID().uuidString)
+                }
+                let deleted = try await session.deleteAnnotation(id: sparse ? "pdf-direct-1-0" : "remove-me")
+                try await session.close()
+                XCTAssertTrue(deleted)
+                let output = try Data(contentsOf: file)
+                XCTAssertTrue(output.starts(with: input))
+                let raw = try XCTUnwrap(PdfDocumentLoader.cgDocument(from: output))
+                defer { withExtendedLifetime(raw) {} }
+                XCTAssertEqual(SharedPDFIdentity.stamp(in: output, readerID: PdfMetadata.documentId(raw)), stamp)
+                let page = try XCTUnwrap(raw.page(at: 1)?.dictionary)
+                let slots = try XCTUnwrap(CgPdf.array(page, "Annots"))
+                let survivor = sparse ? 2 : 1
+                XCTAssertEqual(CgPdf.count(slots), survivor + 1)
+                for i in 0..<survivor {
+                    XCTAssertEqual(CGPDFObjectGetType(try XCTUnwrap(CgPdf.objectAt(slots, i))), .null)
+                }
+                let foreign = try XCTUnwrap(CgPdf.dictionaryAt(slots, survivor))
+                XCTAssertFalse(CgPdf.has(foreign, "NM"))
+                XCTAssertEqual(PdfAnnotationReader.annotationId(dictionary: foreign, pageNumber: 1, index: survivor), "pdf-direct-1-\(survivor)")
+                XCTAssertEqual(CgPdf.string(foreign, "Contents"), "survivor")
+                XCTAssertEqual(CgPdf.string(foreign, "T"), "Foreign author")
+                XCTAssertEqual(try coordinates(foreign), [50, 63, 68, 81])
+            }
+        }
+
+        // Another reference to the target defeats exclusive ownership proof.
+        let input = source(sparse: false, ambiguous: true)
+        let file = pdfs.appendingPathComponent("ambiguous.pdf")
+        try input.write(to: file)
+        let session = try await PdfSessionBackend().open(path: file.path, sessionId: UUID().uuidString)
+        do {
+            _ = try await session.deleteAnnotation(id: "remove-me")
+            XCTFail("Published an unproved deletion")
+        } catch let reason as PdfReadOnlyReason {
+            XCTAssertEqual(reason, .ambiguousAnnotation)
+        }
+        try await session.close()
+        XCTAssertEqual(try Data(contentsOf: file), input)
+    }
 }

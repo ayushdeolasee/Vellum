@@ -128,8 +128,8 @@ enum PdfDocumentLoader {
     }
 
     /// Mutation load: PDFKit document + raw CGPDF view of the SAME bytes.
-    static func loadForMutation(path: String) throws -> (document: PDFDocument, raw: CGPDFDocument) {
-        try load(path: path) { data in
+    static func loadForMutation(path: String, original: Data? = nil) throws -> (document: PDFDocument, raw: CGPDFDocument) {
+        try load(path: path, original: original) { data in
             guard let raw = cgDocument(from: data), let document = PDFDocument(data: data) else {
                 return nil
             }
@@ -137,8 +137,8 @@ enum PdfDocumentLoader {
         }
     }
 
-    private static func load<T>(path: String, make: (Data) -> T?) throws -> T {
-        let data = try readFile(path)
+    private static func load<T>(path: String, original: Data? = nil, make: (Data) -> T?) throws -> T {
+        let data = try original ?? readFile(path)
         if let loaded = make(data) { return loaded }
 
         var bytes = [UInt8](data)
@@ -302,8 +302,8 @@ final class PdfDocumentSession: DocumentSession {
         let path = self.path
         let expectedID = sharedPDF ? info.docId : nil
         return try await PdfFileGate.shared.perform {
-            try Self.checkSharedEdit(path: path, expected: expectedID)
-            return try Self.performDelete(path: path, id: id)
+            let admitted = try Self.checkSharedEdit(path: path, expected: expectedID)
+            return try Self.performDelete(path: path, id: id, admitted: admitted)
         }
     }
 
@@ -318,13 +318,15 @@ final class PdfDocumentSession: DocumentSession {
         }
     }
 
-    nonisolated private static func checkSharedEdit(path: String, expected: String?) throws {
-        guard let expected else { return }
+    @discardableResult
+    nonisolated private static func checkSharedEdit(path: String, expected: String?) throws -> Data? {
+        guard let expected else { return nil }
         let original = try PdfDocumentLoader.readFile(path)
         guard SharedPDFIdentity.stamp(in: original, readerID: SharedPDFImport.readID(original)) == expected,
               PdfEditEligibility.classify(original) == .editable else {
             throw SessionServiceError.io("This shared PDF is read-only. Its notes and conversations can still be edited.")
         }
+        return original
     }
 
     // MARK: Document identity
@@ -480,7 +482,7 @@ final class PdfDocumentSession: DocumentSession {
         let bookmarks = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
         let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
 
-        if let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) {
+        if let (pageIndex, _, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) {
             PdfAnnotationWriter.setText(annotation, "NM", input.id)
             PdfAnnotationWriter.setText(annotation, "M", PdfDates.pdfDateNow())
             let updatedAt = PdfDates.rfc3339Now()
@@ -587,10 +589,11 @@ final class PdfDocumentSession: DocumentSession {
 
     /// delete_annotation: outline bookmarks first, then page annotations;
     /// false when the id is unknown.
-    nonisolated static func performDelete(path: String, id: String) throws -> Bool {
-        let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
+    nonisolated static func performDelete(path: String, id: String, admitted: Data? = nil) throws -> Bool {
+        let original = try admitted ?? PdfDocumentLoader.readFile(path)
+        let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path, original: original)
         let sourceId = PdfMetadata.documentId(raw)
-        let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
+        let originalData = pdfKitDropsCustomKeys ? original : nil
 
         if PdfBookmarks.containsBookmark(document: raw, id: id) {
             if let originalData,
@@ -607,21 +610,35 @@ final class PdfDocumentSession: DocumentSession {
             return true
         }
 
-        guard let (pageIndex, annotation) = Self.findAnnotation(id: id, in: document, raw: raw),
-              let page = document.page(at: pageIndex)
+        guard let (pageIndex, slot, annotation) = Self.findAnnotation(id: id, in: document, raw: raw),
+              let page = document.page(at: pageIndex),
+              let dictionary = raw.page(at: pageIndex + 1)?.dictionary,
+              let entries = CgPdf.array(dictionary, "Annots")
         else {
             return false
         }
 
-        // PDFKit's serializer maps an annotation's PARSED index onto the raw
-        // /Annots slot when persisting a removal, so on pages where the two
-        // domains diverge (null / non-dictionary slots) removeAnnotation would
-        // drop the WRONG entry from the file. Rewrite the page's /Annots at
-        // the byte level in that case.
-        let rawSlotCount = (raw.page(at: pageIndex + 1)?.dictionary)
-            .flatMap { CgPdf.array($0, "Annots") }
-            .map(CgPdf.count) ?? 0
-        if rawSlotCount != page.annotations.count {
+        let rawSlotCount = CgPdf.count(entries)
+        let wouldShiftIdentity = ((slot + 1)..<rawSlotCount).contains { index in
+            guard let later = CgPdf.dictionaryAt(entries, index) else { return false }
+            return CgPdf.string(later, "NM") == nil
+        }
+        var data: Data
+        if wouldShiftIdentity {
+            // The original-byte writer leaves a null in this slot. Refusal is
+            // final: a PDFKit rewrite could rename the surviving annotation.
+            data = try PdfAnnotationIncrement.applying(.delete(id: id), to: original, now: PdfDates.rfc3339Now())
+            guard let checked = PdfDocumentLoader.cgDocument(from: data) else { throw PdfReadOnlyReason.malformed }
+            defer { withExtendedLifetime(checked) {} }
+            guard let page = checked.page(at: pageIndex + 1)?.dictionary, let slots = CgPdf.array(page, "Annots"),
+                  CgPdf.count(slots) == rawSlotCount, let removed = CgPdf.objectAt(slots, slot),
+                  CGPDFObjectGetType(removed) == .null else { throw PdfReadOnlyReason.ambiguousAnnotation }
+            if admitted != nil, SharedPDFIdentity.stamp(in: data, readerID: PdfMetadata.documentId(checked)) != sourceId {
+                throw SessionServiceError.io("This deletion could not preserve the shared PDF’s identity.")
+            }
+        } else if rawSlotCount != page.annotations.count {
+            // PDFKit skips null slots in its parsed array. Removing by parsed
+            // index could delete a different raw annotation.
             let normalized = try serialize(document)
             guard let patched = try Self.deleteAnnotationIncrement(
                 normalizedData: normalized, id: id, pageNumber: pageIndex + 1)
@@ -630,21 +647,21 @@ final class PdfDocumentSession: DocumentSession {
             }
             try saveThroughPdfKit(patched, path: path, preserving: sourceId)
             return true
-        }
-
-        page.removeAnnotation(annotation)
-        var data = try serialize(document)
-        if pdfKitDropsCustomKeys {
-            let remaining = try Self.annotationMetadataRecords(in: raw).filter {
-                $0.id != id
-            }
-            data = try Self.rehydrateAnnotationMetadata(
-                normalizedData: data, records: remaining)
-            data = try Self.rehydrateBookmarkMetadata(
-                normalizedData: data,
-                bookmarks: PdfBookmarks.readBookmarks(document: raw, pageNumber: nil))
-            if let originalData {
-                data = try Self.restoreInfoDictionary(from: originalData, into: data)
+        } else {
+            page.removeAnnotation(annotation)
+            data = try serialize(document)
+            if pdfKitDropsCustomKeys {
+                let remaining = try Self.annotationMetadataRecords(in: raw).filter {
+                    $0.id != id
+                }
+                data = try Self.rehydrateAnnotationMetadata(
+                    normalizedData: data, records: remaining)
+                data = try Self.rehydrateBookmarkMetadata(
+                    normalizedData: data,
+                    bookmarks: PdfBookmarks.readBookmarks(document: raw, pageNumber: nil))
+                if let originalData {
+                    data = try Self.restoreInfoDictionary(from: originalData, into: data)
+                }
             }
         }
         try Self.writeAndRefreshCache(data, path: path, preserving: sourceId)
@@ -722,7 +739,7 @@ final class PdfDocumentSession: DocumentSession {
     /// slots CGPDF resolves to a dictionary, so both arrays stay aligned.
     nonisolated static func findAnnotation(
         id: String, in document: PDFDocument, raw: CGPDFDocument
-    ) -> (pageIndex: Int, annotation: PDFAnnotation)? {
+    ) -> (pageIndex: Int, slot: Int, annotation: PDFAnnotation)? {
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex) else { continue }
             let annotations = page.annotations
@@ -739,7 +756,7 @@ final class PdfDocumentSession: DocumentSession {
                 let annotationId = PdfAnnotationReader.annotationId(
                     dictionary: dictionary, pageNumber: pageIndex + 1, index: index)
                 if annotationId == id {
-                    return (pageIndex, annotation)
+                    return (pageIndex, index, annotation)
                 }
             }
         }
