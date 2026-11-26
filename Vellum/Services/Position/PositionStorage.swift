@@ -139,11 +139,11 @@ struct CoordinatedPositionStorage: PositionStorage {
     func loadAll() async -> [PositionDeviceRecord] {
         (try? await coordinator.withStorageContext { context in
             switch context {
-            case .direct:
-                return await FilePositionStorage().loadAll()
+            case .direct(let layout):
+                return await Self.directStorage(for: layout).loadAll()
             case .coordinated(let container, let layout):
                 return try await loadAll(
-                    from: Self.positionsRoot(for: layout),
+                    from: layout.positionsDir,
                     container: container)
             }
         }) ?? []
@@ -152,11 +152,10 @@ struct CoordinatedPositionStorage: PositionStorage {
     func write(_ record: PositionDeviceRecord) async throws {
         try await coordinator.withStorageContext { context in
             switch context {
-            case .direct:
-                try await FilePositionStorage().write(record)
+            case .direct(let layout):
+                try await Self.directStorage(for: layout).write(record)
             case .coordinated(let container, let layout):
-                let root = Self.positionsRoot(for: layout)
-                let url = root.appendingPathComponent(
+                let url = layout.positionsDir.appendingPathComponent(
                     PositionLayout.fileName(for: record.deviceID, version: record.schemaVersion))
                 let bytes = try PositionCoding.encoder.encode(record)
                 try await container.replace(url, with: bytes)
@@ -204,8 +203,8 @@ struct CoordinatedPositionStorage: PositionStorage {
         try await container.replace(destination, with: bytes)
     }
 
-    private static func positionsRoot(for layout: WebStorageLayout) -> URL {
-        layout.positionsDir
+    private static func directStorage(for layout: WebStorageLayout) -> FilePositionStorage {
+        FilePositionStorage(root: PositionLayout.rootOverride ?? layout.positionsDir)
     }
 }
 
