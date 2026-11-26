@@ -91,7 +91,7 @@ enum PdfFixtureBuilder {
         let size = objects.count + 1
         var table = "xref\n0 \(size)\n0000000000 65535 f \n"
         for offset in offsets {
-            table += String(format: "%010d %05d n \n", offset, generation)
+            table += String(format: "%010lld %05d n \n", Int64(offset), Int32(generation))
         }
         table += "trailer\n<< /Size \(size) /Root 1 \(generation) R >>\nstartxref\n\(startXref)\n%%EOF\n"
         data.append(contentsOf: table.utf8)
@@ -130,32 +130,27 @@ enum PdfFixtureBuilder {
     }
 
     static func xrefStreamPdf() -> Data {
-        // Objects 1–4 are catalog, page tree, page, and font, all packed into object 6.
-        let packed = [
-            "<< /Type /Catalog /Pages 2 0 R >>",
-            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /Helv 4 0 R >> >> /Contents 5 0 R >>",
-            font
-        ]
-        var header = ""
-        var bodies = ""
-        for (index, object) in packed.enumerated() {
-            header += "\(index + 1) \(bodies.utf8.count) "
-            bodies += object + "\n"
-        }
-
         var data = Data("%PDF-1.7\n".utf8)
         let contentOffset = data.count
         let content = stream(textCommands([TextRun(x: 72, y: 700, text: "Compressed page dictionary")]))
         data.append(contentsOf: "5 0 obj\n\(content)\nendobj\n".utf8)
         let objectStreamOffset = data.count
-        let objectStream = stream(header + bodies, entries: "/Type /ObjStm /N 4 /First \(header.utf8.count)")
-        data.append(contentsOf: "6 0 obj\n\(objectStream)\nendobj\n".utf8)
+        // Precompressed with Python's zlib.compress(payload, 9) to keep the builder portable.
+        // The 20-byte header "1 0 2 34 3 76 4 189 " locates the catalog, page tree, page and font.
+        let objectStream = Data(base64Encoded: """
+            eNplj9EKgjAYhe97ivMGc2qaIEJGEUQQFnQhXSwdMpAt3Ix6+/4p1EUwxnbOf76dcQQI\
+            EcWIkCaIwVcZ8hzs8n5IsI1wojcd2El00tJggApFsfhNzAY7qNaijrx/o5gZtQP/n/T7\
+            IMmbSewoWyVK80IdkJDwEGkWEqCS1oxDQ2Sf3xlK+MNe9k/qOJfwi17SjngWy/9qU4yd\
+            x7ubrl7kYKWwcnY8TTrVCLCtbkyrNH30qvRaW/UViPgBVGpSig==
+            """)!
+        data.append(contentsOf: "6 0 obj\n<< /Type /ObjStm /N 4 /First 20 /Filter /FlateDecode /Length \(objectStream.count) >>\nstream\n".utf8)
+        data.append(objectStream)
+        data.append(contentsOf: "\nendstream\nendobj\n".utf8)
         let xrefOffset = data.count
 
         // /W [1 2 2]. Every row starts with PNG filter byte 2 (Up), then
         // each field byte minus the corresponding byte in the previous row.
-        let entries = [(0, 0, 65535)] + packed.indices.map { (2, 6, $0) }
+        let entries = [(0, 0, 65535)] + (0..<4).map { (2, 6, $0) }
             + [contentOffset, objectStreamOffset, xrefOffset].map { (1, $0, 0) }
         var previous = [UInt8](repeating: 0, count: 5)
         var differences: [UInt8] = []
