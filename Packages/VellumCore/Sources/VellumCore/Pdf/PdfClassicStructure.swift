@@ -39,6 +39,7 @@ final class PdfClassicStructure {
     private var remainingComparisonBytes = 64 * 1024 * 1024
     private var portableSyntax = true
     private let objectLimit = 100_000
+    private let revisionLimit = 64
     private(set) var offsets: [Int: Int] = [:]
     private var free: [Int: (next: Int, generation: Int)] = [:]
     private(set) var objects: [Int: Value] = [:]
@@ -83,7 +84,7 @@ final class PdfClassicStructure {
         var revisions = 0
         repeat {
             revisions += 1
-            guard revisions <= 64 else { throw Reason.inspectionLimit }
+            guard revisions <= revisionLimit else { throw Reason.inspectionLimit }
             var newObjects = Set<Int>()
             var xrefStream: XrefStream?
             skipOuterTrivia()
@@ -137,7 +138,7 @@ final class PdfClassicStructure {
             skipSpace()
         } while i < bytes.count
         guard !forEditing || portableSyntax else { throw Reason.malformed }
-        if reservingRevision && revisions == 64 { throw Reason.inspectionLimit }
+        if reservingRevision && revisions == revisionLimit { throw Reason.inspectionLimit }
     }
 
     /// Parse every member against its header bounds with the same grammar and
@@ -187,7 +188,7 @@ final class PdfClassicStructure {
             while i < bytes.count, bytes[i] == 32 { i += 1 }
             guard i < bytes.count, PdfBytes.isDigit(bytes[i]) else { throw Reason.malformed }
             let count = try unsigned()
-            guard count > 0 else { throw Reason.malformed }
+            guard count > 0, first <= Int.max - count else { throw Reason.malformed }
             guard first < objectLimit, count <= objectLimit - first else { throw Reason.inspectionLimit }
             try charge(count)
             skipSpace()

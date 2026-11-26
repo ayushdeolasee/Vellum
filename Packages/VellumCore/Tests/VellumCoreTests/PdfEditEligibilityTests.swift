@@ -117,7 +117,7 @@ final class PdfEditEligibilityTests: XCTestCase {
         for (from, to) in [("/Size 5", "/Size 1"), ("/Size 5", "/Size 9223372036854775807"),
                            ("xref\n0 5", "xref\n9223372036854775807 5"), ("0000000009 00000 n", "0000000010 00000 n"),
                            ("0000000009 00000 n", "0000000009 00003 n")] {
-            classify(try replacing(from, with: to, in: base), .readOnly(to.contains("00003 n") ? .nonzeroGeneration : (to.hasPrefix("xref") ? .inspectionLimit : .malformed)))
+            classify(try replacing(from, with: to, in: base), .readOnly(to.contains("00003 n") ? .nonzeroGeneration : .malformed))
         }
     }
 
