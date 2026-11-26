@@ -305,6 +305,24 @@ enum AiPersistence {
         unavailableKeys.removeAll(); undecodableKeys.removeAll(); flushOwners.removeAll()
     }
 
+    @MainActor private static var loadingConversations: [UUID: Task<[AiMessage], Never>] = [:]
+
+    @MainActor static func joinConversationLoads() async {
+        while let task = loadingConversations.values.first { _ = await task.value }
+    }
+
+    @MainActor static var hasActiveConversationLoads: Bool { !loadingConversations.isEmpty }
+
+    /// Only called after the old library's loads and writes drain. Reopening the
+    /// same document ID in another library must read that library's transcript.
+    @MainActor static func forgetConversations(for coordinator: StorageCoordinator) {
+        for key in coordinators.compactMap({ $0.value === coordinator ? $0.key : nil }) {
+            invalidateCachedConversation(forKey: key)
+            coordinators[key] = nil
+            documents[key] = nil
+        }
+    }
+
     /// Cold-load path for production. Direct test/local callers may continue to
     /// use the synchronous overload below, but a workspace-backed load always
     /// enters the coordinator before consulting `documents/<key>`.
@@ -312,6 +330,18 @@ enum AiPersistence {
         for document: DocumentInfo?, coordinator: StorageCoordinator
     ) async -> [AiMessage] {
         guard let document, let key = storageKey(for: document) else { return [] }
+        let id = UUID()
+        let task = Task { @MainActor in
+            defer { loadingConversations[id] = nil }
+            return await loadConversation(document: document, key: key, coordinator: coordinator)
+        }
+        loadingConversations[id] = task
+        return await task.value
+    }
+
+    @MainActor private static func loadConversation(
+        document: DocumentInfo, key: String, coordinator: StorageCoordinator
+    ) async -> [AiMessage] {
         coordinators[key] = coordinator
         documents[key] = document
         await migrateToCurrentStorageKeyIfNeeded(

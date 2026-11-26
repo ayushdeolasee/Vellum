@@ -43,6 +43,7 @@ actor PositionStore {
     private var dirtyGeneration: UInt64 = 0
     private var inFlightWrite: Task<WriteOutcome, Never>?
     private var inFlightGeneration: UInt64?
+    private var storageChange: Task<Void, Error>?
 
     private struct WriteOutcome: Sendable {
         var generation: UInt64
@@ -72,7 +73,8 @@ actor PositionStore {
 
     // MARK: - Writes
 
-    func record(_ event: PositionEvent, for key: DocumentKey) {
+    func record(_ event: PositionEvent, for key: DocumentKey) async {
+        while let storageChange { _ = try? await storageChange.value }
         var entry = documents[key] ?? PositionDeviceRecord.DocumentEntry()
         switch event {
         case .opened(let title, let tabOrdinal):
@@ -101,6 +103,11 @@ actor PositionStore {
     /// Force the pending write now (backgrounding, tab close, test). Returns
     /// after the bytes are on disk, or after the write failed silently.
     func flush() async {
+        while let storageChange { _ = try? await storageChange.value }
+        await flushPendingWrites()
+    }
+
+    private func flushPendingWrites() async {
         timer.cancel()
         while true {
             if let task = inFlightWrite {
@@ -115,16 +122,25 @@ actor PositionStore {
         }
     }
 
-    /// A journaled library operation is about to replace complete device records.
-    /// Rehydrate on next use so a later scroll cannot republish pre-migration keys.
-    func prepareForExternalRekey() async throws {
-        await flush()
-        await hydration?.value
-        guard !dirty, inFlightWrite == nil else { throw PositionStorageError.io("Pending reading positions could not be saved.") }
-        hydrated = false
-        documents.removeAll()
-        recordFields.removeAll()
-        lastStamps.removeAll()
+    /// Drain the old record before changing roots or rekeying its contents.
+    /// Keep new observations from rehydrating the old keys during the change.
+    func withStorageChange(_ change: @escaping @Sendable () async throws -> Void) async throws {
+        while let storageChange { _ = try? await storageChange.value }
+        let task = Task {
+            defer { storageChange = nil }
+            await flushPendingWrites()
+            await hydration?.value
+            guard !dirty, inFlightWrite == nil else {
+                throw PositionStorageError.io("Pending reading positions could not be saved.")
+            }
+            hydrated = false
+            documents.removeAll()
+            recordFields.removeAll()
+            lastStamps.removeAll()
+            try await change()
+        }
+        storageChange = task
+        try await task.value
     }
 
     // MARK: - Reads
@@ -365,6 +381,7 @@ actor PositionStore {
     }
 
     private func mergedView() async -> [DocumentKey: MergedDocumentPosition] {
+        while let storageChange { _ = try? await storageChange.value }
         await hydrate()
         var records = await storage.loadAll().filter { $0.deviceID != device.id }
         records.append(currentRecord(writtenAt: clock.now()))

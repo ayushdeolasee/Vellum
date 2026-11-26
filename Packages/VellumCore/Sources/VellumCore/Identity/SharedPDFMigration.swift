@@ -10,10 +10,13 @@ import Glibc
 public struct SharedPDFMigration: Sendable {
     public enum Failure: LocalizedError {
         case changed(String), invalid(String)
+        case originalChanged(sharedCopy: URL)
         public var errorDescription: String? {
             switch self {
             case .changed(let path): "Migration stopped because the contents changed at \(path). Both versions have been kept."
             case .invalid(let path): "Cannot verify the library data at \(path)."
+            case .originalChanged(let url):
+                "The original PDF has changed since migration. To continue with the migrated notes and reading position, open the verified shared copy at \(url.path)."
             }
         }
     }
@@ -42,6 +45,8 @@ public struct SharedPDFMigration: Sendable {
         var inputs: [Source] = []
         var directories: [String: [String]] = [:]
         var changes: [Change] = []
+        // Older journals did not record directory ownership. Leave those directories intact.
+        var createdDirectories: [URL]?
         var completed = 0
         var pending = false
         var reversing = false
@@ -173,6 +178,15 @@ public struct SharedPDFMigration: Sendable {
         j.changes.removeAll { $0.relative.hasPrefix("PDFs/") }
         try await planPositions(positions, journal: &j)
         j.changes += payloads
+        var absent = Set<URL>()
+        for step in j.changes {
+            var parent = location.root.appendingPathComponent(step.relative).deletingLastPathComponent()
+            while parent.path != location.root.path && !fm.fileExists(atPath: parent.path) {
+                absent.insert(parent)
+                parent.deleteLastPathComponent()
+            }
+        }
+        j.createdDirectories = absent.sorted { $0.pathComponents.count > $1.pathComponents.count }
         try save(j) // every byte and inverse is durable before the first shared mutation
         try await apply(&j, checkpoint: checkpoint)
     }
@@ -187,6 +201,16 @@ public struct SharedPDFMigration: Sendable {
               let url = location.resolve(pdf.relative), let bytes = try await store.read(url),
               SharedPDFIdentity.storageKey(in: bytes, readerID: readID(bytes)) == pdf.key else {
             throw Failure.changed(source.path)
+        }
+        guard let input = j.inputs.first(where: { $0.url.path == pdf.source.path }) else {
+            throw Failure.invalid(source.path)
+        }
+        do {
+            if try DocumentIdentity.byteHash(Data(contentsOf: source)) != input.digest {
+                throw Failure.originalChanged(sharedCopy: url)
+            }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // A saved tab can still reopen its verified copy after the original moves.
         }
         return url
     }
@@ -377,6 +401,14 @@ public struct SharedPDFMigration: Sendable {
             guard try await store.read(url) == before else { throw Failure.changed(step.relative) }
             j.completed -= 1
             try save(j)
+        }
+        // rmdir only removes empty directories this batch created. Never
+        // recursively remove a folder that may contain a new peer attachment.
+        for dir in j.createdDirectories ?? [] where dir.pathComponents.starts(with: location.root.pathComponents) {
+            guard dir.resolvingSymlinksInPath().standardizedFileURL.path == dir.standardizedFileURL.path else {
+                throw Failure.changed(dir.path)
+            }
+            if rmdir(dir.path) != 0 && errno != ENOENT && errno != ENOTEMPTY { throw Failure.changed(dir.path) }
         }
         // Retire the entire local journal atomically. A crash during cleanup
         // cannot leave a live manifest pointing to missing blobs.

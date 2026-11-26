@@ -23,6 +23,34 @@ final class SharedPDFMigrationTests: XCTestCase {
         XCTAssertEqual(locked.key, DocumentIdentity.byteHash(unsigned))
     }
 
+    func testResumeAndRollbackWithoutDirectoryOwnershipInLegacyJournal() async throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: tmp) }
+        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let source = tmp.appendingPathComponent("Paper.pdf")
+        let root = tmp.appendingPathComponent("shared")
+        let journals = tmp.appendingPathComponent("journals")
+        let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("digitally-signed"))
+        try original.write(to: source)
+        let migration = try SharedPDFMigration(root: root, localData: tmp.appendingPathComponent("private"), journals: journals)
+        do {
+            try await migration.migrate([source], readID: id) { if $0 == 1 { throw CancellationError() } }
+            XCTFail("Expected interruption")
+        } catch is CancellationError {}
+        let manifest = journals.appendingPathComponent(DocumentIdentity.sha256Hex(root.path) + "/migration.json")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])
+        XCTAssertNotNil(json.removeValue(forKey: "createdDirectories"))
+        try JSONSerialization.data(withJSONObject: json).write(to: manifest, options: .atomic)
+        try await migration.migrate([], readID: id)
+        let pdf = root.appendingPathComponent("PDFs/Paper.pdf")
+        XCTAssertEqual(try Data(contentsOf: pdf), original)
+        try await migration.rollback()
+        XCTAssertFalse(fm.fileExists(atPath: pdf.path))
+        XCTAssertTrue(fm.fileExists(atPath: pdf.deletingLastPathComponent().path))
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
     func testMigrationAcrossPrefixesInterruptionRollbackAndPeerChanges() async throws {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
@@ -85,6 +113,25 @@ final class SharedPDFMigrationTests: XCTestCase {
             try fm.createSymbolicLink(at: link, withDestinationURL: source.deletingLastPathComponent())
             XCTAssertNil(location.resolve("PDFs/alias/Paper.pdf"))
         }
+        let sharedPDF = apple.appendingPathComponent("PDFs/Paper.pdf")
+        let migratedBytes = try Data(contentsOf: sharedPDF)
+        let edited = raw + Data("% local edit".utf8)
+        try edited.write(to: source)
+        do {
+            _ = try await migration().migratedURL(for: source, readID: id)
+            XCTFail("An edited original must require an explicit choice")
+        } catch SharedPDFMigration.Failure.originalChanged(let copy) {
+            XCTAssertEqual(copy.path, sharedPDF.path)
+            XCTAssertEqual(try Data(contentsOf: copy), migratedBytes)
+        }
+        try raw.write(to: sharedPDF)
+        do {
+            _ = try await migration().migratedURL(for: source, readID: id)
+            XCTFail("An unverified destination must not be offered for recovery")
+        } catch SharedPDFMigration.Failure.changed {}
+        XCTAssertEqual(try Data(contentsOf: source), edited)
+        try migratedBytes.write(to: sharedPDF)
+        try raw.write(to: source)
         let scratch = apple.appendingPathComponent(".vellum/documents/" + new + "/scratchpad.md")
         try Data("peer edit".utf8).write(to: scratch)
         do { try await migration().rollback(); XCTFail("Expected peer conflict") } catch is SharedPDFMigration.Failure {}
@@ -93,7 +140,7 @@ final class SharedPDFMigrationTests: XCTestCase {
         try dependent["scratchpad.md"]!.write(to: scratch)
         try await migration().rollback()
         try await migration().rollback()
-        XCTAssertFalse(fm.fileExists(atPath: scratch.path))
+        XCTAssertFalse(fm.fileExists(atPath: scratch.deletingLastPathComponent().path))
         XCTAssertFalse(fm.fileExists(atPath: apple.appendingPathComponent("PDFs/Paper.pdf").path))
         XCTAssertEqual(try Data(contentsOf: source), raw)
         XCTAssertEqual(try Data(contentsOf: doc.appendingPathComponent("meta.json")), meta)

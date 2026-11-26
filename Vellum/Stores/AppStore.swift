@@ -126,6 +126,10 @@ final class TabTeardownRegistry {
     /// True when no teardown is pending.
     var isEmpty: Bool { entries.isEmpty && releaseFlushes.isEmpty }
 
+    func hasPendingWork(excluding registeredOwner: String) -> Bool {
+        !releaseFlushes.isEmpty || entries.keys.contains { $0 != registeredOwner }
+    }
+
     func register(tabId: String, document: DocumentInfo, generation: UUID? = nil, task: Task<Void, Never>) {
         entries[tabId] = Entry(
             documentPath: document.pdfPath,
@@ -189,13 +193,13 @@ final class TabTeardownRegistry {
     /// the same registry from `applicationShouldTerminate`; iOS has no quit, so
     /// `flushOnBackground` is the equivalent last chance.)
     @discardableResult
-    func awaitAll() async -> Bool {
+    func awaitAll(excluding registeredOwner: String? = nil) async -> Bool {
         // Drain, don't take a single snapshot: a close teardown can evict its
         // runtime near the end and register an ink release flush while we are
         // awaiting that close task.
         var attemptedReleaseFlushes = Set<UUID>()
         while true {
-            let teardownTasks = entries.values.map(\.task)
+            let teardownTasks = entries.compactMap { $0.key == registeredOwner ? nil : $0.value.task }
             let releaseIds = releaseFlushes.keys.filter {
                 attemptedReleaseFlushes.contains($0) == false
             }
