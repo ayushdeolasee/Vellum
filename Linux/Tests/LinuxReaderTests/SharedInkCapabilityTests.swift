@@ -48,6 +48,13 @@ struct SharedInkCapabilityTests {
         try await advertisePeer(build: "iOS/0.1.1 (4)")
         #expect(await context.permitsInkEditing())
 
+        var displacedBuild = ownRecord
+        displacedBuild["app_build"] = .string("linux/other-build")
+        try JSONEncoder().encode(displacedBuild).write(to: ownURL)
+        #expect(await !context.permitsInkEditing())
+        await context.advertiseInkCapability()
+        #expect(await context.permitsInkEditing())
+
         // A replace by a downgraded position writer can preserve the clock and
         // unknown fields. Different bytes still invalidate its old ad.
         position.deviceName = "iPad after downgrade"

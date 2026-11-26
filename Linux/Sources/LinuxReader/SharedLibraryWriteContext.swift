@@ -68,14 +68,15 @@ public actor SharedLibraryWriteContext {
     /// I10 can consult this on the selected context immediately before an ink
     /// edit. A full read replaces any previous decision on each call.
     public func permitsInkEditing() async -> Bool {
-        guard active, inkCapabilityBuild != nil, !Task.isCancelled else { return false }
+        guard active, let inkCapabilityBuild, !Task.isCancelled else { return false }
         do {
             let evidence = try await inkEvidence()
             let inventory = InkCapabilityStore.Inventory(capabilities: evidence.capabilities,
                 positions: evidence.positions, hasRecovery: evidence.hasRecovery)
             knownInkParticipants.formUnion(inventory.devices)
             guard try await inventory.permitsInk(in: root.url,
-                requiring: knownInkParticipants, localDevice: device.id, read: { [root] url, limit in
+                requiring: knownInkParticipants, localDevice: device.id, localBuild: inkCapabilityBuild,
+                read: { [root] url, limit in
                     try await root.readRegularFile(url, byteLimit: limit)
                 }),
                 try await inkEvidence() == evidence,

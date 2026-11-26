@@ -104,7 +104,7 @@ public enum InkCapabilityStore {
         /// or retained when discovery and reads disagree.
         public func permitsInk(
             in root: URL, requiring known: Set<DeviceID>, localDevice: DeviceID,
-            now: Date = .now, read: Read
+            localBuild: String, now: Date = .now, read: Read
         ) async throws -> Bool {
             guard isComplete, devices.contains(localDevice),
                   devices.count > 1, devices.isSuperset(of: known), devices == advertisingDevices
@@ -116,7 +116,8 @@ public enum InkCapabilityStore {
                 guard let bytes = try await read(url, byteLimit) else { return false }
                 let record = try decode(bytes, for: device)
                 let age = now.timeIntervalSince(record.advertisedAt)
-                guard age >= -clockSkew, age < lifetime, record.features.contains(feature) else { return false }
+                guard age >= -clockSkew, age < lifetime, record.features.contains(feature),
+                      device != localDevice || record.appBuild == localBuild else { return false }
                 let position = try PositionLayout.fileURL(in: positions, for: device)
                 let digest = try await positionDigest(at: position, device: device, read: read)
                 guard (digest != nil) == positionDevices.contains(device),
