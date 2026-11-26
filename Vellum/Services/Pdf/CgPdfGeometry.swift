@@ -154,7 +154,7 @@ extension PageGeometry {
         let userUnit = CgPdf.inherited(pageDictionary, "UserUnit")
             .flatMap(CgPdf.objectNumber) ?? 1.0
 
-        self.init(left: left, bottom: bottom, width: abs(right - left), height: abs(top - bottom),
+        self.init(left: min(left, right), bottom: min(bottom, top), width: abs(right - left), height: abs(top - bottom),
                   rotation: rawRotation, userUnit: userUnit)
     }
 }

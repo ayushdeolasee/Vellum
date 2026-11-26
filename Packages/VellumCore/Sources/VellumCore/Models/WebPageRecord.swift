@@ -1,6 +1,8 @@
 /// Sidecar record persisted per webpage (`<appData>/web/<key>.json`).
 /// All fields default on decode except `url` (mirrors `#[serde(default)]`).
 public struct WebPageRecord: Codable, Equatable, Sendable {
+    public var unknownFields: [String: JSONValue] = [:]
+
     public var url: String
     public var title: String?
     public var titleIsUserDefined: Bool
@@ -55,5 +57,23 @@ public struct WebPageRecord: Codable, Equatable, Sendable {
         openedAt = try container.decodeIfPresent(String.self, forKey: .openedAt)
         loadingPolicy = try container.decodeIfPresent(String.self, forKey: .loadingPolicy)
         annotations = try container.decodeIfPresent([Annotation].self, forKey: .annotations) ?? []
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+}
+
+extension WebPageRecord {
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(url, forKey: .url)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encode(titleIsUserDefined, forKey: .titleIsUserDefined)
+        try container.encodeIfPresent(pageCount, forKey: .pageCount)
+        try container.encodeIfPresent(lastPage, forKey: .lastPage)
+        try container.encode(saved, forKey: .saved)
+        try container.encodeIfPresent(savedAt, forKey: .savedAt)
+        try container.encodeIfPresent(openedAt, forKey: .openedAt)
+        try container.encodeIfPresent(loadingPolicy, forKey: .loadingPolicy)
+        try container.encode(annotations, forKey: .annotations)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }

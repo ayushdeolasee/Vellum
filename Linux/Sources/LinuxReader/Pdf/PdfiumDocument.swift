@@ -44,6 +44,22 @@ public struct PdfiumPageText: Sendable {
 public enum PdfiumDocument {
     public static let maxInputBytes = Int(PDF_MAX_INPUT_BYTES)
 
+    /// Selection only. A PDF Name can have the same PDFium text as a String,
+    /// so require the typed value from the original bytes to agree.
+    public static func openingInfo(in bytes: Data, password: String? = nil) async throws
+        -> (pageCount: Int, stableIdentifier: String?) {
+        try await job(PDF_OPEN_INFO, bytes, 0, password, .onDemand) { out in
+            let id = withUnsafeBytes(of: out.document_id) { raw in
+                String(decoding: raw.bindMemory(to: UInt16.self).prefix(out.document_id_units), as: UTF16.self)
+            }
+            guard DocumentIdentity.isCanonicalKey(id),
+                  ClassicPdfFile.currentInfoText(forKey: "VellumDocId", in: bytes) == id else {
+                return (Int(out.pages), nil)
+            }
+            return (Int(out.pages), id)
+        }
+    }
+
     public static func pageInfo(in bytes: Data, at index: Int, password: String? = nil,
                                 priority: PdfiumActor.Priority = .onDemand) async throws -> PdfiumPageInfo {
         try await job(PDF_INFO, bytes, index, password, priority) { out in

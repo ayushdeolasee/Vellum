@@ -152,6 +152,7 @@ targets:
       - path: Tests/WebProxyUrlTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/TestSupport/PdfFixtureBuilder.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/PdfFixturesSanityTests.swift
+      - path: Packages/VellumCore/Tests/VellumCoreTests/UnknownFieldsRoundTripTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf
         type: folder
         buildPhase: resources
@@ -190,6 +191,7 @@ targets:
       - path: Packages/VellumCore/Tests/VellumCoreTests/PositionTestSupport.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/TestSupport/PdfFixtureBuilder.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/PdfFixturesSanityTests.swift
+      - path: Packages/VellumCore/Tests/VellumCoreTests/UnknownFieldsRoundTripTests.swift
       - path: Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf
         type: folder
         buildPhase: resources

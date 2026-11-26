@@ -23,36 +23,55 @@ public enum PdfAtomicFile {
         let nonce = UUID().uuidString.lowercased()
         let temporaryURL = parent.appendingPathComponent(".\(fileName).vellum-\(nonce).tmp")
 
-        let permissions: Any?
+        let attributes: [FileAttributeKey: Any]
         do {
-            permissions = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions]
+            attributes = try FileManager.default.attributesOfItem(atPath: path)
         } catch {
             throw PdfCoreError.io("Failed to read PDF permissions: \(error.localizedDescription)")
         }
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              let permissions = attributes[.posixPermissions] as? NSNumber else {
+            throw PdfCoreError.io("Failed to read PDF permissions: expected a regular file")
+        }
 
+        // Create the stage exclusively, with no access for group or others
+        // until its complete contents and source permissions are ready.
+        let mode = mode_t(permissions.uint16Value)
+        let fd = open(temporaryURL.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode & 0o600)
+        guard fd >= 0 else { throw ioError("Failed to write annotated PDF", errno) }
+        var committed = false
+        defer { if !committed { unlink(temporaryURL.path) } }
+
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         do {
-            try data.write(to: temporaryURL)
+            try handle.write(contentsOf: data)
+            guard fchmod(fd, mode) == 0 else { throw ioError("Failed to preserve PDF permissions", errno) }
+            try handle.synchronize()
+            try handle.close()
+        } catch let error as PdfCoreError {
+            throw error
         } catch {
-            try? FileManager.default.removeItem(at: temporaryURL)
             throw PdfCoreError.io("Failed to write annotated PDF: \(error.localizedDescription)")
         }
 
-        if let permissions {
-            do {
-                try FileManager.default.setAttributes(
-                    [.posixPermissions: permissions], ofItemAtPath: temporaryURL.path)
-            } catch {
-                try? FileManager.default.removeItem(at: temporaryURL)
-                throw PdfCoreError.io("Failed to preserve PDF permissions: \(error.localizedDescription)")
-            }
-        }
-
-        // rename(2) is atomic on the same volume and replaces the destination.
         let failure = replace(temporaryURL.path, path)
-        if failure != 0 {
-            let message = String(cString: strerror(failure))
-            try? FileManager.default.removeItem(at: temporaryURL)
-            throw PdfCoreError.io("Failed to replace PDF with annotated copy: \(message)")
+        guard failure == 0 else { throw ioError("Failed to replace PDF with annotated copy", failure) }
+        committed = true
+
+        // The rename is already visible. Flush its directory entry where the
+        // filesystem permits this; reporting failure here would invite retries
+        // of a mutation which has already committed.
+        let directory = open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        if directory >= 0 {
+            _ = fsync(directory)
+            _ = close(directory)
         }
+    }
+
+    private static func ioError(_ operation: String, _ code: Int32) -> PdfCoreError {
+        var buffer = [CChar](repeating: 0, count: 256)
+        let result = strerror_r(code, &buffer, buffer.count)
+        let message = result == 0 ? String(cString: buffer) : "POSIX error \(code)"
+        return .io("\(operation): \(message)")
     }
 }

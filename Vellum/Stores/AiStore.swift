@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 import Observation
 import UniformTypeIdentifiers
 
@@ -69,6 +70,8 @@ enum AiThinkingMode: String, Codable, Sendable, CaseIterable {
 }
 
 struct AiMessage: Codable, Equatable, Identifiable, Sendable {
+    var unknownFields: [String: JSONValue] = [:]
+
     var id: String
     var role: AiRole
     var content: String
@@ -95,10 +98,7 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     /// in `displayToolSummaries`) stays distinguishable from `[]` (ran no tools).
     var toolSummaries: [AiToolSummary]? = nil
 
-    /// Explicit so `encode(to:)` synthesis and the hand-written `init(from:)`
-    /// below agree on the on-disk key names. Every stored property must be
-    /// listed: an omission here silently drops the field from both the encoded
-    /// file and the decode, with no compiler error.
+    /// Shared by the typed codec and the filter for additional wire keys.
     private enum CodingKeys: String, CodingKey {
         case id, role, content, createdAt, usage, references, toolSummaries
     }
@@ -137,6 +137,7 @@ extension AiMessage {
         // `displayToolSummaries` relies on to decide whether a legacy "Actions:"
         // receipt should be upgraded.
         toolSummaries = try container.decodeIfPresent([AiToolSummary].self, forKey: .toolSummaries)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
     }
 }
 
@@ -181,6 +182,8 @@ enum AiActivity: Equatable, Sendable {
 /// .references`), so `Codable` here is a storage format with real users' data
 /// behind it — see `Kind`'s hand-written coding below.
 struct AiReference: Identifiable, Equatable, Sendable, Codable {
+    var unknownFields: [String: JSONValue] = [:]
+
     /// `page` is meaningful for web documents too: the injected content script
     /// paginates an archived page into virtual pages (it reports pageCount and
     /// per-page text, and the AI's scroll/read tools address those numbers), so
@@ -199,6 +202,8 @@ struct AiReference: Identifiable, Equatable, Sendable, Codable {
     }
     let id: String
     var kind: Kind
+    // Kind is a tagged enum on the wire. Keep its additional keys beside it.
+    var kindUnknownFields: [String: JSONValue] = [:]
 
     init(id: String = UUID().uuidString.lowercased(), kind: Kind) {
         self.id = id
@@ -301,7 +306,7 @@ extension AiReference.Kind: Codable {
         case selection, highlight, region, pageSnapshot, quote, image
     }
 
-    private enum CodingKeys: String, CodingKey {
+    fileprivate enum CodingKeys: String, CodingKey {
         case tag, text, page, image, messageId, name
     }
 
@@ -371,6 +376,7 @@ extension AiPageImageSnapshot: Equatable {
         lhs.pageNumber == rhs.pageNumber
             && lhs.base64Data == rhs.base64Data
             && lhs.mediaType == rhs.mediaType
+            && lhs.unknownFields == rhs.unknownFields
     }
 
     /// The same descriptor with the base64 pixels removed. See
@@ -419,6 +425,8 @@ struct AiSettings: Codable, Equatable, Sendable {
 }
 
 struct AiPageImageSnapshot: Codable, Sendable {
+    var unknownFields: [String: JSONValue] = [:]
+
     /// Source page for a page/region capture; nil for an arbitrary attached
     /// image (a Finder drop or file pick), which has no document position.
     /// Mirrors `ScratchpadImageCapture.pageNumber`.
@@ -1594,4 +1602,114 @@ final class AiStore {
         messages[index].content += delta
     }
 
+}
+
+extension AiMessage {
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(role, forKey: .role)
+        try container.encode(content, forKey: .content)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(usage, forKey: .usage)
+        try container.encode(references, forKey: .references)
+        try container.encodeIfPresent(toolSummaries, forKey: .toolSummaries)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension AiReference {
+    private enum CodingKeys: String, CodingKey {
+        case id, kind
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        let payload = try container.superDecoder(forKey: .kind)
+        kind = try Kind(from: payload)
+        kindUnknownFields = try JSONValue.unknownFields(in: payload, excluding: Kind.CodingKeys.self)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        let payload = container.superEncoder(forKey: .kind)
+        try kind.encode(to: payload)
+        try JSONValue.encode(kindUnknownFields, to: payload, excluding: Kind.CodingKeys.self)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension AiPageImageSnapshot {
+    private enum CodingKeys: String, CodingKey {
+        case pageNumber, base64Data, mediaType, width, height
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        pageNumber = try container.decodeIfPresent(Int.self, forKey: .pageNumber)
+        base64Data = try container.decode(String.self, forKey: .base64Data)
+        mediaType = try container.decode(String.self, forKey: .mediaType)
+        width = try container.decode(Int.self, forKey: .width)
+        height = try container.decode(Int.self, forKey: .height)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(pageNumber, forKey: .pageNumber)
+        try container.encode(base64Data, forKey: .base64Data)
+        try container.encode(mediaType, forKey: .mediaType)
+        try container.encode(width, forKey: .width)
+        try container.encode(height, forKey: .height)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
+    }
+}
+
+extension AiMessage {
+    /// Membership and known values belong to the selected message. Only match
+    /// nested objects with the same identity, independently of their order.
+    mutating func inheritUnknownFields(from other: Self) {
+        unknownFields.fillMissing(from: other.unknownFields)
+        if let previous = other.usage { usage?.unknownFields.fillMissing(from: previous.unknownFields) }
+        references.mergeMatching(other.references) { $0.inheritUnknownFields(from: $1) }
+        if let previous = other.toolSummaries {
+            toolSummaries?.mergeMatching(previous) { summary, old in
+                summary.unknownFields.fillMissing(from: old.unknownFields)
+                summary.sources.mergeMatching(old.sources) { $0.unknownFields.fillMissing(from: $1.unknownFields) }
+            }
+        }
+    }
+}
+
+extension Array where Element: Identifiable {
+    fileprivate mutating func mergeMatching(_ others: Self, _ merge: (inout Element, Element) -> Void) {
+        let byID = Dictionary(others.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for index in indices {
+            if let other = byID[self[index].id] { merge(&self[index], other) }
+        }
+    }
+}
+
+private extension AiReference {
+    mutating func inheritUnknownFields(from other: Self) {
+        unknownFields.fillMissing(from: other.unknownFields)
+        // A changed kind replaces the entire tagged payload.
+        switch (kind, other.kind) {
+        case (.selection, .selection), (.highlight, .highlight), (.quote, .quote): break
+        case (.region(var image, let page), .region(let old, _)):
+            image.unknownFields.fillMissing(from: old.unknownFields)
+            kind = .region(image: image, page: page)
+        case (.pageSnapshot(var image, let page), .pageSnapshot(let old, _)):
+            image.unknownFields.fillMissing(from: old.unknownFields)
+            kind = .pageSnapshot(image: image, page: page)
+        case (.image(var image, let name), .image(let old, _)):
+            image.unknownFields.fillMissing(from: old.unknownFields)
+            kind = .image(image: image, name: name)
+        default: return
+        }
+        kindUnknownFields.fillMissing(from: other.kindUnknownFields)
+    }
 }

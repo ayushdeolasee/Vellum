@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // Per-document user-data folder (class B in plans/storage-design.html §2/§4):
 //   <appData>/documents/<storageKey>/
@@ -198,6 +199,8 @@ enum DocumentDataStore {
     // MARK: - meta.json
 
     struct Meta: Codable, Equatable {
+        var unknownFields: [String: JSONValue] = [:]
+
         var version: Int
         var kind: String
         var title: String?
@@ -211,6 +214,16 @@ enum DocumentDataStore {
             case lastKnownPath = "last_known_path"
             case lastOpened = "last_opened"
         }
+    }
+
+    /// The stamped identity owns known metadata. Reuse its bytes when the
+    /// path-keyed copy contributes no additional fields.
+    private static func rekeyedMeta(destination: Data, source: Data) throws -> Data? {
+        var meta = try JSONDecoder().decode(Meta.self, from: destination)
+        let incoming = try JSONDecoder().decode(Meta.self, from: source)
+        let original = meta.unknownFields
+        meta.unknownFields.fillMissing(from: incoming.unknownFields)
+        return meta.unknownFields == original ? nil : try WebLibrary.jsonEncoderPretty.encode(meta)
     }
 
     static func loadMeta(forKey key: String) -> Meta? {
@@ -245,6 +258,7 @@ enum DocumentDataStore {
         }
         let existing = loadMeta(forKey: key)
         let meta = Meta(
+            unknownFields: existing?.unknownFields ?? [:],
             version: 1,
             kind: document.kind.rawValue,
             title: document.title ?? existing?.title,
@@ -266,6 +280,7 @@ enum DocumentDataStore {
             return
         }
         let meta = Meta(
+            unknownFields: existing?.unknownFields ?? [:],
             version: 1,
             kind: document.kind.rawValue,
             title: document.title ?? existing?.title,
@@ -1192,8 +1207,13 @@ enum DocumentDataStore {
                     guard let sourceData else { continue }
                     let destinationURL = destination.appendingPathComponent(relative)
                     let destinationData = try await access.store.read(destinationURL)
-                    if destinationData != nil {
-                        if relative == "meta.json" { continue }
+                    if let destinationData {
+                        if relative == "meta.json" {
+                            if let merged = try rekeyedMeta(destination: destinationData, source: sourceData) {
+                                try await access.store.replace(destinationURL, with: merged)
+                            }
+                            continue
+                        }
                         let name = (relative as NSString).lastPathComponent
                         let sourceEntry = relative.hasPrefix("attachments/")
                             ? attachmentEntries[name] : sourceEntries[name]
@@ -1334,13 +1354,18 @@ enum DocumentDataStore {
             // rival copies of the same logical file. Materialize it so the
             // mod-date compare and atomic swap operate on real bytes.
             if WebICloud.itemExists(at: target) {
-                // meta.json: destination wins, source dropped (collapses stray
-                // meta-only path-hash folders; §8 self-heal).
-                if relative == "meta.json" { continue }
                 if !WebICloud.materialize(at: target, timeout: 10) {
                     // Can't download the destination to compare/replace safely —
                     // leave both copies for a later retry rather than guess.
                     allMerged = false
+                    continue
+                }
+                if relative == "meta.json" {
+                    do {
+                        if let data = try rekeyedMeta(destination: Data(contentsOf: target), source: Data(contentsOf: file)) {
+                            try writeAtomic(data, to: target, label: "rekeyed metadata")
+                        }
+                    } catch { allMerged = false }
                     continue
                 }
                 if modDate(file) > modDate(target) {
@@ -1382,5 +1407,27 @@ enum DocumentDataStore {
             try? FileManager.default.removeItem(at: tmp)
             throw SessionServiceError.io("Failed to commit \(label): rename failed")
         }
+    }
+}
+
+extension DocumentDataStore.Meta {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        kind = try container.decode(String.self, forKey: .kind)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        lastKnownPath = try container.decode(String.self, forKey: .lastKnownPath)
+        lastOpened = try container.decode(String.self, forKey: .lastOpened)
+        unknownFields = try JSONValue.unknownFields(in: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(kind, forKey: .kind)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encode(lastKnownPath, forKey: .lastKnownPath)
+        try container.encode(lastOpened, forKey: .lastOpened)
+        try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
     }
 }
