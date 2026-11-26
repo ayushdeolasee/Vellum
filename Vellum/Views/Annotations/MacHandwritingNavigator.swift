@@ -164,13 +164,26 @@ enum SavedHandwritingReader {
             for index in 0..<CgPdf.count(entries) {
                 guard let annotation = CgPdf.dictionaryAt(entries, index),
                       CgPdf.name(annotation, "Subtype") == "Ink" else { continue }
-                if CgPdf.has(annotation, "VellumInkStrokes"), CgPdf.string(annotation, "VellumInk") == nil {
-                    guard let payload = CgPdf.string(annotation, "VellumInkStrokes") else {
-                        throw SessionServiceError.invalidDocument("Invalid PDF handwriting data")
+                // The navigator jumps to native ink too. A damaged carrier or
+                // a continuation marker without geometry says nothing about
+                // other annotations on this page or later pages.
+                let paths = CgPdf.array(annotation, "InkList")
+                let hasPath = paths.map { list in
+                    (0..<CgPdf.count(list)).contains { index in
+                        guard let entry = CgPdf.objectAt(list, index), let line = CgPdf.objectArray(entry) else { return false }
+                        return CgPdf.count(line) >= 2
                     }
-                    _ = try PKDrawing(pdfStrokePayload: payload)
+                } ?? false
+                if !hasPath {
+                    let native = CgPdf.string(annotation, "VellumInk").flatMap { Data(base64Encoded: $0) }
+                    let legacy = native.flatMap { try? PKDrawing(data: $0) }
+                    if legacy?.strokes.isEmpty != false {
+                        guard let value = CgPdf.string(annotation, "VellumInkStrokes"), value != "1",
+                              (try? PKDrawing(pdfStrokePayload: value)) != nil else { continue }
+                    }
                 }
-                if pages.last != page { pages.append(page) }
+                pages.append(page)
+                break
             }
         }
         return pages

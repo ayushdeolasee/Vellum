@@ -1,3 +1,4 @@
+import PencilKit
 import XCTest
 @testable import Vellum
 
@@ -276,11 +277,14 @@ final class WebStorageLocationTests: XCTestCase {
 
     // MARK: - Ink sidecar relocation (Phase 4)
 
-    private func inkCluster(_ id: String, byte: UInt8) -> WebInkRecord.Cluster {
-        WebInkRecord.Cluster(
-            id: id, drawing: Data([byte]),
-            bounds: WebInkRecord.Bounds(CGRect(x: 0, y: 0, width: 10, height: 10)),
-            anchor: nil)
+    private func inkCluster(_ id: String, offset: CGFloat) throws -> WebInkRecord.Cluster {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "web-ink-v3.ink", withExtension: "json",
+                                                           subdirectory: "Web"))
+        let record = try XCTUnwrap(WebInkStore.loadRecord(at: url))
+        var cluster = try XCTUnwrap(record.clusters.first)
+        cluster.id = id
+        cluster.drawing = try cluster.localDrawing().transformed(using: .init(translationX: offset, y: 0)).dataRepresentation()
+        return cluster
     }
 
     private func makeInkRecord(
@@ -296,7 +300,7 @@ final class WebStorageLocationTests: XCTestCase {
         let url = "https://example.com/inked"
         let key = try makeLocalRecord(url: url, title: "Inked")
         let ink = makeInkRecord(
-            url: url, updatedAt: WebLibrary.rfc3339Now(), clusters: [inkCluster("a", byte: 1), inkCluster("stale", byte: 7)])
+            url: url, updatedAt: WebLibrary.rfc3339Now(), clusters: [try inkCluster("a", offset: 1), try inkCluster("stale", offset: 7)])
         try WebInkStore.writeRecord(ink, to: storeDir.appendingPathComponent("\(key).ink.json"))
 
         WebLibrary.layoutOverride = prettyLayout
@@ -328,13 +332,13 @@ final class WebStorageLocationTests: XCTestCase {
             at: prettyLayout.recordsDir, withIntermediateDirectories: true)
         let destInk = makeInkRecord(
             url: url, updatedAt: "2026-01-01T00:00:00.000000+00:00",
-            clusters: [inkCluster("a", byte: 1), inkCluster("stale", byte: 7)])
+            clusters: [try inkCluster("a", offset: 1), try inkCluster("stale", offset: 7)])
         try WebInkStore.writeRecord(
             destInk, to: prettyLayout.recordsDir.appendingPathComponent("\(key).ink.json"))
 
         let srcInk = makeInkRecord(
             url: url, updatedAt: "2026-02-01T00:00:00.000000+00:00",
-            clusters: [inkCluster("a", byte: 9), inkCluster("b", byte: 2)])
+            clusters: [try inkCluster("a", offset: 9), try inkCluster("b", offset: 2)])
         try WebInkStore.writeRecord(
             srcInk, to: storeDir.appendingPathComponent("\(key).ink.json"))
 
@@ -344,7 +348,7 @@ final class WebStorageLocationTests: XCTestCase {
         XCTAssertEqual(merged.updatedAt, srcInk.updatedAt, "the newer source wins")
         XCTAssertEqual(Set(merged.clusters.map(\.id)), ["a", "b"])
         XCTAssertEqual(
-            merged.clusters.first(where: { $0.id == "a" })?.drawing, Data([9]),
+            merged.clusters.first(where: { $0.id == "a" })?.drawing, srcInk.clusters[0].drawing,
             "the newer source's cluster a replaced the older destination copy")
         XCTAssertFalse(
             FileManager.default.fileExists(

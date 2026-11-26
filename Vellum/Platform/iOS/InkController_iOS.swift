@@ -293,13 +293,17 @@ final class InkController_iOS: InkPaletteHost {
             pendingDrawings.removeAll()
             oldestDirtyAt = nil
             var failed = false
-            for (path, pages) in batch where await !Self.writer.write(drawings: pages, path: path) {
-                // The file was unreadable, or PDFKit refused to serialize it.
-                // The batch has already been taken out of `pendingDrawings`, so
-                // without this the user's strokes would be gone for good on a
-                // failure as transient as an iCloud eviction mid-write.
-                requeue(pages, path: path)
-                failed = true
+            for (path, pages) in batch {
+                let result = await Self.writer.writePages(drawings: pages, path: path)
+                let retry = pages.filter { result.pending.contains($0.key) }
+                if !retry.isEmpty {
+                    requeue(retry, path: path)
+                    failed = true
+                }
+                if !result.conflicts.isEmpty {
+                    let numbers = result.conflicts.sorted().map(String.init).joined(separator: ", ")
+                    app?.error = "Handwriting changed on disk in \(URL(fileURLWithPath: path).lastPathComponent) (pages \(numbers)). Your local strokes are retained for retry."
+                }
             }
             // Leave a failing file to the next stroke or flush rather than
             // retrying in a tight loop against the disk.
@@ -373,36 +377,49 @@ struct InkDiskWriter {
     ///   with batching would discard a whole window of strokes at once.
     @discardableResult
     func write(drawings: [Int: PKDrawing], path: String) async -> Bool {
-        guard !drawings.isEmpty else { return true }
+        await writePages(drawings: drawings, path: path).pending.isEmpty
+    }
+
+    struct WriteResult: Sendable {
+        var pending: Set<Int> = []
+        var conflicts: Set<Int> = []
+    }
+
+    func writePages(drawings: [Int: PKDrawing], path: String) async -> WriteResult {
+        guard !drawings.isEmpty else { return WriteResult() }
         return await PdfFileGate.shared.perform {
             Self.writeSync(drawings: drawings, path: path)
         }
     }
 
-    private static func writeSync(drawings: [Int: PKDrawing], path: String) -> Bool {
+    private static func writeSync(drawings: [Int: PKDrawing], path: String) -> WriteResult {
+        var result = WriteResult(pending: Set(drawings.keys))
         let url = URL(fileURLWithPath: path)
         guard let originalData = try? Data(contentsOf: url),
-              let document = PDFDocument(data: originalData) else { return false }
+              let document = PDFDocument(data: originalData) else { return result }
         var didApply = false
         for (page, drawing) in drawings {
             guard page >= 1, page <= document.pageCount,
                   let pdfPage = document.page(at: page - 1) else { continue }
-            guard !PdfInk.hasPortableInk(on: pdfPage) else { return false }
+            if PdfInk.hasPortableInk(on: pdfPage) {
+                result.conflicts.insert(page)
+                continue
+            }
             PdfInk.apply(drawing, to: pdfPage)
             didApply = true
         }
         // Every page was out of range: nothing to write, and nothing to retry
         // either — retrying would fail identically.
-        guard didApply else { return true }
-        guard let rewritten = document.dataRepresentation() else { return false }
+        guard didApply else { return WriteResult(pending: result.conflicts, conflicts: result.conflicts) }
+        guard let rewritten = document.dataRepresentation() else { return result }
         do {
             try PdfDocumentSession.persistPdfKitRewrite(
                 rewritten,
                 preservingMetadataFrom: originalData,
                 path: path)
-            return true
+            return WriteResult(pending: result.conflicts, conflicts: result.conflicts)
         } catch {
-            return false
+            return result
         }
     }
 }

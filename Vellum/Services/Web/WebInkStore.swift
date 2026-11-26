@@ -110,6 +110,11 @@ struct WebInkRecord: Codable, Equatable, Sendable {
         /// Base64 in JSON (Data's default Codable representation).
         var drawing: Data?
         var strokes: [PortableStroke]? = nil
+        // A pre-I4 save may carry a newer or malformed wire value alongside
+        // a usable native drawing. Keep that value intact for read-only export.
+        var unreadableStrokes: JSONValue? = nil
+
+        var hasPortablePayload: Bool { strokes != nil || unreadableStrokes != nil }
         var bounds: Bounds
         var anchor: Anchor?
     }
@@ -138,7 +143,14 @@ extension WebInkRecord.Cluster: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         drawing = try container.decodeIfPresent(Data.self, forKey: .drawing)
-        strokes = try container.decodeIfPresent([PortableStroke].self, forKey: .strokes)
+        do {
+            if container.contains(.strokes) {
+                strokes = try container.decode([PortableStroke].self, forKey: .strokes)
+            }
+        } catch {
+            guard drawing != nil else { throw error }
+            unreadableStrokes = try container.decode(JSONValue.self, forKey: .strokes)
+        }
         guard drawing != nil || strokes != nil else {
             throw DecodingError.dataCorruptedError(forKey: .strokes, in: container,
                 debugDescription: "An ink cluster requires drawing or strokes")
@@ -154,7 +166,11 @@ extension WebInkRecord.Cluster: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encodeIfPresent(drawing, forKey: .drawing)
-        try container.encodeIfPresent(strokes, forKey: .strokes)
+        if let unreadableStrokes {
+            try container.encode(unreadableStrokes, forKey: .strokes)
+        } else {
+            try container.encodeIfPresent(strokes, forKey: .strokes)
+        }
         try JSONValue.encode(unknownFields, to: encoder, excluding: CodingKeys.self)
         try container.encode(bounds, forKey: .bounds)
         if let anchor {
@@ -226,6 +242,16 @@ extension WebInkRecord {
             clusters: clusters)
     }
 
+    func validateForEditing() throws {
+        var seen: Set<String> = []
+        for cluster in clusters where cluster.hasPortablePayload {
+            _ = try cluster.portableIndices(for: cluster.localDrawing())
+            for wire in cluster.strokes ?? [] where !seen.insert(wire.rawPathID).inserted {
+                throw SessionServiceError.invalidDocument("Multiple saved strokes match the same canvas path.")
+            }
+        }
+    }
+
     func validatedMergedDrawing() throws -> PKDrawing {
         guard (1...Self.currentVersion).contains(version) else {
             throw SessionServiceError.invalidDocument("This page's ink version is not supported")
@@ -239,17 +265,48 @@ extension WebInkRecord {
 extension WebInkRecord.Cluster {
     /// A dual record retains its native drawing as Apple's source of truth.
     func localDrawing() throws -> PKDrawing {
-        let portable = try strokes.map { try PKDrawing(portableStrokes: $0) }
         if let drawing {
             let native = try PKDrawing(data: drawing)
-            guard !native.strokes.isEmpty,
-                  portable == nil || native.strokes.count == portable?.strokes.count else {
-                throw SessionServiceError.invalidDocument("Invalid ink cluster drawing")
-            }
+            guard !native.strokes.isEmpty else { throw SessionServiceError.invalidDocument("Invalid ink cluster drawing") }
             return native
         }
-        guard let portable else { throw SessionServiceError.invalidDocument("Missing ink cluster data") }
-        return portable
+        guard let strokes else { throw SessionServiceError.invalidDocument("Missing ink cluster data") }
+        return try PKDrawing(portableStrokes: strokes)
+    }
+
+    /// Maps native stroke order to wire indices by I3 raw-path identity.
+    /// Missing wire entries are allowed only for invisible native strokes.
+    func portableIndices(for native: PKDrawing) throws -> [Int?] {
+        let conflict = SessionServiceError.invalidDocument("The native and portable handwriting cannot be edited together.")
+        guard unreadableStrokes == nil else { throw conflict }
+        guard let strokes else { return Array(repeating: nil, count: native.strokes.count) }
+        guard Set(strokes.map(\.id)).count == strokes.count else { throw conflict }
+        if drawing == nil {
+            guard native.strokes.count == strokes.count else { throw conflict }
+            return try strokes.indices.map { i in
+                let stroke = native.strokes[i]
+                guard try strokes[i].rawPathID == PortableStroke.rawPathID(of: stroke),
+                      try strokes[i].describes(stroke) else { throw conflict }
+                return i
+            }
+        }
+        var available: [String: Int] = [:]
+        for (index, stroke) in strokes.enumerated() {
+            guard available.updateValue(index, forKey: stroke.rawPathID) == nil else { throw conflict }
+        }
+        var seen: Set<String> = []
+        let indices = try native.strokes.map { stroke -> Int? in
+            let key = try PortableStroke.rawPathID(of: stroke)
+            guard seen.insert(key).inserted else { throw conflict }
+            guard let index = available.removeValue(forKey: key) else {
+                guard stroke.maskedPathRanges.isEmpty else { throw conflict }
+                return nil
+            }
+            guard try strokes[index].describes(stroke) else { throw conflict }
+            return index
+        }
+        guard available.isEmpty else { throw conflict }
+        return indices
     }
 
     func documentDrawing() throws -> PKDrawing {
@@ -371,6 +428,7 @@ enum WebInkStore {
         var record = record
         if FileManager.default.fileExists(atPath: path.path) {
             let previous = try readRecord(at: path)
+            try previous.validateForEditing()
             carryUnknownFields(into: &record, from: [previous], reclustered: true)
         }
         let json: Data
@@ -424,6 +482,7 @@ enum WebInkStore {
     ) throws -> WebInkRecord {
         try withLockedCandidateRecords(forKey: key) { destination, current in
             _ = try incoming.validatedMergedDrawing()
+            try baseline?.validateForEditing()
             let result = try current.map {
                 try coordinatedSnapshot(current: $0, baseline: baseline, incoming: incoming)
             } ?? incoming
@@ -643,7 +702,12 @@ enum WebInkStore {
         var nativeSource: [StrokeIdentity: Int] = [:]
         for (index, original) in originals.enumerated() {
             for id in original.indices.keys {
-                if original.cluster.strokes != nil {
+                if let wireID = original.wireID(for: id) {
+                    if let previous = portableSource[id], originals[previous].wireID(for: id) != wireID {
+                        throw SessionServiceError.invalidDocument("Conflicting portable stroke identities")
+                    }
+                    if portableSource[id] == nil { portableSource[id] = index }
+                } else if original.cluster.strokes != nil {
                     if portableSource[id] == nil { portableSource[id] = index }
                 } else if nativeSource[id] == nil {
                     nativeSource[id] = index
@@ -690,12 +754,23 @@ enum WebInkStore {
         let cluster: WebInkRecord.Cluster
         let strokes: [PKStroke]
         let indices: [StrokeIdentity: Int]
+        let wireIndices: [Int?]
 
         init(_ cluster: WebInkRecord.Cluster) throws {
             self.cluster = cluster
-            strokes = try cluster.documentDrawing().strokes
+            let local = try cluster.localDrawing()
+            wireIndices = try cluster.portableIndices(for: local)
+            strokes = local.transformed(using: CGAffineTransform(translationX: cluster.bounds.x, y: cluster.bounds.y)).strokes
             indices = Dictionary(strokes.enumerated().map { (strokeIdentity($0.element), $0.offset) },
                                  uniquingKeysWith: { first, _ in first })
+            guard !cluster.hasPortablePayload || indices.count == strokes.count else {
+                throw SessionServiceError.invalidDocument("Multiple saved strokes match the same canvas path.")
+            }
+        }
+
+        func wireID(for id: StrokeIdentity) -> String? {
+            guard let native = indices[id], let i = wireIndices[native] else { return nil }
+            return cluster.strokes?[i].id
         }
     }
 
@@ -716,11 +791,18 @@ enum WebInkStore {
         var cluster = WebInkRecord.Cluster(id: WebInkRecord.clusterId(anchor: anchor, bounds: bounds),
             drawing: local.dataRepresentation(), bounds: .init(bounds), anchor: anchor)
         guard let original, let stored = original.cluster.strokes else { return cluster }
-        cluster.strokes = try zip(group.strokes, local.strokes).map { stroke, localStroke in
+        cluster.strokes = try zip(group.strokes, local.strokes).compactMap { stroke, localStroke in
             guard let i = original.indices[strokeIdentity(stroke)] else {
                 throw SessionServiceError.invalidDocument("Missing original ink stroke")
             }
-            var wire = stored[i]
+            guard let wireIndex = original.wireIndices[i] else {
+                // A native-only erased stroke remains in the drawing blob.
+                guard stroke.maskedPathRanges.isEmpty else {
+                    throw SessionServiceError.invalidDocument("A newly visible stroke has no portable identity")
+                }
+                return nil
+            }
+            var wire = stored[wireIndex]
             if strokeSignature(stroke) == strokeSignature(original.strokes[i]) {
                 // Only the cluster-local origin changed after a split.
                 wire.transform[4] += original.cluster.bounds.x - bounds.minX

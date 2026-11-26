@@ -797,6 +797,32 @@ final class WebInkPersistenceTests: XCTestCase {
             "Clear must remove ink observed by a load during the initial write")
     }
 
+    func testInconsistentDualDrawingIsVisibleAndCannotBeCleared() async throws {
+        let controller = makeController()
+        let loader = ControlledInkPersister()
+        controller.persistenceFactory = { _ in loader }
+        let url = "https://example.test/readonly-ink"
+        var record = WebInkRecord.snapshot(of: sampleDrawing(), url: url, layout: layout)
+        record.clusters[0].strokes = []
+        let webView = WKWebView()
+        let overlay = controller.attachOverlay(to: webView)
+        let load = try XCTUnwrap(controller.documentOpened(url: url))
+        loader.resolveLoad(with: record)
+        await load.value
+        XCTAssertTrue(controller.readOnlyInk)
+        XCTAssertTrue(controller.canDisplayInk)
+        XCTAssertEqual(overlay.canvas.drawing.strokes.count, 1)
+        controller.isActive = true
+        XCTAssertFalse(controller.isActive)
+        controller.clearCurrentPage()
+        XCTAssertEqual(overlay.canvas.drawing.strokes.count, 1)
+        XCTAssertNil(loader.seededBaseline)
+        controller.toolState.tool = .textHighlight
+        controller.isActive = true
+        XCTAssertTrue(controller.isActive)
+        XCTAssertFalse(overlay.isUserInteractionEnabled)
+    }
+
     /// A restored tab can report its document before SwiftUI mounts the
     /// retained PencilKit overlay, especially when several tabs are recreated
     /// together. The completed sidecar load must wait for that overlay rather

@@ -585,7 +585,7 @@ enum WebArchive {
             return max(0, after - before)
         } catch {
             // The historic id-only fallback is for drawing-only records.
-            guard (current.clusters + incoming.clusters).allSatisfy({ $0.drawing != nil && $0.strokes == nil })
+            guard (current.clusters + incoming.clusters).allSatisfy({ $0.drawing != nil && !$0.hasPortablePayload })
             else { throw error }
         }
         let incomingNewer = newerThan(incoming.updatedAt, current.updatedAt)

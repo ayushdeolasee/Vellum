@@ -108,9 +108,14 @@ final class WebInkController_iOS: InkPaletteHost {
         didSet {
             guard oldValue != isActive else { return }
             if isActive {
+                if readOnlyInk, toolState.tool != .textHighlight {
+                    app?.error = "Handwriting is read-only because its saved representations differ."
+                    isActive = false
+                    return
+                }
                 guard !isDocumentLoading, !documentLoadFailed,
                       liveDocumentUrl == loadedUrl,
-                      loadedUrl == nil || canResolveAnchors else {
+                      loadedUrl == nil || canDisplayInk else {
                     isActive = false
                     return
                 }
@@ -161,6 +166,7 @@ final class WebInkController_iOS: InkPaletteHost {
     @ObservationIgnored private var openingUrl: String?
     private(set) var isDocumentLoading = false
     private(set) var documentLoadFailed = false
+    private(set) var readOnlyInk = false
     /// A sidecar that finished loading before SwiftUI mounted this tab's
     /// PencilKit overlay. Kept until `attachOverlay` can seed the canvas.
     @ObservationIgnored private var pendingLoadedRecord: WebInkRecord?
@@ -298,7 +304,7 @@ final class WebInkController_iOS: InkPaletteHost {
         return webController?.liveDocumentUrlForInk.map { $0 == loadedUrl } ?? true
     }
 
-    private var canResolveAnchors: Bool { loadedUrl != nil && canDisplayInk }
+    private var canResolveAnchors: Bool { loadedUrl != nil && canDisplayInk && !readOnlyInk }
 
     /// The web document reported in (`handleInit` bumped `initCount`): bind the
     /// persister for its URL and seed the canvas with any stored ink. Ignores
@@ -370,6 +376,7 @@ final class WebInkController_iOS: InkPaletteHost {
             }
             self.pendingLoadedRecord = nil
             self.loadedUrl = url
+            self.readOnlyInk = false
             self.resetAnchorState()
             self.persistence = persister
             let record: WebInkRecord
@@ -383,10 +390,14 @@ final class WebInkController_iOS: InkPaletteHost {
                 Self.log.error("Unable to load saved handwriting: \(error.localizedDescription)")
                 return
             }
+            let canEdit = await Task.detached(priority: .userInitiated) {
+                (try? record.validateForEditing()) != nil
+            }.value
             guard self.openGeneration == generation,
                   self.loadedUrl == url,
                   self.persistence === persister else { return }
-            persister.seedBaseline(record)
+            self.readOnlyInk = !canEdit
+            if canEdit { persister.seedBaseline(record) }
             self.pendingLoadedRecord = record
             self.applyPendingLoadedRecordIfPossible()
         }
@@ -792,8 +803,8 @@ final class WebInkController_iOS: InkPaletteHost {
 
     // MARK: - InkPaletteHost (undo/redo/clear)
 
-    func undo() { overlay?.canvas.undoManager?.undo() }
-    func redo() { overlay?.canvas.undoManager?.redo() }
+    func undo() { if !readOnlyInk { overlay?.canvas.undoManager?.undo() } }
+    func redo() { if !readOnlyInk { overlay?.canvas.undoManager?.redo() } }
     var canUndo: Bool {
         _ = drawingVersion
         return overlay?.canvas.undoManager?.canUndo ?? false
@@ -806,7 +817,7 @@ final class WebInkController_iOS: InkPaletteHost {
     /// Clear the document's ink (undoable). The web document is one continuous
     /// canvas, so "current page" means the whole drawing.
     func clearCurrentPage() {
-        guard let canvas = overlay?.canvas else { return }
+        guard !readOnlyInk, let canvas = overlay?.canvas else { return }
         canvas.drawing = PKDrawing()
         drawingChanged(PKDrawing())
     }
@@ -820,6 +831,7 @@ final class WebInkController_iOS: InkPaletteHost {
     /// clusters that don't have one yet get an async capture kicked off
     /// (stroke commit is the capture trigger).
     func drawingChanged(_ drawing: PKDrawing) {
+        guard !readOnlyInk else { return }
         drawingVersion &+= 1
         // An emptied canvas (Clear, or the last stroke undone away) has no
         // clusters, so no anchor should survive: drop the whole anchor cache.

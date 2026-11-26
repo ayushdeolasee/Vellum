@@ -273,6 +273,186 @@ final class PortableInkReaderTests: XCTestCase {
         }
     }
 
+    private func nativeFixture(_ name: String) throws -> PKDrawing {
+        let pdf = try XCTUnwrap(PDFDocument(data: fixture(name, "pdf", in: "Pdf")))
+        let page = try XCTUnwrap(pdf.page(at: 0))
+        let bytes = page.annotations.compactMap {
+            ($0.value(forAnnotationKey: .init(rawValue: "VellumInk")) as? String).flatMap { Data(base64Encoded: $0) }
+        }
+        return try PKDrawing(data: XCTUnwrap(bytes.first))
+    }
+
+    func testDualPairingSurvivesReorderEditAndInvisibleOmission() async throws {
+        try await withStore {
+            for name in ["pdf-ink-erased-partial", "pdf-ink-erased-full"] {
+                var record = try webRecord(dual: true)
+                let drawing = try nativeFixture(name)
+                let visible = drawing.strokes.indices.filter { !drawing.strokes[$0].maskedPathRanges.isEmpty }
+                let reversed = visible.reversed()
+                let wire = try reversed.map { i in
+                    var member = try PortableStroke(drawing.strokes[i])
+                    member.id = "opaque-\(i)"
+                    member.points[0].unknownFields["source"] = .int(i)
+                    return member
+                }
+                record.clusters[0].drawing = drawing.dataRepresentation()
+                record.clusters[0].strokes = wire
+                let local = try record.clusters[0].localDrawing()
+                XCTAssertEqual(local.strokes.count, 2)
+                XCTAssertEqual(try record.clusters[0].portableIndices(for: local),
+                               name.hasSuffix("partial") ? [1, 0] : [nil, 0])
+                let key = WebLibrary.pageKey(record.url)
+                let path = WebInkStore.inkPath(forKey: key)
+                try WebInkStore.writeRecord(record, to: path)
+                let moved = try record.validatedMergedDrawing().transformed(using: .init(translationX: 20, y: 12))
+                _ = try WebInkStore.applySnapshot(.snapshot(of: moved, url: record.url, layout: record.layout),
+                                                  replacing: record, forKey: key)
+                let saved = try XCTUnwrap(WebInkStore.loadRecordForExport(forKey: key))
+                XCTAssertEqual(try saved.validatedMergedDrawing().strokes.count, 2)
+                let persisted = saved.clusters.flatMap { $0.strokes ?? [] }
+                XCTAssertEqual(Set(persisted.map(\.id)), Set(wire.map(\.id)))
+                for item in persisted {
+                    let original = try XCTUnwrap(wire.first { $0.id == item.id })
+                    XCTAssertEqual(item.points, original.points)
+                    XCTAssertEqual(item.rawPathID, original.rawPathID)
+                    XCTAssertEqual(item.mask, original.mask)
+                }
+            }
+        }
+    }
+
+    func testAmbiguousAndStaleDualInkDisplaysNativeAndRefusesMutation() async throws {
+        try await withStore {
+            let valid = try webRecord(dual: true)
+            let native = try valid.clusters[0].localDrawing()
+            var stale = valid
+            stale.clusters[0].strokes?[0].transform[4] += 10
+            var missing = valid
+            missing.clusters[0].strokes = []
+            var ambiguous = valid
+            var other = try XCTUnwrap(valid.clusters[0].strokes?.first)
+            other.id = "another-id"
+            ambiguous.clusters[0].strokes?.append(other)
+            ambiguous.clusters[0].drawing = native.appending(native).dataRepresentation()
+            var malformed = valid
+            malformed.clusters[0].strokes = nil
+            malformed.clusters[0].unreadableStrokes = .object(["future": .string("v4")])
+            let key = WebLibrary.pageKey(valid.url)
+            let url = WebInkStore.inkPath(forKey: key)
+            for bad in [stale, missing, ambiguous, malformed] {
+                try WebInkStore.writeRecord(bad, to: url)
+                let bytes = try Data(contentsOf: url)
+                let read = try XCTUnwrap(WebInkStore.loadRecordForExport(forKey: key))
+                XCTAssertEqual(read, bad)
+                XCTAssertEqual(try read.clusters[0].localDrawing().strokes.count,
+                               try PKDrawing(data: XCTUnwrap(bad.clusters[0].drawing)).strokes.count)
+                XCTAssertThrowsError(try read.validateForEditing())
+                let next = WebInkRecord.snapshot(of: PKDrawing(), url: read.url, layout: read.layout)
+                XCTAssertThrowsError(try WebInkStore.applySnapshot(next, replacing: read, forKey: key))
+                var imported: WebInkRecord? = read
+                XCTAssertThrowsError(try WebArchive.mergeInk(&imported, incoming: valid))
+                XCTAssertEqual(imported, bad)
+                XCTAssertEqual(try Data(contentsOf: url), bytes)
+            }
+            var pure = valid.clusters[0]
+            pure.drawing = nil
+            other.transform[4] += 20
+            pure.strokes?.append(other)
+            XCTAssertEqual(try pure.portableIndices(for: pure.localDrawing()), [0, 1])
+        }
+    }
+
+    #if os(macOS)
+    func testNavigatorSkipsBadCarriersAndKeepsNativeAndPortablePages() throws {
+        let fixturePDF = try ClassicPdfFile(data: fixture("portable-partial", "pdf", in: "Ink"))
+        let payload = try XCTUnwrap(fixturePDF.objectSource(7)?.textString(forKey: "VellumInkStrokes"))
+        let attrs = ["/InkList [[1 2 3 4]]", "/VellumInkStrokes (bad)",
+                     "/VellumInkStrokes (1)", "/VellumInkStrokes (\(payload))",
+                     "/InkList [[1 2 3 4]] /VellumInkStrokes (bad)"]
+        let pages = attrs.indices.map { "\(3 + $0) 0 R" }.joined(separator: " ")
+        let objects = ["<< /Type /Catalog /Pages 2 0 R >>",
+                       "<< /Type /Pages /Kids [\(pages)] /Count 5 >>"]
+            + attrs.indices.map { "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 320 240] /Annots [\(8 + $0) 0 R] >>" }
+            + attrs.map { "<< /Type /Annot /Subtype /Ink /Rect [0 0 320 240] \($0) >>" }
+        XCTAssertEqual(try SavedHandwritingReader.pdfPages(data: PdfFixtureBuilder.classicObjects(objects),
+                                                           password: nil), [1, 4, 5])
+    }
+    #endif
+
+    #if os(iOS)
+    @MainActor
+    func testOverlayReadsIndependentCarriersAndLeavesUnrepresentedInkVisible() throws {
+        let doc = try XCTUnwrap(PDFDocument(data: fixture("portable-partial", "pdf", in: "Ink")))
+        let page = try XCTUnwrap(doc.page(at: 0))
+        let original = try XCTUnwrap(page.annotations.first)
+        let payload = try XCTUnwrap(original.value(forAnnotationKey: PdfInk.strokesKey) as? String)
+        func add(_ value: String?, key: PDFAnnotationKey = PdfInk.strokesKey) -> PDFAnnotation {
+            let annotation = PDFAnnotation(bounds: page.bounds(for: .cropBox), forType: .ink, withProperties: nil)
+            if let value { annotation.setValue(value, forAnnotationKey: key) }
+            page.addAnnotation(annotation)
+            return annotation
+        }
+        let duplicate = add(payload)
+        let shifted = add(try fixture("portable-shifted", "zlib", in: "Ink").base64EncodedString())
+        let legacy = add(try nativeFixture("pdf-ink-marker").dataRepresentation().base64EncodedString(), key: PdfInk.dataKey)
+        let invalid = add("bad")
+        let orphan = add("1", key: PdfInk.dataKey)
+        let foreign = add(nil)
+        let view = PDFView()
+        view.document = doc
+        let controller = InkController_iOS()
+        let overlay = try XCTUnwrap(controller.inkProvider.pdfView(view, overlayViewFor: page) as? InkOverlayContainer_iOS)
+        XCTAssertTrue(overlay.canvas.portableInkReadOnly)
+        XCTAssertEqual(overlay.canvas.drawing.strokes.count, 4)
+        XCTAssertEqual(overlay.canvas.drawing.strokes.filter { $0.mask != nil }.count, 2)
+        for carrier in [original, duplicate, shifted, legacy] { XCTAssertFalse(carrier.shouldDisplay) }
+        for remaining in [invalid, orphan, foreign] { XCTAssertTrue(remaining.shouldDisplay) }
+        controller.toolState.tool = .textHighlight
+        controller.isActive = true
+        XCTAssertFalse(overlay.canvas.isUserInteractionEnabled, "Text highlighting passes through to PDFKit")
+    }
+
+    @MainActor
+    func testConflictingPDFPageKeepsLocalInkWhileOtherPageSaves() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("two-pages.pdf")
+        let clean = PdfFixtureBuilder.makeClassicPdf(pages: [.init(), .init()])
+        try clean.write(to: file)
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: file.path)
+        let ink = InkController_iOS()
+        ink.app = app
+        let drawing = try nativeFixture("pdf-ink-marker")
+        ink.drawingChanged(drawing, page: 1)
+        ink.drawingChanged(drawing, page: 2)
+        let payload = try fixture("portable-shifted", "zlib", in: "Ink").base64EncodedString()
+        let changed = PdfFixtureBuilder.classicObjects([
+            "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 320 240] /Annots [5 0 R] >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 320 240] >>",
+            "<< /Type /Annot /Subtype /Ink /Rect [0 0 320 240] /InkList [[10 20 30 40]] /VellumInkStrokes (\(payload)) >>"
+        ])
+        try changed.write(to: file)
+        let complete = await ink.flushPendingInkAndWait()
+        XCTAssertFalse(complete)
+        XCTAssertTrue(app.error?.contains("(pages 1)") == true)
+        let after = try XCTUnwrap(PDFDocument(url: file))
+        let protected = try XCTUnwrap(after.page(at: 0)?.annotations.first)
+        XCTAssertEqual(protected.value(forAnnotationKey: PdfInk.strokesKey) as? String, payload)
+        XCTAssertEqual(PdfInk.drawing(on: try XCTUnwrap(after.page(at: 1)))?.strokes.count, 2)
+        // Resolve the external conflict and replace page two's ink externally.
+        // Retrying must write only the retained page-one draft.
+        try clean.write(to: file)
+        let retried = await ink.flushPendingInkAndWait()
+        XCTAssertTrue(retried)
+        let final = try XCTUnwrap(PDFDocument(url: file))
+        XCTAssertEqual(PdfInk.drawing(on: try XCTUnwrap(final.page(at: 0)))?.strokes.count, 2)
+        XCTAssertNil(PdfInk.drawing(on: try XCTUnwrap(final.page(at: 1))))
+    }
+    #endif
+
     /// The fixture keeps I0's partial erasure and native appearance, with its
     /// drawing replaced by the zlib-compressed golden stroke on the carrier.
     func testPortablePDFInkSurvivesUnrelatedNote() async throws {

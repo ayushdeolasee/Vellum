@@ -436,7 +436,7 @@ final class WebInkOverlay_iOS: UIView, PKCanvasViewDelegate, UIPencilInteraction
     /// are inert; inactive, every touch passes through to the page.
     func refreshPolicy() {
         isHidden = ink?.canDisplayInk == false
-        let active = !isHidden && (ink?.isActive ?? false) && ink?.toolState.tool != .textHighlight
+        let active = !isHidden && (ink?.isActive ?? false) && ink?.readOnlyInk != true && ink?.toolState.tool != .textHighlight
         isUserInteractionEnabled = active
         #if targetEnvironment(simulator)
         canvas.drawingPolicy = .anyInput // no Pencil in the Simulator

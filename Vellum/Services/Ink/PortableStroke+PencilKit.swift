@@ -17,6 +17,27 @@ enum PortableStrokeConversionError: Error {
 }
 
 extension PortableStroke {
+    var rawPathID: String { strokeID(created: createdAt, points: points) }
+
+    /// I3 identity uses only the creation instant and raw control-point x/y/t.
+    static func rawPathID(of stroke: PKStroke) throws -> String {
+        try strokeID(created: InkTimestamp.format(stroke.path.creationDate), points: stroke.path.map(PortablePoint.init))
+    }
+
+    /// Reject a stale mutable signature even when a previous Apple save kept
+    /// the same raw path. Future wire fields and the supplied ID are opaque.
+    func describes(_ stroke: PKStroke) throws -> Bool {
+        let m = stroke.transform
+        let ranges = stroke.maskedPathRanges.map { [Double($0.lowerBound), Double($0.upperBound)] }
+        let expectedMask = try mask?.rebuild()
+        return try ink == stroke.ink.inkType.rawValue && randomSeed == stroke.randomSeed
+            && close(color, rgba(stroke.ink.color.cgColor))
+            && close(transform, [m.a, m.b, m.c, m.d, m.tx, m.ty])
+            && points.count == stroke.path.count && zip(points, stroke.path).allSatisfy { $0.matches($1) }
+            && ranges.count == visibleRanges.count && zip(visibleRanges, ranges).allSatisfy(close)
+            && stroke.mask?.cgPath == expectedMask?.cgPath && stroke.mask?.inkEvenOdd == mask?.evenOdd
+    }
+
     init(_ stroke: PKStroke) throws {
         let created = try InkTimestamp.format(stroke.path.creationDate)
         let points = stroke.path.map(PortablePoint.init)

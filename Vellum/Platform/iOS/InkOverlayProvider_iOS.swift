@@ -192,20 +192,14 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         // behind the canvas.
         canvas.suppressChange = true
         canvas.portableInkReadOnly = PdfInk.hasPortableInk(on: page)
-        let seeded = PdfInk.drawing(on: page) ?? PKDrawing()
+        let inkContent = PdfInk.overlayInk(on: page)
+        let seeded = inkContent.drawing
         canvas.drawing = seeded
         canvas.committedDrawing = seeded
         canvas.suppressChange = false
-        if canvas.portableInkReadOnly {
-            // Preserve the annotations and their payload. Hide only the display
-            // copy while its reconstructed strokes are visible in the overlay.
-            if !seeded.strokes.isEmpty {
-                for annotation in page.annotations where PdfInk.isVellumInk(annotation) {
-                    annotation.shouldDisplay = false
-                }
-            }
-        } else {
-            PdfInk.removeVellumInk(from: page)
+        for annotation in inkContent.represented {
+            if canvas.portableInkReadOnly { annotation.shouldDisplay = false }
+            else { page.removeAnnotation(annotation) }
         }
         if !seeded.strokes.isEmpty {
             // Let observers (the sidebar's Handwriting chips) know ink exists

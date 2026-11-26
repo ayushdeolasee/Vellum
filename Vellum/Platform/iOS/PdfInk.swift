@@ -2,6 +2,7 @@
 import PDFKit
 import PencilKit
 import UIKit
+import VellumCore
 
 // Apple Pencil ink ⇄ PDF bridge. Ink is stored inside the PDF as native `/Ink`
 // annotations (so any reader shows the strokes and they render for free in
@@ -56,14 +57,14 @@ enum PdfInk {
     }
 
     static func removeVellumInk(from page: PDFPage) {
-        for annotation in page.annotations where isVellumInk(annotation) {
+        for annotation in overlayInk(on: page).represented {
             page.removeAnnotation(annotation)
         }
     }
 
     static func isVellumInk(_ annotation: PDFAnnotation) -> Bool {
-        annotation.value(forAnnotationKey: dataKey) != nil
-            || (annotation.type == "Ink" && annotation.value(forAnnotationKey: strokesKey) != nil)
+        annotation.type == "Ink" && (annotation.value(forAnnotationKey: dataKey) != nil
+            || annotation.value(forAnnotationKey: strokesKey) != nil)
     }
 
     private static func inkAnnotation(for stroke: PKStroke, crop: CGRect) -> PDFAnnotation? {
@@ -72,17 +73,7 @@ enum PdfInk {
         let bounds = CGRect(origin: crop.origin, size: crop.size)
         let annotation = PDFAnnotation(bounds: bounds, forType: .ink, withProperties: nil)
 
-        let path = UIBezierPath()
-        // Path points are relative to the annotation's bounds origin.
-        func local(_ ui: CGPoint) -> CGPoint {
-            CGPoint(x: ui.x, y: crop.height - ui.y)
-        }
-        path.move(to: local(points[0].location))
-        for p in points.dropFirst() { path.addLine(to: local(p.location)) }
-        if points.count == 1 {
-            // A dot: tiny segment so it renders.
-            path.addLine(to: local(CGPoint(x: points[0].location.x + 0.6, y: points[0].location.y)))
-        }
+        let path = nativePath(points, crop: crop)
         let width = max(1, points.map(\.width).reduce(0, +) / CGFloat(points.count))
         path.lineWidth = width
         path.lineCapStyle = .round
@@ -98,6 +89,21 @@ enum PdfInk {
         return annotation
     }
 
+    private static func nativePath(_ points: [(location: CGPoint, width: CGFloat)], crop: CGRect) -> UIBezierPath {
+        let path = UIBezierPath()
+        // Path points are relative to the annotation's bounds origin.
+        func local(_ ui: CGPoint) -> CGPoint {
+            CGPoint(x: ui.x, y: crop.height - ui.y)
+        }
+        path.move(to: local(points[0].location))
+        for p in points.dropFirst() { path.addLine(to: local(p.location)) }
+        if points.count == 1 {
+            // A dot: tiny segment so it renders.
+            path.addLine(to: local(CGPoint(x: points[0].location.x + 0.6, y: points[0].location.y)))
+        }
+        return path
+    }
+
     /// Centreline points (in drawing/UI space) with per-point width, read
     /// straight from the stroke's control points.
     private static func sampledPoints(of stroke: PKStroke) -> [(location: CGPoint, width: CGFloat)] {
@@ -111,20 +117,69 @@ enum PdfInk {
 
     // MARK: - Read: page's embedded PKDrawing
 
-    /// Decode the lossless PKDrawing stored for this page, if any.
-    static func drawing(on page: PDFPage) -> PKDrawing? {
-        for annotation in page.annotations {
-            guard let value = annotation.value(forAnnotationKey: dataKey) as? String, value != "1",
-                  let data = Data(base64Encoded: value), let drawing = try? PKDrawing(data: data),
-                  !drawing.strokes.isEmpty else { continue }
-            return drawing
+    struct OverlayInk {
+        var drawing: PKDrawing
+        var represented: [PDFAnnotation]
+    }
+
+    /// A carrier describes its own payload. A legacy drawing takes precedence
+    /// over its portable sibling, but independent carriers still contribute.
+    static func overlayInk(on page: PDFPage) -> OverlayInk {
+        var strokes: [PKStroke] = []
+        var represented: [PDFAnnotation] = []
+        var markers: [PDFAnnotation] = []
+        var seen: [String: [PortableStroke]] = [:]
+        for annotation in page.annotations where isVellumInk(annotation) {
+            let native = annotation.value(forAnnotationKey: dataKey) as? String
+            let wire = annotation.value(forAnnotationKey: strokesKey) as? String
+            let members: [PKStroke]
+            let ids: [String]?
+            if let native, native != "1", let data = Data(base64Encoded: native),
+               let drawing = try? PKDrawing(data: data), !drawing.strokes.isEmpty {
+                members = drawing.strokes
+                ids = nil
+            } else if let wire, wire != "1", let records = try? PortableStroke.decodePDFPayload(wire),
+                      let drawing = try? PKDrawing(portableStrokes: records) {
+                members = drawing.strokes
+                ids = records.map(\.id)
+            } else {
+                if [native, wire].compactMap({ $0 }).allSatisfy({ $0 == "1" }),
+                   native == "1" || wire == "1" { markers.append(annotation) }
+                continue
+            }
+            represented.append(annotation)
+            // Compare full rendering signatures across carriers only. Repeated
+            // strokes within a single drawing retain their original z-order.
+            var signatures: [(String, PortableStroke)] = []
+            for (index, stroke) in members.enumerated() {
+                if let signature = try? PortableStroke(stroke) {
+                    let key = ids?[index] ?? signature.id
+                    if seen[key]?.contains(signature) == true { continue }
+                    signatures.append((key, signature))
+                }
+                strokes.append(stroke)
+            }
+            for (key, signature) in signatures { seen[key, default: []].append(signature) }
         }
-        for annotation in page.annotations where annotation.type == "Ink" {
-            if let value = annotation.value(forAnnotationKey: strokesKey) as? String {
-                return try? PKDrawing(pdfStrokePayload: value)
+        // A "1" marker carries no drawing. Only suppress it when an actual
+        // reconstructed stroke describes its native /InkList geometry.
+        if !markers.isEmpty {
+            let crop = page.bounds(for: .cropBox)
+            let paths = strokes.filter(strokeHasVisibleInk).compactMap { stroke -> CGPath? in
+                let points = sampledPoints(of: stroke)
+                return points.isEmpty ? nil : nativePath(points, crop: crop).cgPath
+            }
+            represented += markers.filter { annotation in
+                guard annotation.bounds == crop, let lines = annotation.paths, lines.count == 1 else { return false }
+                return paths.contains { $0 == lines[0].cgPath }
             }
         }
-        return nil
+        return OverlayInk(drawing: PKDrawing(strokes: strokes), represented: represented)
+    }
+
+    static func drawing(on page: PDFPage) -> PKDrawing? {
+        let drawing = overlayInk(on: page).drawing
+        return drawing.strokes.isEmpty ? nil : drawing
     }
 
     static func hasInk(on page: PDFPage) -> Bool {
