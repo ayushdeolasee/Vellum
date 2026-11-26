@@ -14,6 +14,8 @@ public struct SharedPDFLocation: Sendable {
               components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
               !relative.contains("\\"), !relative.utf8.contains(0),
               (relative as NSString).pathExtension.lowercased() == "pdf" else { return nil }
+        guard (try? FileManager.default.destinationOfSymbolicLink(atPath: root.path)) == nil,
+              root.resolvingSymlinksInPath().standardizedFileURL.path == root.standardizedFileURL.path else { return nil }
         var url = root
         for component in components {
             url.appendPathComponent(String(component))

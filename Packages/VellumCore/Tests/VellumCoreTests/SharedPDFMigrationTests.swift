@@ -93,7 +93,7 @@ final class SharedPDFMigrationTests: XCTestCase {
         try dependent["scratchpad.md"]!.write(to: scratch)
         try await migration().rollback()
         try await migration().rollback()
-        XCTAssertFalse(fm.fileExists(atPath: scratch.path))
+        XCTAssertFalse(fm.fileExists(atPath: scratch.deletingLastPathComponent().path))
         XCTAssertFalse(fm.fileExists(atPath: apple.appendingPathComponent("PDFs/Paper.pdf").path))
         XCTAssertEqual(try Data(contentsOf: source), raw)
         XCTAssertEqual(try Data(contentsOf: doc.appendingPathComponent("meta.json")), meta)

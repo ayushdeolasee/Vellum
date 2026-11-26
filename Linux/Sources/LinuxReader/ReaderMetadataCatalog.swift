@@ -114,7 +114,7 @@ public struct ReaderMetadataCatalog: Sendable {
         if DocumentIdentity.isCanonicalKey(key),
            let data = try await store.read(base.appendingPathComponent("meta.json")),
            let meta = try? JSONDecoder().decode(Meta.self, from: data), meta.kind == "pdf",
-           let relative = location.relativePath(for: file), meta.last_known_path == relative {
+           let relative = location.relativePath(for: file), meta.last_known_path.utf8.elementsEqual(relative.utf8) {
             let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
             return ReaderDocumentMetadata(displayTitle: Self.title(meta.title) ?? result.displayTitle,
                                           position: result.position, hasInkSidecar: false)

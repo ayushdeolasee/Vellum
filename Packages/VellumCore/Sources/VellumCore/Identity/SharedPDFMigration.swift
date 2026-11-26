@@ -42,6 +42,7 @@ public struct SharedPDFMigration: Sendable {
         var inputs: [Source] = []
         var directories: [String: [String]] = [:]
         var changes: [Change] = []
+        var createdDirectories: [URL] = []
         var completed = 0
         var pending = false
         var reversing = false
@@ -173,6 +174,15 @@ public struct SharedPDFMigration: Sendable {
         j.changes.removeAll { $0.relative.hasPrefix("PDFs/") }
         try await planPositions(positions, journal: &j)
         j.changes += payloads
+        var absent = Set<URL>()
+        for step in j.changes {
+            var parent = location.root.appendingPathComponent(step.relative).deletingLastPathComponent()
+            while parent.path != location.root.path && !fm.fileExists(atPath: parent.path) {
+                absent.insert(parent)
+                parent.deleteLastPathComponent()
+            }
+        }
+        j.createdDirectories = absent.sorted { $0.pathComponents.count > $1.pathComponents.count }
         try save(j) // every byte and inverse is durable before the first shared mutation
         try await apply(&j, checkpoint: checkpoint)
     }
@@ -377,6 +387,14 @@ public struct SharedPDFMigration: Sendable {
             guard try await store.read(url) == before else { throw Failure.changed(step.relative) }
             j.completed -= 1
             try save(j)
+        }
+        // rmdir only removes empty directories this batch created. Never
+        // recursively remove a folder that may contain a new peer attachment.
+        for dir in j.createdDirectories where dir.pathComponents.starts(with: location.root.pathComponents) {
+            guard dir.resolvingSymlinksInPath().standardizedFileURL.path == dir.standardizedFileURL.path else {
+                throw Failure.changed(dir.path)
+            }
+            if rmdir(dir.path) != 0 && errno != ENOENT && errno != ENOTEMPTY { throw Failure.changed(dir.path) }
         }
         // Retire the entire local journal atomically. A crash during cleanup
         // cannot leave a live manifest pointing to missing blobs.
