@@ -390,6 +390,69 @@ struct SyncedFolderStorageTests {
         await relaunched.stop()
     }
 
+    @Test("An out-of-root shared PDF cannot update or clear Scratchpad bytes", arguments: [false, true])
+    func ineligibleSharedPDFDoesNotWriteScratchpad(clearing: Bool) async throws {
+        let (root, key, attachments) = try scratchpadFixture()
+        let fm = FileManager.default
+        defer { try? fm.removeItem(at: root) }
+        let local = root.appendingPathComponent("local/web", isDirectory: true)
+        let previousStore = WebLibrary.storeDirOverride
+        let previousDocuments = DocumentDataStore.rootDirectoryOverride
+        WebLibrary.storeDirOverride = local
+        DocumentDataStore.rootDirectoryOverride = nil
+        defer {
+            WebLibrary.storeDirOverride = previousStore
+            DocumentDataStore.rootDirectoryOverride = previousDocuments
+        }
+
+        let source = root.appendingPathComponent("Outside.pdf")
+        try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column")).write(to: source)
+        let document = DocumentInfo(
+            kind: .pdf, pdfPath: source.path, title: "Outside", pageCount: 1, lastPage: 1, docId: key)
+        let container = FakeSyncedContainer()
+        let coordinator = StorageCoordinator(
+            storeDir: local, modeProvider: { .syncedFolder },
+            syncedFolderRootResolver: { root }, folderContainerFactory: { _ in container },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        let directory = attachments.deletingLastPathComponent()
+        let noteURL = directory.appendingPathComponent("scratchpad.md")
+        let metadataURL = directory.appendingPathComponent("meta.json")
+        let existingImage = attachments.appendingPathComponent("abc.png")
+        let newImage = attachments.appendingPathComponent("def.png")
+        let note = "Saved draft ![image](attachments/abc.png)"
+        let metadata = Data(#"{"version":1,"kind":"pdf","title":"Saved title","last_known_path":"PDFs/Saved.pdf","last_opened":"2026-11-26T12:00:00Z"}"#.utf8)
+        let imageBytes = Data([1, 2, 3])
+        container.seed(noteURL, data: Data(note.utf8))
+        container.seed(metadataURL, data: metadata)
+        container.seed(existingImage, data: imageBytes)
+
+        await coordinator.start()
+        do {
+            try #require(await coordinator.currentStatus().effectiveMode == .syncedFolder)
+            let staged: [ScratchpadStagedAttachment] = clearing ? [] : [
+                .init(id: "abc", name: "abc.png", data: Data([4])),
+                .init(id: "def", name: "def.png", data: Data([5])),
+            ]
+            let result = await ScratchpadPersistence.save(
+                forKey: key, document: document,
+                schemeText: clearing ? "" : "New draft ![image](vellum-scratchpad://def)",
+                expectedBaseline: ScratchpadPersistence.relativeToScheme(note),
+                attachments: staged, dirtyAttachmentNames: Set(staged.map(\.name)),
+                coordinator: coordinator)
+            #expect(result == nil)
+            #expect(container.coordinatedWriteCount == 0)
+            #expect(container.coordinatedRemoveCount == 0)
+            #expect(container.peek(noteURL) == Data(note.utf8))
+            #expect(container.peek(metadataURL) == metadata)
+            #expect(container.peek(existingImage) == imageBytes)
+            #expect(container.peek(newImage) == nil)
+        } catch {
+            await coordinator.stop()
+            throw error
+        }
+        await coordinator.stop()
+    }
+
     @Test("Legacy attachment collection respects the selected storage mode")
     func legacyScratchpadCollection() async throws {
         let (root, _, attachments) = try scratchpadFixture()
