@@ -1,4 +1,5 @@
 import Foundation
+import LinuxReader
 import LinuxServices
 import VellumCore
 
@@ -65,6 +66,17 @@ struct ReaderPreferences: Sendable {
     @concurrent
     func saveProvider(_ provider: LinuxAIProvider) async throws {
         try write(provider.rawValue, to: "ai-provider")
+    }
+
+    // A replacement directory at the same pathname must start read-only.
+    @concurrent
+    func editingEnabled(for root: RootDirectory) async -> Bool {
+        read("editing-" + DocumentIdentity.sha256Hex(root.url.path)) == root.identity
+    }
+
+    @concurrent
+    func saveEditing(_ enabled: Bool, for root: RootDirectory) async throws {
+        try write(enabled ? root.identity : "", to: "editing-" + DocumentIdentity.sha256Hex(root.url.path))
     }
 
     private func read(_ name: String) -> String? {

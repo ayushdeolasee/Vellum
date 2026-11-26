@@ -45,7 +45,6 @@ final class ScratchpadPane {
     private var load: Task<Void, Never>?
     private var attach: Task<Void, Never>?
     private var save: Task<Void, Never>?
-    private var pendingClose: Task<Void, Never>?
     private var savingKey: String?
     private var selectionMessage = ""
     private var preparingImage = false
@@ -91,7 +90,7 @@ final class ScratchpadPane {
     }
 
     private func handle(_ event: ScratchpadEvent, text: String?) {
-        guard !closed, pendingClose == nil else { return }
+        guard !closed else { return }
         if event == SCRATCHPAD_SHOW {
             loadIfNeeded()
             return
@@ -212,38 +211,24 @@ final class ScratchpadPane {
         }
     }
 
-    func requestClose(window: OpaquePointer) {
-        guard pendingClose == nil, !closed else { return }
-        guard save != nil || preparingImage || drafts.values.contains(where: \.dirty) else {
-            reader_commit_close(window)
-            return
-        }
-        reader_set_close_pending(window, true)
-        pendingClose = Task {
-            await attach?.value
-            await save?.value
-            let pending = drafts.keys.sorted()
-            for key in pending {
-                guard !closed else { return }
-                guard await commit(key) else {
-                    guard !closed else { return }
-                    selectionMessage = ""
-                    reader_set_close_pending(window, false)
-                    pendingClose = nil
-                    scratchpad_panel_show(panel)
-                    if key == self.key {
-                        updateState()
-                    } else {
-                        scratchpad_panel_set_state(panel,
-                            "A scratchpad for another document could not be saved. Reopen that document to see its draft.",
-                            false, false, false)
-                    }
-                    return
+    // Call with input paused. A failed save keeps every unsaved draft in this pane.
+    func flush() async -> Bool {
+        await attach?.value
+        await save?.value
+        for key in drafts.keys.sorted() {
+            guard await commit(key) else {
+                scratchpad_panel_show(panel)
+                if key == self.key {
+                    updateState()
+                } else {
+                    scratchpad_panel_set_state(panel,
+                        "A scratchpad for another document could not be saved. Reopen it to see its draft.",
+                        false, false, false)
                 }
+                return false
             }
-            guard !closed else { return }
-            reader_commit_close(window)
         }
+        return true
     }
 
     func shutdown() async {
@@ -254,7 +239,6 @@ final class ScratchpadPane {
         await load?.value
         await attach?.value
         await save?.value
-        await pendingClose?.value
     }
 
     private func showDraft() {
@@ -294,7 +278,7 @@ final class ScratchpadPane {
         } else if let status = draft.message {
             message = status
         } else if storage.canEdit {
-            message = draft.dirty ? "Unsaved changes" : "Disposable scratchpad fixture"
+            message = draft.dirty ? "Unsaved changes" : "Shared scratchpad"
         } else {
             message = draft.text.isEmpty ? "No saved scratchpad · Read only" : "Scratchpad · Read only"
         }

@@ -14,7 +14,7 @@ struct ReaderWindow {
     ScratchpadPanel *scratchpad;
     ReaderCallback callback;
     void *context;
-    gboolean closing, drained;
+    gboolean closing, drained, editing;
 };
 
 static void notify(ReaderWindow *r, ReaderEvent event, int entry) {
@@ -167,6 +167,17 @@ void reader_select_row(ReaderWindow *r, int index) {
     gtk_list_box_select_row(r->list, gtk_list_box_get_row_at_index(r->list, index));
 }
 
+void reader_reselect_entry(ReaderWindow *r, int entry) {
+    for (int i = 0;; i++) {
+        GtkListBoxRow *row = gtk_list_box_get_row_at_index(r->list, i);
+        if (!row) return;
+        if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "entry-id")) == entry + 1) {
+            gtk_list_box_select_row(r->list, row);
+            return;
+        }
+    }
+}
+
 static void set_title(ReaderWindow *r, const char *title) {
     gtk_label_set_text(GTK_LABEL(r->title), title);
     if (gtk_stack_get_visible_child(r->screens) == r->body)
@@ -194,14 +205,23 @@ void reader_page_message(ReaderWindow *r, const char *title, const char *message
     gtk_label_set_text(GTK_LABEL(r->message), message);
     gtk_stack_set_visible_child(reader_content_stack(r), r->message);
     reader_set_position(r, number, count);
-    gtk_label_set_text(GTK_LABEL(r->status), "Read-only library");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "Shared editing enabled" : "Read-only library");
+}
+
+void reader_set_editing(ReaderWindow *r, bool enabled, bool available) {
+    r->editing = enabled;
+    reader_settings_set_editing(r->settings, enabled, available);
+}
+
+void reader_show_status(ReaderWindow *r, const char *message) {
+    gtk_label_set_text(GTK_LABEL(r->status), message);
 }
 
 void reader_web_ready(ReaderWindow *r, const char *title, const char *position) {
     g_assert(shell_on_gtk_thread());
     set_title(r, title);
     gtk_label_set_text(GTK_LABEL(r->page), position);
-    gtk_label_set_text(GTK_LABEL(r->status), "Offline archive · Read only");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "Offline archive · Shared editing" : "Offline archive · Read only");
 }
 
 void reader_set_message(ReaderWindow *r, const char *title, const char *message) {
@@ -220,7 +240,7 @@ void reader_set_page(ReaderWindow *r, const char *title, int number, int count,
     gtk_stack_set_visible_child(reader_content_stack(r), r->pdf_page);
     set_title(r, title);
     reader_set_position(r, number, count);
-    gtk_label_set_text(GTK_LABEL(r->status), "PDF open · Read only");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "PDF open · Shared editing" : "PDF open · Read only");
 }
 
 static GtkWidget *page_button(const char *icon, const char *name, ReaderWindow *r) {

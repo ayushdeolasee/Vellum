@@ -23,4 +23,3 @@ void pdf_annotations_controls(PdfAnnotations *, bool highlight, bool note, bool 
 void pdf_annotations_message(PdfAnnotations *, const char *);
 void pdf_annotations_clear_rects(PdfAnnotations *);
 void pdf_annotations_rect(PdfAnnotations *, double x, double y, double width, double height);
-void reader_pdf_editable(ReaderWindow *);

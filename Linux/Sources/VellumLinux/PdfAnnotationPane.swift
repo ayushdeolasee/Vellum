@@ -132,7 +132,7 @@ final class PdfAnnotationPane {
         } else {
             refresh(nil)
         }
-        if mutate != nil { reader_pdf_editable(window) }
+        if replace != nil, let reason = page.restriction { reader_show_status(window, "Read only · \(reason)") }
     }
 
     private struct ChangedPDF: Error {}
