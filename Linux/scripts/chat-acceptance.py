@@ -340,7 +340,8 @@ def exercise_recovery():
             get("Stay Here")
             capture("reader-chat-close.png")
             click("Stay Here")
-            wait(lambda: "Explicit discard?" in transcript(), "stay keeps unsaved chat")
+            wait(lambda: has_status("This document is still open.") and not find("Close Without Recovery")
+                 and "Explicit discard?" in transcript(), "stay keeps unsaved chat and returns to the reader")
             click("Close")
             click("Close Without Recovery")
         assert conversation.read_bytes() == saved
