@@ -412,6 +412,7 @@
 		81DD6A7482A614E55A6134AB /* ChromeTapCatcher_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7F2184C5148E76963CD7389 /* ChromeTapCatcher_iOS.swift */; };
 		8216BBFF8A13CCD56689933B /* SelectableMessageText_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08111ACF12BEE6ACC52F1835 /* SelectableMessageText_macOS.swift */; };
 		82523B24868B7DBDABB7F7DE /* ReadLaterPrefetcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3126BF38C6CB4EBD0F368E06 /* ReadLaterPrefetcherTests.swift */; };
+		8282AE4C8566D1813309C613 /* TwoPeerOfflineConflictTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BF759D8EAE41ADCE33AAB05 /* TwoPeerOfflineConflictTests.swift */; };
 		82D29BA0A7E0974DDB100F54 /* WebLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */; };
 		8300949D2339E01BD95440B5 /* IntegrationDownloadClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C32BB3DD8BBDCCF0610BBA0 /* IntegrationDownloadClient.swift */; };
 		831CF3958ED8C1AF87C6319A /* DocumentsRelocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */; };
@@ -675,6 +676,7 @@
 		D8FB17ACCD415EFD9623E48B /* TabResidency.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E69330A4F460353FBCB25AB /* TabResidency.swift */; };
 		D8FEEC8B7DFF5D94C96294B4 /* ReadLaterWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAA38BA79B3C32600B68AFE0 /* ReadLaterWidget.swift */; };
 		D917D5A53CE58F7D38FB0BB5 /* CaptureBackgroundSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABFD477181A3E9AC72066F6F /* CaptureBackgroundSession.swift */; };
+		D91B7F74245D6F7DAA557B59 /* SyncthingSimulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55DC525ACFBCD1931E8FD9C0 /* SyncthingSimulator.swift */; };
 		D95609F2F3FB73070B563A14 /* HomeSearchStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9891795C7062DF1FEB661852 /* HomeSearchStoreTests.swift */; };
 		D98DA520B7EC317F9FCDE14D /* GeminiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */; };
 		D9B3E426D2C55374314A25CA /* IntegrationPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52144079480A9AD498001EC2 /* IntegrationPreferences.swift */; };
@@ -1002,6 +1004,7 @@
 		541F3C060A41BF612E4E4904 /* SyncedContainerRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContainerRoutingTests.swift; sourceTree = "<group>"; };
 		54417DBF142FD33E6B2F6672 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5513F929B10D107AED515D1E /* PageTextCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCache.swift; sourceTree = "<group>"; };
+		55DC525ACFBCD1931E8FD9C0 /* SyncthingSimulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncthingSimulator.swift; sourceTree = "<group>"; };
 		561F3C626CFABE5272246F4A /* HomeDropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDropTests.swift; sourceTree = "<group>"; };
 		56E0D2A9B180E6017E9C6CA6 /* HomeSearchEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchEngine.swift; sourceTree = "<group>"; };
 		57D849C35EEF4593A049D921 /* PdfFixtureBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfFixtureBuilder.swift; sourceTree = "<group>"; };
@@ -1014,6 +1017,7 @@
 		5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsRelocationTests.swift; sourceTree = "<group>"; };
 		5B5DA195F4FAB34BD661D698 /* ModelSelector_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSelector_macOS.swift; sourceTree = "<group>"; };
 		5BBD3C6F730DC9A2EDE0154F /* PositionWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionWiringTests.swift; sourceTree = "<group>"; };
+		5BF759D8EAE41ADCE33AAB05 /* TwoPeerOfflineConflictTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TwoPeerOfflineConflictTests.swift; sourceTree = "<group>"; };
 		5DFD2EC2ED5A947809EA139F /* AttachmentDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDrop.swift; sourceTree = "<group>"; };
 		5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightLayer.swift; sourceTree = "<group>"; };
 		6040B8B4AEED7AF52B89AE11 /* ScratchOutInk_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchOutInk_iOS.swift; sourceTree = "<group>"; };
@@ -1480,6 +1484,7 @@
 			children = (
 				0F475713A06234E44D7BF506 /* PdfFixturesSanityTests.swift */,
 				B1483F7412DD6797C62E9E6C /* PositionTestSupport.swift */,
+				5BF759D8EAE41ADCE33AAB05 /* TwoPeerOfflineConflictTests.swift */,
 				841CEF2E78ACD62CE88A4D23 /* UnknownFieldsRoundTripTests.swift */,
 				31258D875E9F07A63CBD6C42 /* Fixtures */,
 				9E790F502506A64D4BFF9E89 /* TestSupport */,
@@ -1858,6 +1863,7 @@
 			isa = PBXGroup;
 			children = (
 				57D849C35EEF4593A049D921 /* PdfFixtureBuilder.swift */,
+				55DC525ACFBCD1931E8FD9C0 /* SyncthingSimulator.swift */,
 			);
 			path = TestSupport;
 			sourceTree = "<group>";
@@ -2911,6 +2917,8 @@
 				C159DD0B58BEA682A89DA1B9 /* StorageMigrationRecoveryTests.swift in Sources */,
 				CD8D2AD48E0F328247E108E8 /* SyncedContainerConflictTests.swift in Sources */,
 				4D71E228FB2A9FAC1484AE40 /* SyncedFolderStorageTests.swift in Sources */,
+				D91B7F74245D6F7DAA557B59 /* SyncthingSimulator.swift in Sources */,
+				8282AE4C8566D1813309C613 /* TwoPeerOfflineConflictTests.swift in Sources */,
 				5F9C9C1D6CEFDD2CFE365E37 /* UnknownFieldsRoundTripTests.swift in Sources */,
 				66ECB05D4DF62E3628B6FB50 /* WebProxyUrlTests.swift in Sources */,
 			);

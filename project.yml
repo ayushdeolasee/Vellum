@@ -171,6 +171,8 @@ targets:
       - path: Tests/AiPromptContextTests.swift
       - path: Tests/MarkdownParserTests.swift
       - path: Tests/StorageMigrationRecoveryTests.swift
+      - path: Packages/VellumCore/Tests/VellumCoreTests/TwoPeerOfflineConflictTests.swift
+      - path: Packages/VellumCore/Tests/VellumCoreTests/TestSupport/SyncthingSimulator.swift
       - path: Tests/ConflictMergeTests.swift
       - path: Tests/SyncedContainerConflictTests.swift
       - path: Tests/SyncedFolderStorageTests.swift
