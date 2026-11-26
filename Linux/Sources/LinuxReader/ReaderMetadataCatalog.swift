@@ -104,6 +104,14 @@ public struct ReaderMetadataCatalog: Sendable {
     @concurrent
     public func sharedPDF(bytes: Data, file: URL, stamp: String?,
                           fallbackTitle: String) async throws -> ReaderDocumentMetadata {
+        let identity = try await Self.resolvePDF(bytes: bytes, file: file, stamp: stamp, store: store)
+        let result = pdf(stableIdentifier: identity.key, fallbackTitle: fallbackTitle)
+        return ReaderDocumentMetadata(storageKey: result.storageKey, displayTitle: Self.title(identity.title) ?? result.displayTitle,
+                                      position: result.position, hasInkSidecar: false)
+    }
+
+    static func resolvePDF(bytes: Data, file: URL, stamp: String?, store: ReadOnlyLibraryFileStore) async throws
+        -> (key: String?, title: String?) {
         let verified = SharedPDFIdentity.stamp(in: bytes, readerID: stamp)
         let directory = store.root.url.appendingPathComponent(".vellum/documents")
         struct Meta: Decodable {
@@ -122,16 +130,15 @@ public struct ReaderMetadataCatalog: Sendable {
                       let meta = try? JSONDecoder().decode(Meta.self, from: data),
                       meta.kind == "pdf",
                       try await matchesLocator(meta.last_known_path, selected: relative,
-                                               hashBytes: key == hash ? bytes : nil) else { continue }
-                let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
-                return ReaderDocumentMetadata(storageKey: result.storageKey, displayTitle: Self.title(meta.title) ?? result.displayTitle,
-                                              position: result.position, hasInkSidecar: false)
+                                               hashBytes: key == hash ? bytes : nil, store: store) else { continue }
+                return (key, meta.title)
             }
         }
-        return pdf(stableIdentifier: verified, fallbackTitle: fallbackTitle)
+        return (verified, nil)
     }
 
-    private func matchesLocator(_ recorded: String, selected: String, hashBytes: Data?) async throws -> Bool {
+    private static func matchesLocator(_ recorded: String, selected: String, hashBytes: Data?,
+                                       store: ReadOnlyLibraryFileStore) async throws -> Bool {
         // The selected relative path has already passed shared PDF path validation.
         guard recorded == selected else { return false }
         if recorded.utf8.elementsEqual(selected.utf8) { return true }

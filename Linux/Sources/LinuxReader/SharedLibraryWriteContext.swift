@@ -55,7 +55,8 @@ public actor SharedLibraryWriteContext {
     }
 
     @concurrent
-    public func savePosition(_ position: ReadingPosition, for key: DocumentKey, at timestamp: Date = .now) async throws {
+    public func savePosition(_ position: ReadingPosition, for key: DocumentKey, at timestamp: Date = .now,
+                             validate: @Sendable () async throws -> Void = {}) async throws {
         let device = self.device
         let dir = root.url.appendingPathComponent(".vellum/positions", isDirectory: true)
         let file = try PositionLayout.fileURL(in: dir, for: device.id)
@@ -81,6 +82,7 @@ public actor SharedLibraryWriteContext {
             record.writtenAt = max(record.writtenAt, timestamp)
             record.trimToMostRecent()
             let bytes = try PositionCoding.encoder.encode(record)
+            try await validate()
             if try await replace(file, with: bytes, ifCurrent: original) { return }
         }
         throw LibraryFileError.retryable

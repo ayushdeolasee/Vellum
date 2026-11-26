@@ -13,7 +13,7 @@ final class ReaderController {
     private var store: ReadOnlyLibraryFileStore?
     private(set) var writeContext: SharedLibraryWriteContext?
     private var positionSession: ReaderPositionSession?
-    private var documentKey: DocumentKey?
+    private var sidecarTarget: ReaderSidecarTarget?
     private var displayedPosition: ReadingPosition?
     private var transition: Task<Void, Never>?
     private var closing = false
@@ -307,8 +307,8 @@ final class ReaderController {
                 let storage = await scratchpadStorage(files: store, context: next)
                 guard !closing else { return }
                 scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
-                scratchpad?.select(documentStorageKey)
-                positionSession = positionWriter(key: documentKey, restored: nil, window: window)
+                scratchpad?.select(sidecarTarget)
+                positionSession = positionWriter(restored: nil, window: window)
                 webPage?.session = positionSession
                 if let point = await webPage?.location() ?? displayedPosition { positionSession?.moved(point) }
                 reader_set_editing(window, enabling, true)
@@ -320,20 +320,19 @@ final class ReaderController {
         }
     }
 
-    private var documentStorageKey: String?
+    private var documentStorageKey: String? { sidecarTarget?.key }
 
-    private func positionWriter(key: DocumentKey?, restored: ReadingPosition?, window: OpaquePointer) -> ReaderPositionSession? {
+    private func positionWriter(restored: ReadingPosition?, window: OpaquePointer) -> ReaderPositionSession? {
         let name = selection?.lastPathComponent ?? "this document"
-        return ReaderPositionSession(context: writeContext, key: key, restored: restored) {
+        return ReaderPositionSession(context: writeContext, target: sidecarTarget, restored: restored) {
             reader_notice(window, "Could not save the reading position for \(name). Its previous position was kept.")
         }
     }
 
-    private func bindPosition(key: DocumentKey?, storageKey: String?, restored: ReadingPosition?, window: OpaquePointer) {
-        documentKey = key
-        documentStorageKey = storageKey
-        positionSession = positionWriter(key: key, restored: restored, window: window)
-        scratchpad?.select(storageKey)
+    private func bindPosition(target: ReaderSidecarTarget?, restored: ReadingPosition?, window: OpaquePointer) {
+        sidecarTarget = target
+        positionSession = positionWriter(restored: restored, window: window)
+        scratchpad?.select(target)
     }
 
     private func openLibrary(_ path: URL, remember: Bool = false, window: OpaquePointer) {
@@ -402,8 +401,7 @@ final class ReaderController {
     }
 
     private func resetDocument() {
-        documentKey = nil
-        documentStorageKey = nil
+        sidecarTarget = nil
         displayedPosition = nil
         positionSession = nil
         if writeContext != nil { metadataCatalog = nil }
@@ -475,8 +473,7 @@ final class ReaderController {
                 let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
-                self.bindPosition(key: metadata.storageKey.flatMap { DocumentKey(rawValue: "web:" + $0) },
-                                  storageKey: metadata.storageKey, restored: metadata.position, window: window)
+                self.bindPosition(target: metadata.storageKey.map { .web(key: $0) }, restored: metadata.position, window: window)
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
                                            probe: self.webProbe, restoring: metadata.position, session: self.positionSession,
                                            onLocation: { point in
@@ -533,8 +530,7 @@ final class ReaderController {
                         }
                     }
                     guard self.isCurrent(token) else { return }
-                    self.bindPosition(key: storageKey.map { .pdf(stableIdentifier: $0) },
-                                      storageKey: storageKey, restored: restored, window: window)
+                    self.bindPosition(target: storageKey.map { .pdf(key: $0, file: file) }, restored: restored, window: window)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index

@@ -6,6 +6,7 @@ import VellumCore
 final class ReaderPositionSession {
     private let context: SharedLibraryWriteContext
     private let key: DocumentKey
+    private let target: ReaderSidecarTarget
     private let failed: () -> Void
     private var saved: ReadingPosition?
     private var latest: (point: ReadingPosition, time: Date)?
@@ -13,10 +14,11 @@ final class ReaderPositionSession {
     private var draining = false
     private var write: Task<Void, Error>?
 
-    init?(context: SharedLibraryWriteContext?, key: DocumentKey?, restored: ReadingPosition?,
+    init?(context: SharedLibraryWriteContext?, target: ReaderSidecarTarget?, restored: ReadingPosition?,
           failed: @escaping () -> Void) {
-        guard let context, let key else { return nil }
+        guard let context, let target, let key = target.positionKey else { return nil }
         self.context = context
+        self.target = target
         self.key = key
         self.failed = failed
         saved = restored
@@ -50,7 +52,9 @@ final class ReaderPositionSession {
             guard let value = latest, value.point != saved else { return }
             let next = Task {
                 defer { self.write = nil }
-                try await context.savePosition(value.point, for: key, at: value.time)
+                try await context.savePosition(value.point, for: key, at: value.time) { [target, context] in
+                    try await target.validate(in: ReadOnlyLibraryFileStore(root: context.root))
+                }
                 saved = value.point
             }
             write = next

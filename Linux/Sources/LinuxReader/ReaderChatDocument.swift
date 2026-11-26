@@ -13,6 +13,13 @@ public enum ReaderChatDocument: Sendable {
         }
     }
 
+    public var sidecarTarget: ReaderSidecarTarget? {
+        switch self {
+        case let .pdf(_, key, file, _, _): key.map { .pdf(key: $0, file: file) }
+        case let .article(_, key, _, _, _, _): key.map { .web(key: $0) }
+        }
+    }
+
     // Unstamped PDFs can chat in memory without inventing a shared identity.
     public var sessionKey: String? {
         if case let .pdf(_, nil, file, _, _) = self { return file.absoluteString }
