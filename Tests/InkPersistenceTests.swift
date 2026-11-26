@@ -60,6 +60,56 @@ final class InkPersistenceTests: XCTestCase {
     }
 
     @MainActor
+    func testSharedIPadInkFixtures() throws {
+        let bundle = Bundle(for: InkPersistenceTests.self)
+        let cases = [
+            (name: "ipad-vellum-ink", stored: 2, visible: 2),
+            (name: "pdf-ink-marker", stored: 2, visible: 2),
+            (name: "pdf-ink-erased-full", stored: 2, visible: 1),
+            (name: "pdf-ink-erased-partial", stored: 2, visible: 2),
+            (name: "pdf-ink-rotated", stored: 1, visible: 1),
+        ]
+        for fixture in cases {
+            let name = fixture.name
+            let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "pdf", subdirectory: "Pdf"), name)
+            let document = try XCTUnwrap(PDFDocument(url: url), name)
+            XCTAssertEqual(document.pageCount, 1, name)
+            let page = try XCTUnwrap(document.page(at: 0), name)
+            let drawing = try XCTUnwrap(PdfInk.drawing(on: page), name)
+            let managed = page.annotations.filter(PdfInk.isVellumInk)
+            XCTAssertEqual(drawing.strokes.count, fixture.stored, name)
+            XCTAssertEqual(drawing.strokes.filter(PdfInk.strokeHasVisibleInk).count, fixture.visible, name)
+            XCTAssertEqual(managed.count, fixture.visible, name)
+            let carrier = try XCTUnwrap(managed.first, name)
+            for annotation in managed.dropFirst() {
+                XCTAssertEqual(annotation.value(forAnnotationKey: PdfInk.dataKey) as? String, "1", name)
+            }
+            let first = try XCTUnwrap(drawing.strokes.first, name)
+            switch name {
+            case "ipad-vellum-ink":
+                XCTAssertEqual(page.annotations.count, 3)
+                XCTAssertFalse(PdfInk.isVellumInk(try XCTUnwrap(page.annotations.first)))
+                XCTAssertNotEqual(first.ink.color, try XCTUnwrap(drawing.strokes.last).ink.color)
+            case "pdf-ink-marker":
+                XCTAssertTrue(drawing.strokes.allSatisfy { $0.ink.inkType == .marker })
+            case "pdf-ink-erased-full":
+                XCTAssertTrue(first.maskedPathRanges.isEmpty)
+            case "pdf-ink-erased-partial":
+                let ranges = first.maskedPathRanges
+                XCTAssertEqual(ranges.count, 2)
+                XCTAssertFalse(ranges.contains { $0.contains(4) }, "The middle control point was erased")
+                // The native polyline still spans the erased middle of the PencilKit path.
+                let paths = try XCTUnwrap(carrier.paths)
+                XCTAssertEqual(paths.count, 1)
+                XCTAssertEqual(try XCTUnwrap(paths.first).bounds.width, 192, accuracy: 0.1)
+            case "pdf-ink-rotated":
+                XCTAssertEqual(page.rotation, 90)
+            default: XCTFail("Missing expectations for \(name)")
+            }
+        }
+    }
+
+    @MainActor
     func testInkApplyAddsNativeAndEmbeddedData() throws {
         let (_, page) = try blankPage()
         XCTAssertFalse(PdfInk.hasInk(on: page))
