@@ -5,6 +5,14 @@ import VellumCore
 
 @MainActor
 final class ReaderController {
+    // SwiftPM's command-line product has no bundle build number. Identify
+    // the actual executable, including when the build came from a dirty tree.
+    private static let inkCapabilityBuild = Task.detached(priority: .utility) { () -> String? in
+        let executable = URL(fileURLWithPath: "/proc/self/exe")
+        guard let bytes = try? Data(contentsOf: executable, options: .mappedIfSafe) else { return nil }
+        return "linux/" + DocumentIdentity.byteHash(bytes)
+    }
+
     private let rootOverride: URL?
     private let preferences = ReaderPreferences()
     let settings = ReaderSettingsController()
@@ -250,8 +258,10 @@ final class ReaderController {
                     message = "Read only for this session. Could not save the setting for next launch."
                 }
                 let next: SharedLibraryWriteContext?
-                do { next = enabling ? try await SharedLibraryWriteContext.activate(root: store.root) : nil }
-                catch {
+                do {
+                    next = enabling ? try await SharedLibraryWriteContext.activate(
+                        root: store.root, inkCapabilityBuild: Self.inkCapabilityBuild.value) : nil
+                } catch {
                     try await preferences.saveEditing(false, for: store.root)
                     throw error
                 }
@@ -259,6 +269,7 @@ final class ReaderController {
                 await writeContext?.retire()
                 guard !closing else { await next?.retire(); return }
                 writeContext = next
+                await next?.advertiseInkCapability()
                 let storage = await scratchpadStorage(files: store, context: next)
                 guard !closing else { return }
                 scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
@@ -327,10 +338,14 @@ final class ReaderController {
                 guard self.isCurrent(token) else { return }
                 var context: SharedLibraryWriteContext?
                 if await self.preferences.editingEnabled(for: root) {
-                    do { context = try await SharedLibraryWriteContext.activate(root: root) }
-                    catch { message = "Could not enable shared editing. This folder is read only." }
+                    do {
+                        context = try await SharedLibraryWriteContext.activate(
+                            root: root, inkCapabilityBuild: Self.inkCapabilityBuild.value)
+                    } catch { message = "Could not enable shared editing. This folder is read only." }
                 }
                 let storage = await self.scratchpadStorage(files: store, context: context)
+                guard self.isCurrent(token) else { await context?.retire(); return }
+                await context?.advertiseInkCapability()
                 guard self.isCurrent(token) else { await context?.retire(); return }
                 self.writeContext = context
                 reader_set_editing(window, context != nil, true)

@@ -6,23 +6,31 @@ import VellumCore
 public actor SharedLibraryWriteContext {
     public nonisolated let root: RootDirectory
     let device: DeviceIdentity
+    private let inkCapabilityBuild: String?
+    private var knownInkParticipants: Set<DeviceID> = []
     private var active = true
     private var pending: [UUID: Task<Bool, Error>] = [:]
 
-    private init(root: RootDirectory, device: DeviceIdentity) {
+    private init(root: RootDirectory, device: DeviceIdentity, inkCapabilityBuild: String?) {
         self.root = root
         self.device = device
+        self.inkCapabilityBuild = inkCapabilityBuild
     }
 
-    public static func activate(root: RootDirectory) async throws -> SharedLibraryWriteContext {
+    public static func activate(
+        root: RootDirectory, inkCapabilityBuild: String? = nil,
+        identity: DeviceIdentityProvider<LinuxDeviceIDDefaults>? = nil
+    ) async throws -> SharedLibraryWriteContext {
         let device = try await LibraryIO.run { _ in
-            try DeviceIdentityProvider.linux(name: ProcessInfo.processInfo.hostName).current()
+            try (identity ?? .linux(name: ProcessInfo.processInfo.hostName)).current()
         }
-        return try await prepare(root: root, device: device)
+        return try await prepare(root: root, device: device, inkCapabilityBuild: inkCapabilityBuild)
     }
 
-    static func prepare(root: RootDirectory, device: DeviceIdentity) async throws -> SharedLibraryWriteContext {
-        let context = SharedLibraryWriteContext(root: root, device: device)
+    static func prepare(
+        root: RootDirectory, device: DeviceIdentity, inkCapabilityBuild: String? = nil
+    ) async throws -> SharedLibraryWriteContext {
+        let context = SharedLibraryWriteContext(root: root, device: device, inkCapabilityBuild: inkCapabilityBuild)
         let ignore = root.url.appendingPathComponent(".stignore", isDirectory: false)
         let original = try await root.readRegularFile(ignore, byteLimit: 1024 * 1024)
         let updated = try StignoreManager.render(original ?? Data())
@@ -32,6 +40,71 @@ public actor SharedLibraryWriteContext {
             }
         }
         return context
+    }
+
+    /// Only called for a library that has admitted shared editing. A failed
+    /// refresh leaves the next compatibility check to fail closed.
+    public func advertiseInkCapability() async {
+        guard active, let inkCapabilityBuild, await isSelectedRoot(), active else { return }
+        let directory = InkCapabilityStore.directory(in: root.url)
+        do {
+            try await InkCapabilityStore.advertise(in: root.url, device: device.id,
+                appBuild: inkCapabilityBuild, read: { [root] url, limit in
+                    try await root.readRegularFile(url, byteLimit: limit)
+                }, canPublish: { [root] in
+                    let liveNames = try await root.entryNames(in: directory)
+                    let recovery = try await root.entryNames(in: directory.appendingPathComponent("conflicts"))
+                    guard !InkCapabilityStore.hasPublicationConflict(
+                        liveNames: liveNames, hasRecovery: !recovery.isEmpty) else { return false }
+                    return await self.isSelectedRoot()
+                }, replace: { url, bytes, expected in
+                    try await self.replace(url, with: bytes, ifCurrent: expected)
+                })
+        } catch {
+            // Position and Scratchpad stay writable when ink compatibility
+            // cannot be established.
+        }
+    }
+
+    /// I10 can consult this on the selected context immediately before an ink
+    /// edit. A full read replaces any previous decision on each call.
+    public func permitsInkEditing() async -> Bool {
+        guard active, let inkCapabilityBuild, !Task.isCancelled else { return false }
+        do {
+            let evidence = try await inkEvidence()
+            let inventory = InkCapabilityStore.Inventory(capabilities: evidence.capabilities,
+                positions: evidence.positions, hasRecovery: evidence.hasRecovery)
+            knownInkParticipants.formUnion(inventory.devices)
+            guard try await inventory.permitsInk(in: root.url,
+                requiring: knownInkParticipants, localDevice: device.id, localBuild: inkCapabilityBuild,
+                read: { [root] url, limit in
+                    try await root.readRegularFile(url, byteLimit: limit)
+                }),
+                try await inkEvidence() == evidence,
+                await isSelectedRoot()
+            else { return false }
+            return active && !Task.isCancelled && inventory.devices.isSuperset(of: knownInkParticipants)
+        } catch {
+            return false
+        }
+    }
+
+    private func isSelectedRoot() async -> Bool {
+        (try? await RootDirectory.open(root.url))?.identity == root.identity
+    }
+
+    private func inkEvidence() async throws -> (capabilities: [String], positions: [String], hasRecovery: Bool) {
+        let capabilities = InkCapabilityStore.directory(in: root.url)
+        let positions = root.url.appendingPathComponent(".vellum/positions", isDirectory: true)
+        let capabilityNames = try await root.entryNames(in: capabilities)
+        let positionNames = try await root.entryNames(in: positions)
+        // Kept conflict and quarantine bytes still represent unresolved
+        // evidence, even after the storage adapter has archived a sibling.
+        let recovery = try await root.entryNames(in: capabilities.appendingPathComponent("conflicts"))
+            + root.entryNames(in: positions.appendingPathComponent("conflicts"))
+            + root.entryNames(in: positions.appendingPathComponent("quarantine"))
+        return (capabilityNames.filter { $0 != "conflicts" },
+                positionNames.filter { $0 != "conflicts" && $0 != "quarantine" }, !recovery.isEmpty)
     }
 
     public func replace(_ url: URL, with data: Data, ifCurrent expected: Data?) async throws -> Bool {
@@ -81,7 +154,10 @@ public actor SharedLibraryWriteContext {
             record.writtenAt = max(record.writtenAt, timestamp)
             record.trimToMostRecent()
             let bytes = try PositionCoding.encoder.encode(record)
-            if try await replace(file, with: bytes, ifCurrent: original) { return }
+            if try await replace(file, with: bytes, ifCurrent: original) {
+                await advertiseInkCapability()
+                return
+            }
         }
         throw LibraryFileError.retryable
     }
