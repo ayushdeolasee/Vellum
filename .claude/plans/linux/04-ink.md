@@ -104,6 +104,46 @@ Sizes: **S** < half a day, **M** about 1 day, **L** 2–3 days (one agent sessio
 Cross-layer IDs: `S*` shared library (layer 2), `P*` PDF (layer 3), `C*` core + shell (layer 4).
 Written in round 3; reviewed by Gemini 4 Neon and GPT 6.2 Astra.
 
+### Round 4 corrections (authoritative: where an item below disagrees, this wins)
+
+Both agents cross-reviewed these items against `PdfInk.swift`, `WebInkStore.swift` and the Mac views.
+
+- **I0/I1: what PDF ink actually contains.** `PdfInk.apply` skips fully erased strokes, but writes a partially
+  erased stroke's **whole** path into `/InkList`. So Linux (and any non-Apple reader) shows erased segments of
+  partially erased strokes. That's a documented v1 limitation, not a test failure. The `/VellumInk` blob sits on the
+  **first emitted Vellum** ink annotation, which may come after third-party ink, not necessarily the page's first
+  `/Ink`. I0's PDFs live in P7's single fixture corpus.
+- **I3: a reconstructible stroke.** Add `secondaryScale` to `PortablePoint` (the Apple stroke signature compares it).
+  `visible_ranges` is for **display only**: PencilKit derives `maskedPathRanges` from a geometric mask that ranges
+  can't reproduce, so Apple never rebuilds a mask from them. The stroke `id` is computed **on Apple** from the raw,
+  untransformed `PKStrokePath` points (as `WebInkStore.strokeIdentity` does), with canonical encoding: creation date
+  as RFC 3339 UTC with microseconds, numbers as IEEE-754 bit patterns in hex. It is **stored verbatim and opaque**
+  everywhere else. Portable points are in cluster-local coordinates, translated by the cluster's stored bounds.
+- **I4: every reader path, version stays 3.** `drawing` becomes optional and `strokes` is added, without bumping
+  `WebInkRecord.currentVersion` (older builds check `1...currentVersion`). Update all six places that assume a
+  `PKDrawing`: `validatedMergedDrawing`, `loadRecordForExport`, `additivelyMerged`, `WebArchive.mergeInk`,
+  `WebSavedInkRenderer.load` (`WebSavedInk_macOS.swift`) and `SavedHandwritingReader.webClusters`
+  (`MacHandwritingNavigator.swift`). Each must build the drawing from `strokes` when `drawing` is missing.
+- **I6: prove PDFKit keeps the new keys.** Verify on iPadOS 26 that `dataRepresentation()` preserves
+  `/VellumInkStrokes` and a real `/CA` on `/Ink`. If not, add `/Ink` to `PdfSessionBackend.rehydrateAnnotationMetadata`
+  (it only handles Highlight/Text/FreeText today). Marker translucency needs a rendered fixture: the marker tool is
+  built from a palette colour with no explicit alpha (`InkToolState.swift`).
+- **I8 uses a dual-written fixture** (from I5 or I7). The original I0 sidecar has only `drawing`.
+- **I9: tombstones ship before Linux writes.** Both Apple merge paths (the live baseline merge and `additivelyMerged`)
+  rebuild fresh clusters, so preserving unknown JSON keys alone won't preserve tombstones. I9 implements and **ships**
+  tombstone-aware save and import on iPad and Mac. That makes it a real code change, sized M, not just a spec.
+- **I9b: capability gate (new).** An iPad running only I4 has no tombstone rules and could resurrect a stroke Linux
+  deleted. So each device writes `.vellum/capabilities/<device>.json` (supported features + app build), and Linux
+  enables ink writing only when every known device lists `ink-tombstones`.
+- **I10: Linux edits only its own PDF strokes.** Linux can't express deleting an iPad stroke that lives inside the
+  `/VellumInk` drawing, so in v1 Linux adds, edits and deletes only `/VellumInkOrigin (linux)` strokes. I10 also owns
+  adding `/Ink` emission (`/InkList`, `/BS`, `/C`, `/CA`, `/Rect`, `/F`, `/VellumInkOrigin`, `/VellumInkStrokes`) to
+  the P5 writer. Linux ink carries no `/VellumInk` key, so older iPad builds' `removeVellumInk` leaves it alone.
+- **I11** updates `PdfInk.isVellumInk` and the iPad viewer so promoted Linux strokes count as handwriting, and is
+  idempotent when run repeatedly.
+- **I12 tests web and PDF separately**, including deleting the last stroke on a page, a save by an I4-only build
+  (blocked by I9b), and running the I11 import twice.
+
 ### A rule found while detailing: iPad rewrites Vellum ink on save
 `PdfInk.apply` (iPad) first calls `removeVellumInk(from: page)`, which deletes **every**
 annotation carrying a `/VellumInk` key, then re-creates them from its own `PKDrawing`. So:
@@ -140,7 +180,7 @@ import it (I11).
   pressure). Erased strokes do not appear. The library checksum is unchanged (C5b gate).
 - Known gap recorded, not fixed: marker strokes may render opaque until I6 adds `/CA`.
 
-**I2 Web-ink badge on Linux** · S · depends on: C5cb
+**I2 Web-ink badge on Linux** · S · depends on: C5c
 - Goal: a page with `<key>.ink.json` shows "has handwriting: view on iPad/Mac" until I8.
 
 ### Step 2: Apple apps learn to read portable strokes (no new writes)
@@ -256,28 +296,29 @@ public enum PortableStrokeID {
 
 | ID | Item | Size | Depends on |
 |---|---|---|---|
-| I0 | Ink fixture set (real iPad-made PDFs + web sidecar) | S | — |
+| I0 | Ink fixtures: iPad PDFs (in P7's shared corpus) + web sidecar; full vs partial erasure recorded separately | S | P7 |
 | I1 | View PDF ink on Linux | S | P1, C5b, I0 |
 | I2 | "Has handwriting" badge for web ink | S | C5c |
 | I3 | `PortableStroke` in VellumCore + PencilKit adapter | M | C1 |
-| I4 | Apple readers accept `strokes` and optional `drawing` | M | I3, S3 |
+| I4 | Apple readers accept `strokes` and optional `drawing` (all 6 code paths, version stays 3) | M–L | I3, S3 |
 | I5 | iPad dual-writes web ink | S | I4 shipped |
 | I6 | iPad dual-writes PDF ink + `/CA` on marker strokes | M | I4 shipped, P4 |
 | I7 | Backfill command on iPad | M | I5, I6 |
 | I8 | Linux shows web ink | M | I5, C5c |
-| I9 | Three-writer merge rule (tombstones) | S | — |
-| I10 | Linux draws (web + PDF) | L | I9, P5, C5b |
+| I9 | Tombstone merge rule, **shipped** in both Apple merge paths | M | I4 |
+| I9b | Capability gate: Linux writes ink only when every device reports I9 support | S | I9 |
+| I10 | Linux draws (web + PDF), incl. `/Ink` emission in the P5 writer | L | I9 shipped, I9b, P5 (= C7b), S9 |
 | I11 | iPad imports Linux PDF ink | M | I10 |
 | I12 | Mixed-version round trip | M | I4–I11 |
 
 ### Dependency order
 
 ```
-I0 → I1 → I2
+I0 → I1          C5c → I2
 C1 → I3 → I4 ──(ship on iPad + Mac)──→ I5 ─┐
                        P4 (= C6) ──→ I6 ────┼→ I7
                                             └→ I8
-I9 → I10 → I11 → I12        (I10 also needs P5 = C7b and the S-layer write gate)
+I4 → I9 (shipped) → I9b → I10 → I11 → I12   (I10 also needs P5 = C7b and S9)
 ```
 
 Minimum for "ink shows up on Linux": I0, I1, I2 (PDF ink in v1), then I3–I5 + I8 (web ink).
