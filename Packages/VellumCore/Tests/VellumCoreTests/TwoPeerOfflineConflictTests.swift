@@ -164,7 +164,7 @@ struct PeerLibrary {
         try await write(Self.meta, JSONSerialization.data(withJSONObject: meta))
         let captureKey = DocumentKey.web(normalizedURL: Self.address + "/" + peer)
         let saved = try await catalog.save(Self.archive(peer), forKey: captureKey.hash)
-        #expect(saved == url(Self.capture))
+        #expect(saved == root.standardizedFileURL.appendingPathComponent(Self.capture))
         let pdfID = try await verifyPDFs()
         try await positions.write(Self.position(peer, pdfID: pdfID))
         // Explicit, distinct mtimes let the real daemon and simulator agree on winner.
