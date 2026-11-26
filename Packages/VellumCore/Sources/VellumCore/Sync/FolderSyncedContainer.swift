@@ -1,6 +1,7 @@
 import Foundation
 
 public actor FolderSyncedContainer: SyncedContainer {
+    public nonisolated let webArchives: SharedWebArchives
     private let root: URL
     private let store: any FolderFileStore
     private let watcher: any FolderDirectoryWatching
@@ -19,6 +20,7 @@ public actor FolderSyncedContainer: SyncedContainer {
                 rescanInterval: Duration = .seconds(30),
                 merge: @escaping PreserveLosersConflictResolver.Merge = { _, _ in .preserve }) {
         self.root = root.standardizedFileURL
+        webArchives = SharedWebArchives(root: self.root, store: store)
         self.store = store
         self.watcher = watcher
         self.interval = rescanInterval
@@ -64,7 +66,7 @@ public actor FolderSyncedContainer: SyncedContainer {
         changes = signal
         // Attach before the initial scan, and buffer events during discovery.
         watcher.update(directories: [root]) { signal.yield(false) }
-        await scan(epoch: epoch, signal: signal, retry: false)
+        await scan(epoch: epoch, signal: signal, retry: false, initial: true)
         guard generation == epoch else { return }
         watchTask = Task { [weak self] in
             for await retry in stream { await self?.scan(epoch: epoch, signal: signal, retry: retry) }
@@ -101,7 +103,7 @@ public actor FolderSyncedContainer: SyncedContainer {
         output.finish()
     }
 
-    private struct Sibling {
+    struct Sibling {
         let url: URL
         let peer: String
     }
@@ -112,7 +114,7 @@ public actor FolderSyncedContainer: SyncedContainer {
     private static let naming = try! NSRegularExpression(
         pattern: #"^(.+)\.sync-conflict-([0-9]{8}-[0-9]{6})-([A-Za-z0-9-]+)(\.[^/]*)?$"#)
 
-    private func parse(_ url: URL) -> (URL, Sibling)? {
+    static func parse(_ url: URL) -> (URL, Sibling)? {
         let name = url.lastPathComponent as NSString
         guard let match = Self.naming.firstMatch(in: name as String, range: NSRange(location: 0, length: name.length))
         else { return nil }
@@ -123,7 +125,7 @@ public actor FolderSyncedContainer: SyncedContainer {
                 Sibling(url: url, peer: name.substring(with: match.range(at: 3))))
     }
 
-    private func scan(epoch: Int, signal: AsyncStream<Bool>.Continuation, retry: Bool) async {
+    private func scan(epoch: Int, signal: AsyncStream<Bool>.Continuation, retry: Bool, initial: Bool = false) async {
         guard generation == epoch else { return }
         var directories: Set<URL> = [root]
         var pending = [".vellum", "PDFs", "Web Pages"].map { root.appendingPathComponent($0, isDirectory: true) }
@@ -140,16 +142,25 @@ public actor FolderSyncedContainer: SyncedContainer {
                     if name != "conflicts", entry.url != trash, !SyncArtifact.matches(name) {
                         pending.append(entry.url)
                     }
-                } else if name.contains(".sync-conflict-"), let (canonical, sibling) = parse(entry.url) {
+                } else if name.contains(".sync-conflict-"), let (canonical, sibling) = Self.parse(entry.url) {
                     groups[canonical, default: []].append(sibling)
                 }
             }
+        }
+        if resolving.isEmpty {
+            if initial { _ = try? await webArchives.repair() }
+            else { try? await webArchives.resumePending() }
         }
         watcher.update(directories: directories) { signal.yield(false) }
         var found: [URL: [ConflictVersion: URL]] = [:]
         for (canonical, siblings) in groups {
             do {
-                guard let current = try await store.read(canonical) else { continue }
+                var canonicalBytes = try await store.read(canonical)
+                if canonicalBytes == nil, webArchives.handles(canonical) {
+                    try await webArchives.restoreMissingCanonical(canonical, siblings: siblings.map(\.url))
+                    canonicalBytes = try await store.read(canonical)
+                }
+                guard let current = canonicalBytes else { continue }
                 var paths = [Self.version(at: canonical, bytes: current, peer: nil): canonical]
                 for sibling in siblings {
                     guard let bytes = try await store.read(sibling.url) else { continue }
@@ -189,9 +200,15 @@ public actor FolderSyncedContainer: SyncedContainer {
             snapshot[version] = data
         }
         let bytes = snapshot
-        let decision = try await merge(event) { version in
+        let read: PreserveLosersConflictResolver.Reader = { version in
             guard let data = bytes[version] else { throw LibraryFileError.retryable }
             return data
+        }
+        let decision: PreserveLosersConflictResolver.Decision
+        if let typed = try await webArchives.decision(for: event, reading: read) {
+            decision = typed
+        } else {
+            decision = try await merge(event, read)
         }
         // The merge is an injection point and may suspend for an arbitrary time.
         for (version, path) in paths {
@@ -200,7 +217,7 @@ public actor FolderSyncedContainer: SyncedContainer {
         guard generation == epoch, let original = bytes[current] else { return .deferred }
         var winner = original
         do {
-            return try await PreserveLosersConflictResolver.apply(
+            let resolution = try await PreserveLosersConflictResolver.apply(
                 decision, to: event, archiveOnMerge: true,
                 replace: { merged in
                     guard merged != original else { return }
@@ -220,6 +237,16 @@ public actor FolderSyncedContainer: SyncedContainer {
                     else { throw LibraryFileError.retryable }
                     return archive
                 })
+            if webArchives.handles(event.url) {
+                do {
+                    if case .merged = resolution { try await webArchives.repair() }
+                    else { try await webArchives.resumePending() }
+                } catch LibraryFileError.retryable {
+                    // The conflict itself is committed. Remaining placements
+                    // are replayable on the next event, resume, or lookup.
+                }
+            }
+            return resolution
         } catch LibraryFileError.retryable { return .deferred }
     }
 }

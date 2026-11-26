@@ -58,10 +58,12 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
     /// Injected so the item-building logic can be unit-tested against fixtures
     /// without a real UserDefaults list or files on disk.
     private let load: @Sendable () -> [RecentDocument]
+    private let coordinator: StorageCoordinator?
     private let resolvePath: @Sendable (RecentDocument) -> String
     private let fileExists: @Sendable (String) -> Bool
 
     init(
+        coordinator: StorageCoordinator? = nil,
         load: @escaping @Sendable () -> [RecentDocument] = { RecentFilesService.getRecent() },
         // iPad: the container UUID in a stored path changes across reinstalls, so
         // fall back to the same-named file in the current library directory before
@@ -71,6 +73,7 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
         resolvePath: @escaping @Sendable (RecentDocument) -> String = defaultRecentDocumentPath,
         fileExists: @escaping @Sendable (String) -> Bool = defaultRecentDocumentExists
     ) {
+        self.coordinator = coordinator
         self.load = load
         self.resolvePath = resolvePath
         self.fileExists = fileExists
@@ -78,10 +81,14 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
 
     func items(matching _: String) async throws -> [HomeSearchItem] {
         let now = Date()
-        return load().map { entry in
+        var items: [HomeSearchItem] = []
+        for entry in load() {
             // A moved PDF re-resolves to its current location via the stable
             // docId; web entries and dead entries come back unchanged.
-            let resolved = resolvePath(entry)
+            let resolved: String
+            if WebStorageSettings.chosenMode == .syncedFolder, let coordinator {
+                resolved = await RecentFilesService.sharedPath(for: entry, coordinator: coordinator) ?? entry.pdfPath
+            } else { resolved = resolvePath(entry) }
             let onDisk = entry.kind == .pdf && fileExists(resolved)
             let name = entry.kind == .web
                 ? RecentFilesService.webpageDisplayName(for: entry.pdfPath)
@@ -96,7 +103,7 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
             var badges: HomeSearchBadges = []
             if entry.kind == .pdf, !onDisk { badges.insert(.missing) }
 
-            return HomeSearchItem(
+            items.append(HomeSearchItem(
                 id: "\(id):\(resolved)",
                 identity: HomeSearchItemBuilder.identity(resolved, kind: entry.kind),
                 section: .recents,
@@ -116,8 +123,9 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
                 // The stamped docId when the file has one; otherwise the same
                 // path hash the stores fell back to when it was last opened.
                 storageKey: entry.docId.flatMap { $0.isEmpty ? nil : $0 }
-                    ?? DocumentIdentity.sha256Hex(entry.pdfPath))
+                    ?? DocumentIdentity.sha256Hex(entry.pdfPath)))
         }
+        return items
     }
 }
 

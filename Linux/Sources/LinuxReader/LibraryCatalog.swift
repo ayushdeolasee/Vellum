@@ -13,9 +13,16 @@ public enum LibraryCatalog {
     @concurrent
     public static func pdfs(in store: ReadOnlyLibraryFileStore) async throws -> [LibraryFileEntry] {
         let directory = store.root.url.appendingPathComponent("PDFs", isDirectory: true)
-        return try await store.list(directory, suffix: nil).filter {
-            !$0.url.hasDirectoryPath && $0.url.pathExtension.lowercased() == "pdf"
+        var directories = [directory]
+        var files = [LibraryFileEntry]()
+        while let next = directories.popLast() {
+            try Task.checkCancellation()
+            for entry in try await store.list(next, suffix: nil) {
+                if entry.url.hasDirectoryPath { directories.append(entry.url) }
+                else if entry.url.pathExtension.lowercased() == "pdf" { files.append(entry) }
+            }
         }
+        return files.sorted { $0.url.path < $1.url.path }
     }
 
     @concurrent

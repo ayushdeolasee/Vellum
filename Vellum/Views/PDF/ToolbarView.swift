@@ -580,13 +580,7 @@ private struct DocumentTitleField: View {
         guard destPath != sourcePath else { return }
         Task {
             do {
-                try await appStore.sessions.saveFile(sessionId: sessionId)
-                if FileManager.default.fileExists(atPath: destPath) {
-                    try FileManager.default.removeItem(atPath: destPath)
-                }
-                try FileManager.default.copyItem(atPath: sourcePath, toPath: destPath)
-                await appStore.closeTab(sessionId)
-                await appStore.openFile(path: destPath)
+                try await appStore.savePDFCopy(sessionId: sessionId, to: destination)
             } catch {
                 showFeedback("Save failed")
             }

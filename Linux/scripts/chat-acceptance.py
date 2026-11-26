@@ -28,11 +28,9 @@ release = threading.Event()
 errors = []
 
 writable = os.environ.get("VELLUM_EXPECT_CHAT_SAVE") == "1"
-root = Path("/library")
+root = Path("/tmp/vellum-485-fixture")
+shutil.copytree("/library", root)
 if writable:
-    root = Path("/tmp/vellum-485-fixture")
-    shutil.copytree("/library", root)
-    (root / ".chat-qualification").write_text("disposable #485\n")
     # Stamp only the copy of the fixed six-object, classic-xref test PDF.
     pdf = root / "PDFs/classic-two-column.pdf"
     original = pdf.read_bytes()
@@ -43,6 +41,14 @@ if writable:
     pdf.write_bytes(original + info + trailer.encode())
 saved_file, = [p for p in root.glob(".vellum/documents/*/conversations.json") if b"Apple history" in p.read_bytes()]
 original_history = saved_file.read_bytes()
+
+
+def manifest():
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+            for p in root.rglob("*")}
+
+
+before = manifest()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -175,6 +181,10 @@ def send(question):
 def reply(question):
     send(question)
     wait(lambda: transcript().endswith("First café"), "live first delta")
+    if writable and question == "Article?":
+        # A peer appends while the provider is still streaming.
+        peer = b',{"role":"assistant", "id":"peer","createdAt":"2026-11-26T10:00:00Z","content":"Other peer","extra":1.200}'
+        saved_file.write_bytes(original_history[:-1] + peer + b"]")
     release.set()
     title = {"gemini": "Gemini", "openai": "OpenAI", "openrouter": "OpenRouter",
              "opencode": "OpenCode Zen", "opencodeGo": "OpenCode Go"}[provider]
@@ -214,6 +224,11 @@ def exercise():
             wait(lambda: has_status("PDF open"), "initial PDF")
             if provider == "gemini":
                 capture("reader-before.png")
+                if writable:
+                    click("Settings")
+                    click("Enable Shared Editing")
+                    wait(lambda: has_status("Shared editing enabled for this folder."), "root opt-in")
+                    click("Done")
             click("Chat")
             wait(lambda: has_status("Send shares document text"), "ready to send")
             if provider == "gemini":
@@ -278,7 +293,7 @@ def exercise():
                 if writable:
                     assert saved_file.read_bytes().startswith(original_history[:-1] + b",")
                     assert [m["content"] for m in json.loads(saved_file.read_bytes())] == [
-                        "Apple history", "Article?", "First café done"]
+                        "Apple history", "Other peer", "Article?", "First café done"]
                     turns = json.loads((root / ".vellum/documents/4850abcd/conversations.json").read_bytes())
                     assert [m["content"] for m in turns] == ["PDF?", "First café done", "Switch?", "First café",
                                                              "Stop?", "First café", "Reopen?", "First café",
@@ -306,6 +321,9 @@ weston = subprocess.Popen(["weston", "--no-config", "--backend=headless", "--ren
 try:
     wait(lambda: (runtime / "chat").exists(), "Wayland display")
     exercise()
+    if not writable:
+        assert manifest() == before
+        print("Default read-only root: identical paths and SHA-256 digests", flush=True)
 finally:
     weston.terminate()
     weston.wait(timeout=5)

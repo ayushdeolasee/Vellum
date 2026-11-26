@@ -10,10 +10,11 @@ struct ReaderWindow {
     GtkStack *screens;
     GtkWidget *paging, *body, *settings_button;
     ReaderSettings *settings;
+    ScratchpadPanel *scratchpad;
     ReaderChatPanel *chat;
     ReaderCallback callback;
     void *context;
-    gboolean closing, drained;
+    gboolean closing, drained, editing;
 };
 
 static void notify(ReaderWindow *r, ReaderEvent event, int entry) {
@@ -74,9 +75,24 @@ static void window_removed(GtkApplication *app, GtkWindow *window, ReaderWindow 
 }
 
 static gboolean close_requested(GtkWindow *window, ReaderWindow *r) {
-    gtk_widget_set_sensitive(GTK_WIDGET(window), FALSE);
-    begin_close(r);
+    if (!r->closing) notify(r, READER_CLOSE_REQUEST, -1);
     return TRUE;
+}
+
+ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    return r->scratchpad;
+}
+
+void reader_set_close_pending(ReaderWindow *r, bool pending) {
+    g_assert(shell_on_gtk_thread());
+    if (!r->closing) gtk_widget_set_sensitive(GTK_WIDGET(r->window), !pending);
+}
+
+void reader_commit_close(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    reader_set_close_pending(r, true);
+    begin_close(r);
 }
 
 GtkStack *reader_content_stack(ReaderWindow *r) {
@@ -154,6 +170,17 @@ void reader_select_row(ReaderWindow *r, int index) {
     gtk_list_box_select_row(r->list, gtk_list_box_get_row_at_index(r->list, index));
 }
 
+void reader_reselect_entry(ReaderWindow *r, int entry) {
+    for (int i = 0;; i++) {
+        GtkListBoxRow *row = gtk_list_box_get_row_at_index(r->list, i);
+        if (!row) return;
+        if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "entry-id")) == entry + 1) {
+            gtk_list_box_select_row(r->list, row);
+            return;
+        }
+    }
+}
+
 static void set_title(ReaderWindow *r, const char *title) {
     gtk_label_set_text(GTK_LABEL(r->title), title);
     if (gtk_stack_get_visible_child(r->screens) == r->body)
@@ -181,14 +208,23 @@ void reader_page_message(ReaderWindow *r, const char *title, const char *message
     gtk_label_set_text(GTK_LABEL(r->message), message);
     gtk_stack_set_visible_child(reader_content_stack(r), r->message);
     reader_set_position(r, number, count);
-    gtk_label_set_text(GTK_LABEL(r->status), "Read-only library");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "Shared editing enabled" : "Read-only library");
+}
+
+void reader_set_editing(ReaderWindow *r, bool enabled, bool available) {
+    r->editing = enabled;
+    reader_settings_set_editing(r->settings, enabled, available);
+}
+
+void reader_show_status(ReaderWindow *r, const char *message) {
+    gtk_label_set_text(GTK_LABEL(r->status), message);
 }
 
 void reader_web_ready(ReaderWindow *r, const char *title, const char *position) {
     g_assert(shell_on_gtk_thread());
     set_title(r, title);
     gtk_label_set_text(GTK_LABEL(r->page), position);
-    gtk_label_set_text(GTK_LABEL(r->status), "Offline archive · Read only");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "Offline archive · Shared editing" : "Offline archive · Read only");
 }
 
 void reader_set_message(ReaderWindow *r, const char *title, const char *message) {
@@ -207,7 +243,7 @@ void reader_set_page(ReaderWindow *r, const char *title, int number, int count,
     gtk_stack_set_visible_child(reader_content_stack(r), r->picture);
     set_title(r, title);
     reader_set_position(r, number, count);
-    gtk_label_set_text(GTK_LABEL(r->status), "PDF open · Read only");
+    gtk_label_set_text(GTK_LABEL(r->status), r->editing ? "PDF open · Shared editing" : "PDF open · Read only");
 }
 
 static GtkWidget *page_button(const char *icon, const char *name, ReaderWindow *r) {
@@ -281,6 +317,8 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_box_append(GTK_BOX(r->paging), r->previous);
     gtk_box_append(GTK_BOX(r->paging), r->page);
     gtk_box_append(GTK_BOX(r->paging), r->next);
+    r->scratchpad = scratchpad_panel_new();
+    gtk_box_append(GTK_BOX(r->paging), scratchpad_panel_toggle(r->scratchpad));
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), r->paging);
     gtk_window_set_titlebar(r->window, header);
 
@@ -331,8 +369,12 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_paned_set_position(GTK_PANED(paned), 220);
     g_signal_connect(r->list, "row-selected", G_CALLBACK(selected), r);
 
+    GtkWidget *reader_area = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     r->stack = gtk_stack_new();
-    gtk_paned_set_end_child(GTK_PANED(paned), r->stack);
+    gtk_widget_set_hexpand(r->stack, TRUE);
+    gtk_box_append(GTK_BOX(reader_area), r->stack);
+    gtk_box_append(GTK_BOX(reader_area), scratchpad_panel_widget(r->scratchpad));
+    gtk_paned_set_end_child(GTK_PANED(paned), reader_area);
     r->message = gtk_label_new(NULL);
     gtk_label_set_wrap(GTK_LABEL(r->message), TRUE);
     gtk_stack_add_child(reader_content_stack(r), r->message);

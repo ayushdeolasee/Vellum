@@ -10,6 +10,9 @@ import VellumCore
     try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let writer = LocalFolderFileStore(root: root)
+    let replace: @Sendable (URL, Data, Data?) async throws -> Bool = { url, bytes, expected in
+        try await writer.replace(url, with: bytes, ifCurrent: expected)
+    }
     let reader = ReadOnlyLibraryFileStore(root: try await RootDirectory.open(root))
     let original = #"""
     [
@@ -21,15 +24,15 @@ import VellumCore
     try Data((original + tail).utf8).write(to: file)
     let loaded = try await ReaderConversation.load(key: key, from: reader)
     #expect(loaded.messages.map(\.content) == ["café"])
-    #expect(try await loaded.save(appending: [], to: writer))
+    #expect(try await loaded.save(appending: [], replace: replace))
     #expect(try Data(contentsOf: file) == Data((original + tail).utf8))
     let turn = ConversationText(id: "2", role: .user, content: "Next?", createdAt: "2026-11-26T01:00:00.000Z")
-    #expect(try await loaded.save(appending: [turn], to: writer))
+    #expect(try await loaded.save(appending: [turn], replace: replace))
     let changed = try String(contentsOf: file, encoding: .utf8)
     #expect(changed.hasPrefix(original + ",{"))
     #expect(changed.hasSuffix("}" + tail))
     let reopened = try await ReaderConversation.load(key: key, from: reader)
     #expect(reopened.messages == loaded.messages + [turn])
-    #expect(try await !loaded.save(appending: [turn], to: writer))
+    #expect(try await !loaded.save(appending: [turn], replace: replace))
     #expect(try String(contentsOf: file, encoding: .utf8) == changed)
 }

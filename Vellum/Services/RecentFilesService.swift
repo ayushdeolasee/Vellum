@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // Recent-documents list — port of src/lib/recent-pdfs.ts. Same UserDefaults key
 // and JSON payload as the localStorage original.
@@ -149,6 +150,19 @@ enum RecentFilesService {
         // Recorded path is dead: adopt the meta path only when its identity
         // matches — a mismatched file there is some other document.
         return PdfMetadata.documentId(atPath: metaPath) == docId ? metaPath : entry.pdfPath
+    }
+
+    static func sharedPath(for entry: RecentDocument, coordinator: StorageCoordinator) async -> String? {
+        guard entry.kind == .pdf, let id = entry.docId, DocumentIdentity.isCanonicalKey(id) else { return nil }
+        return try? await coordinator.withStorageContext { context in
+            guard context.layout.pdfsDir != nil else { return nil }
+            let target = context.layout.documentsDir.appendingPathComponent(id).appendingPathComponent("meta.json")
+            guard let data = try await context.fileStore.read(target),
+                  let meta = try? JSONDecoder().decode(DocumentDataStore.Meta.self, from: data), meta.kind == "pdf",
+                  let url = SharedPDFLocation(root: context.layout.rootDir).resolve(meta.lastKnownPath),
+                  try SharedPDFImport.key(at: url) == id else { return nil }
+            return url.path
+        }
     }
 
     /// Compact display label: filename for PDFs.

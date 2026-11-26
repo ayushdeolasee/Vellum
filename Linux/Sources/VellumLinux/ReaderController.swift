@@ -8,10 +8,16 @@ final class ReaderController {
     private let rootOverride: URL?
     private let preferences = ReaderPreferences()
     private let chat = ReaderChatController()
-    private var pdfChatKey: String?
     let settings = ReaderSettingsController()
     private var libraryRoot: URL?
     private var store: ReadOnlyLibraryFileStore?
+    private(set) var writeContext: SharedLibraryWriteContext?
+    private var positionSession: ReaderPositionSession?
+    private var documentKey: DocumentKey?
+    private var displayedPosition: ReadingPosition?
+    private var transition: Task<Void, Never>?
+    private var closing = false
+    private var closeRequested = false
     private var entries: [LibrarySearchEntry] = []
     private var selectedEntry: Int?
     private var searchWork: Task<Void, Never>?
@@ -23,6 +29,7 @@ final class ReaderController {
     private var generation = 0
     private var work: Task<Void, Never>?
 
+    private var scratchpad: ScratchpadPane?
     private var metadataCatalog: ReaderMetadataCatalog?
     private var webPage: WebPageHost?
     private let webProbe: WebProbe?
@@ -79,9 +86,18 @@ final class ReaderController {
             }
         case READER_CHOOSE_LIBRARY:
             guard let text, let path = String(validatingCString: text), path.hasPrefix("/") else { return }
-            openLibrary(URL(fileURLWithPath: path, isDirectory: true), remember: true, window: window)
+            leaveDocument(window, flushDrafts: true) {
+                self.openLibrary(URL(fileURLWithPath: path, isDirectory: true), remember: true, window: window)
+            }
         case READER_REOPEN_LIBRARY:
-            if let libraryRoot { openLibrary(libraryRoot, window: window) }
+            if let libraryRoot {
+                leaveDocument(window, flushDrafts: true) { self.openLibrary(libraryRoot, window: window) }
+            }
+        case READER_TOGGLE_EDITING:
+            guard let store else { return }
+            leaveDocument(window, flushDrafts: true) {
+                self.changeEditing(in: store, window: window)
+            }
         case READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY:
             settings.handle(event, index: entry, text: text, panel: reader_settings(window))
         case READER_SETTINGS_DONE:
@@ -94,14 +110,17 @@ final class ReaderController {
             chat.stop(panel: reader_chat_panel(window))
         case READER_SELECT:
             guard entries.indices.contains(entry), entry != selectedEntry else { return }
-            chat.reset(reader_chat_panel(window))
-            resetDocument()
-            selectedEntry = entry
-            selection = entries[entry].file.url
-            if let file = selection, file.pathExtension.lowercased() == "vellumweb" {
-                showArchive(file, window: window)
-            } else {
-                showPage(0, window: window)
+            leaveDocument(window, flushDrafts: false) {
+                self.chat.reset(reader_chat_panel(window))
+                self.resetDocument()
+                self.selectedEntry = entry
+                let file = self.entries[entry].file.url
+                self.selection = file
+                if file.pathExtension.lowercased() == "vellumweb" {
+                    self.showArchive(file, window: window)
+                } else {
+                    self.showPage(0, window: window)
+                }
             }
         case READER_PREVIOUS:
             if pageIndex > 0 { showPage(pageIndex - 1, window: window) }
@@ -110,16 +129,26 @@ final class ReaderController {
         case READER_SEARCH:
             guard !entries.isEmpty else { return }
             updateSearch(String(cString: reader_search_query(window)), window: window)
+        case READER_CLOSE_REQUEST:
+            if transition != nil { closeRequested = true; return }
+            leaveDocument(window, flushDrafts: true) { reader_commit_close(window) }
         case READER_CLOSE:
-            webPage = nil
+            closing = true
+            let changing = transition
             let search = searchWork
             search?.cancel()
-            let pendingChat = chat.reset(reader_chat_panel(window))
+            let pendingChat = chat.drain(reader_chat_panel(window))
             let pendingSettings = settings.beginClose()
             replaceWork { _ in
+                await changing?.value
+                _ = await pendingChat?.value
+                try? await self.flushPosition()
+                _ = await self.scratchpad?.flush()
+                self.webPage = nil
+                await self.writeContext?.retire()
                 await search?.value
                 await pendingSettings?.value
-                await pendingChat?.value
+                await self.scratchpad?.shutdown()
                 await PdfiumActor.shared.shutdown()
                 reader_finish_close(window)
             }
@@ -128,12 +157,109 @@ final class ReaderController {
         }
     }
 
+    private func flushPosition() async throws {
+        guard let session = positionSession else { return }
+        if let point = await webPage?.location() { session.moved(point) }
+        try await session.flush()
+    }
+
+    private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
+        guard !closing, transition == nil else { return }
+        let pendingChat = chat.drain(reader_chat_panel(window))
+        if pendingChat == nil && positionSession == nil && (!flushDrafts || scratchpad == nil) { proceed(); return }
+        reader_set_close_pending(window, true)
+        let rendering = work
+        transition = Task {
+            await rendering?.value
+            do {
+                if await pendingChat?.value == false { throw LibraryFileError.retryable }
+                try await flushPosition()
+                if flushDrafts, await scratchpad?.flush() == false {
+                    throw LibraryFileError.io("A scratchpad draft could not be saved.")
+                }
+                guard !closing else { return }
+                transition = nil
+                reader_set_close_pending(window, false)
+                if closeRequested {
+                    closeRequested = false
+                    handle(READER_CLOSE_REQUEST, entry: -1, text: nil, window: window)
+                } else {
+                    proceed()
+                }
+            } catch {
+                guard !closing else { return }
+                transition = nil
+                closeRequested = false
+                reader_set_close_pending(window, false)
+                if reader_chat_visible(reader_chat_panel(window)) {
+                    chat.show(provider: settings.provider, panel: reader_chat_panel(window))
+                }
+                let message = "Could not save changes. This document is still open."
+                reader_show_status(window, message)
+                reader_settings_set_library(reader_settings(window), libraryRoot?.path ?? "", message, false)
+                if let selectedEntry { reader_reselect_entry(window, Int32(selectedEntry)) }
+            }
+        }
+    }
+
+    private func changeEditing(in store: ReadOnlyLibraryFileStore, window: OpaquePointer) {
+        let panel = reader_settings(window)!
+        reader_set_close_pending(window, true)
+        let enabling = writeContext == nil
+        transition = Task {
+            defer {
+                transition = nil
+                if !closing {
+                    reader_set_close_pending(window, false)
+                    if closeRequested {
+                        closeRequested = false
+                        handle(READER_CLOSE_REQUEST, entry: -1, text: nil, window: window)
+                    }
+                }
+            }
+            do {
+                let next = enabling ? try await SharedLibraryWriteContext.activate(root: store.root) : nil
+                try await preferences.saveEditing(enabling, for: store.root)
+                await scratchpad?.shutdown()
+                await writeContext?.retire()
+                guard !closing else { await next?.retire(); return }
+                writeContext = next
+                chat.setContext(next, provider: settings.provider, panel: reader_chat_panel(window))
+                let storage = await scratchpadStorage(files: store)
+                guard !closing else { return }
+                scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
+                scratchpad?.select(documentStorageKey)
+                positionSession = ReaderPositionSession(context: next, key: documentKey, restored: nil)
+                webPage?.session = positionSession
+                if let point = await webPage?.location() ?? displayedPosition { positionSession?.moved(point) }
+                reader_set_editing(window, enabling, true)
+                let message = enabling ? "Shared editing enabled for this folder." : "This folder is read only."
+                reader_settings_set_library(panel, store.root.url.path, message, false)
+                reader_show_status(window, message)
+            } catch {
+                reader_settings_set_library(panel, store.root.url.path, "Could not change editing mode: \(error)", false)
+            }
+        }
+    }
+
+    private var documentStorageKey: String?
+
+    private func bindPosition(key: DocumentKey?, storageKey: String?, restored: ReadingPosition?) {
+        documentKey = key
+        documentStorageKey = storageKey
+        positionSession = ReaderPositionSession(context: writeContext, key: key, restored: restored)
+        scratchpad?.select(storageKey)
+    }
+
     private func openLibrary(_ path: URL, remember: Bool = false, window: OpaquePointer) {
         let search = searchWork
         search?.cancel()
         searchWork = nil
-        let pendingChat = chat.reset(reader_chat_panel(window))
+        chat.reset(reader_chat_panel(window))
         resetDocument()
+        let oldContext = writeContext
+        writeContext = nil
+        reader_set_editing(window, false, false)
         store = nil
         metadataCatalog = nil
         entries = []
@@ -144,8 +270,10 @@ final class ReaderController {
         reader_settings_set_library(panel, path.path, "Opening library…", true)
 
         replaceWork { token in
-            await pendingChat?.value
             await search?.value
+            await self.scratchpad?.shutdown()
+            self.scratchpad = nil
+            await oldContext?.retire()
             guard self.isCurrent(token) else { return }
             do {
                 let root = try await RootDirectory.open(path)
@@ -158,6 +286,15 @@ final class ReaderController {
                     catch { message = "Could not remember this folder." }
                 }
                 guard self.isCurrent(token) else { return }
+                if await self.preferences.editingEnabled(for: root) {
+                    do { self.writeContext = try await SharedLibraryWriteContext.activate(root: root) }
+                    catch { message = "Could not enable shared editing. This folder is read only." }
+                }
+                guard self.isCurrent(token) else { return }
+                reader_set_editing(window, self.writeContext != nil, true)
+                let storage = await self.scratchpadStorage(files: store)
+                guard self.isCurrent(token) else { return }
+                self.scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
                 self.store = store
                 self.metadataCatalog = catalog
                 self.entries = entries
@@ -179,14 +316,31 @@ final class ReaderController {
     }
 
     private func resetDocument() {
+        documentKey = nil
+        documentStorageKey = nil
+        displayedPosition = nil
+        positionSession = nil
+        if writeContext != nil { metadataCatalog = nil }
+        scratchpad?.beginSelection()
         selectedEntry = nil
         selection = nil
         bytes = nil
         pdfTitle = nil
-        pdfChatKey = nil
         pageCount = 0
         pageIndex = 0
         webPage = nil
+    }
+
+    private func scratchpadStorage(files: ReadOnlyLibraryFileStore) async -> ScratchpadStorage {
+        if let writeContext {
+            return ScratchpadStorage(files: files, importDirectory: files.root.url) { url, data, expected in
+                try await writeContext.replace(url, with: data, ifCurrent: expected)
+            }
+        }
+        #if DEBUG && SCRATCHPAD_QUALIFICATION
+        if let storage = await ScratchpadQualification.storage(files: files) { return storage }
+        #endif
+        return ScratchpadStorage(files: files)
     }
 
     private func updateSearch(_ query: String, window: OpaquePointer) {
@@ -230,17 +384,20 @@ final class ReaderController {
         guard let store else { return }
         let title = file.lastPathComponent
         reader_set_message(window, title, "Opening offline archive…")
-        replaceWork { token in
+        replaceWork { [self] token in
             do {
                 let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
+                self.bindPosition(key: metadata.storageKey.flatMap { DocumentKey(rawValue: "web:" + $0) },
+                                  storageKey: metadata.storageKey, restored: metadata.position)
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
-                                           probe: self.webProbe) { [weak self] visibleText in
+                                           probe: self.webProbe, restoring: metadata.position, session: self.positionSession) { [weak self] visibleText in
                     guard let self, self.isCurrent(token) else { return }
                     self.chat.bind(.article(resources.hashes, key: metadata.storageKey, title: metadata.displayTitle,
                                             file: file, store: store, visibleText: visibleText),
-                                   store: store, provider: self.settings.provider, panel: reader_chat_panel(window))
+                                   store: store, context: self.writeContext, provider: self.settings.provider,
+                                   panel: reader_chat_panel(window))
                     let position = metadata.position.map { position in
                         "Saved page \(position.page)" + (position.pageCount.map { " of \($0)" } ?? "")
                     }
@@ -248,6 +405,7 @@ final class ReaderController {
                 }
             } catch {
                 guard self.isCurrent(token) else { return }
+                self.scratchpad?.select(nil)
                 reader_set_message(window, title, "Could not open archive: \(error.localizedDescription)")
             }
         }
@@ -273,16 +431,21 @@ final class ReaderController {
                     guard self.isCurrent(token) else { return }
                     let opening = try await PdfiumDocument.openingInfo(in: loaded)
                     guard self.isCurrent(token) else { return }
-                    if let id = opening.stableIdentifier,
-                       let catalog = try? await self.catalog(in: store, token: token) {
-                        let saved = catalog.pdf(stableIdentifier: id, fallbackTitle: title)
+                    var restored: ReadingPosition?
+                    var storageKey: String?
+                    if let catalog = try? await self.catalog(in: store, token: token),
+                       let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
+                                                               stamp: opening.stableIdentifier, fallbackTitle: title) {
+                        restored = saved.position
+                        storageKey = saved.storageKey
                         title = saved.displayTitle
                         if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
                     }
                     guard self.isCurrent(token) else { return }
-                    self.pdfChatKey = opening.stableIdentifier
+                    self.bindPosition(key: storageKey.map { .pdf(stableIdentifier: $0) },
+                                      storageKey: storageKey, restored: restored)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index
@@ -298,8 +461,12 @@ final class ReaderController {
                 guard self.isCurrent(token) else { return }
                 MainActor.preconditionIsolated()
                 precondition(shell_on_gtk_thread())
-                self.chat.bind(.pdf(data, key: self.pdfChatKey, file: file, title: title, page: index),
-                               store: store, provider: self.settings.provider, panel: reader_chat_panel(window))
+                let point = ReadingPosition(page: index + 1, pageCount: info.pageCount)
+                self.displayedPosition = point
+                self.positionSession?.moved(point)
+                self.chat.bind(.pdf(data, key: self.documentStorageKey, file: file, title: title, page: index),
+                               store: store, context: self.writeContext, provider: self.settings.provider,
+                               panel: reader_chat_panel(window))
                 bitmap.pixels.withUnsafeBytes { buffer in
                     reader_set_page(window, title, Int32(index + 1), Int32(info.pageCount),
                                     buffer.bindMemory(to: UInt8.self).baseAddress,
@@ -307,6 +474,7 @@ final class ReaderController {
                 }
             } catch {
                 guard self.isCurrent(token) else { return }
+                if self.bytes == nil { self.scratchpad?.select(nil) }
                 let message: String
                 switch error {
                 case PdfiumError.passwordRequired: message = "This PDF requires a password."

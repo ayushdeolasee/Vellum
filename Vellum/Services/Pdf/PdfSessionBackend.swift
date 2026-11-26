@@ -51,6 +51,7 @@ final class PdfSessionBackend {
             throw SessionServiceError.invalidDocument("Unsupported file type: .\(ext)")
         }
 
+        let sharedPDF = DocumentAccessResolver.openingSharedPDF
         let (canonical, info) = try await offMainRead { () -> (String, DocumentInfo) in
             let canonical = try PdfDocumentLoader.canonicalize(path)
             var isDirectory: ObjCBool = false
@@ -59,13 +60,23 @@ final class PdfSessionBackend {
                 throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
             }
 
-            let document = try PdfDocumentLoader.loadRaw(path: canonical)
-            let (title, pageCount, lastPage, docId) = PdfMetadata.documentInfo(
+            let bytes = sharedPDF ? try PdfDocumentLoader.readFile(canonical) : nil
+            let document: CGPDFDocument
+            if let bytes {
+                guard let raw = PdfDocumentLoader.cgDocument(from: bytes) else {
+                    throw SessionServiceError.invalidDocument("The shared PDF could not be read.")
+                }
+                document = raw
+            } else {
+                document = try PdfDocumentLoader.loadRaw(path: canonical)
+            }
+            let (title, pageCount, lastPage, embedded) = PdfMetadata.documentInfo(
                 document: document, path: canonical)
             // Session-stable cache key: the docId if the file ALREADY carries
             // one, else the path hash. A docId stamped later this session must
             // NOT change it — the lookup and persister keyed the whole session
             // by this value.
+            let docId = bytes.map { SharedPDFIdentity.storageKey(in: $0, readerID: embedded) } ?? embedded
             let cacheKey = (docId?.isEmpty == false) ? docId! : PageTextCache.pathKey(canonical)
             PdfSessionCacheKeys.register(path: canonical, key: cacheKey)
             return (canonical, DocumentInfo(
@@ -77,7 +88,7 @@ final class PdfSessionBackend {
                 docId: docId))
         }
 
-        return PdfDocumentSession(path: canonical, info: info)
+        return PdfDocumentSession(path: canonical, info: info, sharedPDF: sharedPDF)
     }
 }
 
@@ -233,7 +244,10 @@ final class PdfDocumentSession: DocumentSession {
     /// commit macOS gets from `PdfDocumentIO.commitStamp`.
     private var resolvedDocId: String?
 
-    init(path: String, info: DocumentInfo) {
+    private let sharedPDF: Bool
+
+    init(path: String, info: DocumentInfo, sharedPDF: Bool = false) {
+        self.sharedPDF = sharedPDF
         self.path = path
         self.info = info
     }
@@ -264,7 +278,9 @@ final class PdfDocumentSession: DocumentSession {
     /// bookmarks to outline creation. Saves the file; returns the full record.
     func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
         let path = self.path
+        let expectedID = sharedPDF ? info.docId : nil
         return try await PdfFileGate.shared.perform {
+            try Self.checkSharedEdit(path: path, expected: expectedID)
             return try Self.performCreate(path: path, input: input)
         }
     }
@@ -273,7 +289,9 @@ final class PdfDocumentSession: DocumentSession {
     /// always refresh. Returns false when the id is unknown.
     func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
         let path = self.path
+        let expectedID = sharedPDF ? info.docId : nil
         return try await PdfFileGate.shared.perform {
+            try Self.checkSharedEdit(path: path, expected: expectedID)
             return try Self.performUpdate(path: path, input: input)
         }
     }
@@ -282,7 +300,9 @@ final class PdfDocumentSession: DocumentSession {
     /// false when the id is unknown.
     func deleteAnnotation(id: String) async throws -> Bool {
         let path = self.path
+        let expectedID = sharedPDF ? info.docId : nil
         return try await PdfFileGate.shared.perform {
+            try Self.checkSharedEdit(path: path, expected: expectedID)
             return try Self.performDelete(path: path, id: id)
         }
     }
@@ -291,8 +311,19 @@ final class PdfDocumentSession: DocumentSession {
     /// Info dictionary and rewrites the file.
     func setMetadata(key: String, value: String) async throws {
         let path = self.path
+        let expectedID = sharedPDF ? info.docId : nil
         try await PdfFileGate.shared.perform {
+            try Self.checkSharedEdit(path: path, expected: expectedID)
             return try Self.performSetMetadata(path: path, key: key, value: value)
+        }
+    }
+
+    nonisolated private static func checkSharedEdit(path: String, expected: String?) throws {
+        guard let expected else { return }
+        let original = try PdfDocumentLoader.readFile(path)
+        guard SharedPDFIdentity.stamp(in: original, readerID: SharedPDFImport.readID(original)) == expected,
+              PdfEditEligibility.classify(original) == .editable else {
+            throw SessionServiceError.io("This shared PDF is read-only. Its notes and conversations can still be edited.")
         }
     }
 
