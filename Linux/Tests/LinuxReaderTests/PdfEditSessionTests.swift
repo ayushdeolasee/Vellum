@@ -42,6 +42,26 @@ extension PdfiumTests {
         }
     }
 
+    @Test func firstEditBeyondRevisionLimitLeavesLastSavedFileIntact() async throws {
+        let original = try fixture("classic-two-column") // one initial xref revision
+        let session = try await PdfEditSession(disposableCopyOf: original)
+        let now = "2026-11-26T12:34:56Z"
+        var last = original
+        for editNumber in 1...63 {
+            #expect(PdfEditEligibility.classify(last) == .editable)
+            let edit: PdfAnnotationEdit = editNumber == 1
+                ? .create(.init(type: .note, pageNumber: 1, content: "1", id: "limit-note"))
+                : .update(.init(id: "limit-note", content: String(editNumber)))
+            last = try await session.enqueue(edit, now: now).value
+        }
+        #expect(PdfEditEligibility.classify(last) == .readOnly(.inspectionLimit))
+        let edit64 = try await session.enqueue(.delete(id: "limit-note"), now: now)
+        await #expect(throws: PdfReadOnlyReason.inspectionLimit) { try await edit64.value }
+        #expect(try Data(contentsOf: session.file) == last)
+        #expect(try PdfAnnotationPureReader.annotations(on: 1, in: last, now: now).first?.content == "63")
+        try await session.close()
+    }
+
     @Test func failedAndStaleWritesRetainDiskAndSessionSnapshot() async throws {
         let original = try fixture("ipad-vellum-ink")
         let session = try await PdfEditSession(disposableCopyOf: original)
@@ -54,7 +74,7 @@ extension PdfiumTests {
         let stale = try await session.enqueue(edit, now: now)
         await #expect(throws: PdfEditSession.Failure.stale) { try await stale.value }
         #expect(try Data(contentsOf: file) == newer)
-        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["fixture.pdf"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["document.pdf"])
 
         // Block staging while leaving the original file readable. The pinned
         // Linux image runs tests as an unprivileged user.
@@ -65,7 +85,7 @@ extension PdfiumTests {
             let failed = try await session.enqueue(edit, now: now)
             await #expect(throws: PdfCoreError.self) { try await failed.value }
             #expect(try Data(contentsOf: file) == original)
-            #expect(try fm.contentsOfDirectory(atPath: directory.path) == ["fixture.pdf"])
+            #expect(try fm.contentsOfDirectory(atPath: directory.path) == ["document.pdf"])
         }
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
 

@@ -151,7 +151,7 @@ final class PdfEditEligibilityTests: XCTestCase {
         for n in [0, 1, 8, 12, base.count / 2, base.count - 4] {
             classify(base.prefix(n), .readOnly(.malformed))
         }
-        classify(document(extra: [String(repeating: "[", count: 65) + String(repeating: "]", count: 65)]), .readOnly(.malformed))
+        classify(document(extra: [String(repeating: "[", count: 65) + String(repeating: "]", count: 65)]), .readOnly(.inspectionLimit))
         classify(document("/Rotate 0 /Rotate 90"), .readOnly(.malformed))
         classify(document(extra: ["<< /Type /Example /Nested [<01> << /Name (endobj) >>] >>"]), .readOnly(.malformed))
         var bytes = base
@@ -160,9 +160,10 @@ final class PdfEditEligibilityTests: XCTestCase {
             increment.setObject(3, source: Array(page().utf8))
             bytes = increment.appended()
         }
-        classify(bytes, .editable)
+        try PdfEditEligibility.inspect(bytes, reservingRevision: false)
+        classify(bytes, .readOnly(.inspectionLimit))
         var increment = PdfIncrement(file: try ClassicPdfFile(data: bytes))
         increment.setObject(3, source: Array(page().utf8))
-        classify(increment.appended(), .readOnly(.malformed))
+        classify(increment.appended(), .readOnly(.inspectionLimit))
     }
 }

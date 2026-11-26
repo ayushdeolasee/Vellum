@@ -49,6 +49,8 @@ struct PdfAnnotationPage {
 public enum PdfAnnotationIncrement {
     /// The caller supplies the creation ID and UTC timestamp, making the same
     /// edit on the same snapshot reproducible. No file or renderer is opened.
+    /// Editing/deleting changes the latest revision only. Previous revisions
+    /// retain the original note contents; this operation never erases history.
     public static func applying(_ edit: PdfAnnotationEdit, to original: Data, now: String) throws -> Data {
         if case let .readOnly(reason) = PdfEditEligibility.classify(original) { throw reason }
         let file = try ClassicPdfFile(data: original)
@@ -76,7 +78,7 @@ public enum PdfAnnotationIncrement {
         let output = increment.appended()
         // New caller-supplied IDs, object numbers and revision size must also
         // meet the same proof before a session may commit these bytes.
-        if case let .readOnly(reason) = PdfEditEligibility.classify(output) { throw reason }
+        try PdfEditEligibility.inspect(output, reservingRevision: false)
         return output
     }
 
@@ -116,7 +118,11 @@ public enum PdfAnnotationIncrement {
                 dict.setTextString(forKey: "M", to: try modificationDate(now))
                 dict.setTextString(forKey: "VellumUpdatedAt", to: now)
                 if let color = update.color { setColor(color, in: &dict) }
-                if let content = update.content { dict.setTextString(forKey: "Contents", to: content) }
+                if let content = update.content {
+                    dict.setTextString(forKey: "Contents", to: content)
+                    // PDF viewers may prefer rich text over /Contents.
+                    if subtype == "FreeText" || subtype == "Text" { dict.removeEntry(forKey: "RC") }
+                }
                 if let pinned = update.isPinned { dict.setInteger(forKey: "VellumPinned", to: pinned ? 1 : 0) }
                 if let position = update.positionData {
                     let geometry = try PageGeometry(pageNumber: page.index, in: file)
@@ -168,7 +174,7 @@ public enum PdfAnnotationIncrement {
             // Swift's shortest round-trip decimal may use an exponent. PDF
             // number tokens cannot, so expand those values at Double precision.
             guard let e = decimal.firstIndex(of: "e"), let exponent = Int(decimal[decimal.index(after: e)...]) else { return decimal }
-            return String(format: "%.*f", max(1, 17 - exponent), value)
+            return String(format: "%.*f", CInt(max(1, 17 - exponent)), value)
         }
         return Array(("[ " + items.joined(separator: " ") + " ]").utf8)
     }

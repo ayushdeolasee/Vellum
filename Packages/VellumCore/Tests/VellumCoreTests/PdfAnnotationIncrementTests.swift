@@ -95,6 +95,37 @@ final class PdfAnnotationIncrementTests: XCTestCase {
         XCTAssertThrowsError(try apply(.create(.init(type: .note, pageNumber: 1, id: "pdf-direct-1-2")), changed))
     }
 
+    func testForeignRichNoteEditsAndPDFTextEncodings() throws {
+        for subtype in ["Text", "FreeText"] {
+            let original = PdfFixtureBuilder.classicObjects([
+                "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [null 4 0 R] >>",
+                "<< /Subtype /\(subtype) /Rect [0 0 20 20] /Contents <188093A0> /RC 5 0 R /VellumSelectedText <EFBBBFE69DB1E4BAAC> >>",
+                "(old rich contents)"
+            ])
+            let foreign = try XCTUnwrap(read(original).first)
+            XCTAssertEqual(foreign.content, "˘•ﬁ€")
+            XCTAssertEqual(foreign.positionData?.selectedText, "東京")
+            XCTAssertEqual(foreign.id, "pdf-direct-1-1")
+            let pinned = try apply(.update(.init(id: foreign.id, isPinned: true)), original)
+            let (pinnedFile, pinnedPage) = try page(pinned)
+            XCTAssertEqual(pinnedPage.slot(1, file: pinnedFile)?.dictionary.reference(forKey: "RC"), 5)
+            let changed = try apply(.update(.init(id: foreign.id, content: "new Ω")), pinned)
+            let (file, edited) = try page(changed)
+            XCTAssertFalse(try XCTUnwrap(edited.slot(1, file: file)).dictionary.hasKey("RC"))
+            XCTAssertEqual(try read(changed).first?.content, "new Ω")
+            XCTAssertEqual(file.rawObjectValue(5), pinnedFile.rawObjectValue(5))
+            let deleted = try apply(.delete(id: foreign.id), changed)
+            XCTAssertTrue(try read(deleted).isEmpty)
+            XCTAssertNotNil(deleted.range(of: Data("(old rich contents)".utf8)))
+            XCTAssertNotNil(deleted.range(of: Data(PdfTextString.encode("new Ω"))))
+        }
+        XCTAssertEqual(PdfDictSource.decodeTextString(Array(#"(\204)"#.utf8)), "—")
+        for invalid in ["/NotAString", "<< /Fake (id) >>", "<not-hex>", "<EFBBBF80>"] {
+            XCTAssertNil(PdfDictSource.decodeTextString(Array(invalid.utf8)))
+        }
+    }
+
     func testDeletingAdjacentDirectDictionaryKeepsTokenBoundaries() throws {
         let data = PdfFixtureBuilder.classicObjects([
             "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
@@ -136,6 +167,14 @@ final class PdfAnnotationIncrementTests: XCTestCase {
                 XCTAssertEqual(before.slot(index, file: file)?.dictionary.sourceBytes, after.slot(index, file: latest)?.dictionary.sourceBytes)
             }
             if platform == "ipad" {
+                let deleted = try apply(.delete(id: "exchange-note"), output)
+                let (final, survivors) = try page(deleted)
+                XCTAssertEqual(survivors.spans.count, before.spans.count + 1)
+                for index in before.spans.indices {
+                    let object = try XCTUnwrap(before.slot(index, file: file)?.object)
+                    XCTAssertEqual(survivors.slot(index, file: final)?.object, object)
+                    XCTAssertEqual(final.objectOffsets[object], file.objectOffsets[object])
+                }
                 XCTAssertThrowsError(try apply(.delete(id: "pdf-direct-1-1"), output))
                 XCTAssertThrowsError(try apply(.update(.init(id: "pdf-direct-1-2", content: "x")), output))
             }
@@ -176,6 +215,7 @@ final class PdfAnnotationIncrementTests: XCTestCase {
         }
         let data = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column"))
         XCTAssertThrowsError(try apply(.delete(id: "missing"), data))
+        XCTAssertThrowsError(try apply(.create(.init(type: .note, pageNumber: 1)), data))
         XCTAssertThrowsError(try apply(.create(.init(type: .bookmark, pageNumber: 1, id: "b")), data))
         let position = PositionData(rects: [.init(x: .nan, y: 0, width: 1, height: 1)], pageWidth: 1, pageHeight: 1)
         XCTAssertThrowsError(try apply(.create(.init(type: .highlight, pageNumber: 1, positionData: position, id: "x")), data))

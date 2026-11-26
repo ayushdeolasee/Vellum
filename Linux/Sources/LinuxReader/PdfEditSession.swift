@@ -3,6 +3,8 @@ import VellumCore
 
 /// Owns one private copy. The library root and GTK reader have no entry point
 /// here. Admission and close are ordered, including while a save is in flight.
+/// Supply the creation ID so the caller can address the result. After a stale
+/// save, retain the newer bytes and open a fresh disposable copy to edit them.
 actor PdfEditSession {
     enum Failure: Error { case stale, closed }
     private let writer: Writer
@@ -13,7 +15,7 @@ actor PdfEditSession {
 
     init(disposableCopyOf original: Data) async throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        file = directory.appendingPathComponent("fixture.pdf")
+        file = directory.appendingPathComponent("document.pdf")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
         do {
@@ -27,11 +29,6 @@ actor PdfEditSession {
 
     func enqueue(_ edit: PdfAnnotationEdit, now: String) throws -> Task<Data, Error> {
         guard closing == nil else { throw Failure.closed }
-        var edit = edit
-        if case .create(var input) = edit, input.id == nil {
-            input.id = UUID().uuidString.lowercased()
-            edit = .create(input)
-        }
         let task = Task { [tail, writer, edit] in
             _ = await tail?.result
             return try await writer.apply(edit, now: now)
