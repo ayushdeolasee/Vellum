@@ -205,6 +205,7 @@ int reader_run(ReaderCallback callback, void *context) {
     begin_close(&reader);
     while (reader.closing && !reader.drained)
         g_main_context_iteration(NULL, TRUE);
+    g_signal_handlers_disconnect_by_data(app, &reader);
     if (reader.window) {
         g_signal_handlers_disconnect_by_data(reader.window, &reader);
         g_signal_handlers_disconnect_by_data(reader.list, &reader);
