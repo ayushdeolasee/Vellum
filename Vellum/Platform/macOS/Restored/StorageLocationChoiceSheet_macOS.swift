@@ -92,12 +92,11 @@ enum WebStorageRelocator {
         status = Status(isInProgress: true, message: "Changing storage location…")
         NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
         do {
-            try await workspace.changeSharedStorageLocation(path: path) {
-                await enqueue {
-                    await select()
-                    await workspace.storageCoordinator.reconfigure()
-                }.value
+            await relocationChain?.value
+            guard WebStorageMigrator.pendingMarker == nil else {
+                throw SessionServiceError.io("Finish the interrupted storage move, then retry.")
             }
+            try await workspace.changeSharedStorageLocation(path: path, select: select)
             status = Status()
             NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
         } catch {

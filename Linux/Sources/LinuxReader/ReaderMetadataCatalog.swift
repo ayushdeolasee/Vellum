@@ -103,7 +103,8 @@ public struct ReaderMetadataCatalog: Sendable {
     @concurrent
     public func sharedPDF(bytes: Data, file: URL, stamp: String?,
                           fallbackTitle: String) async throws -> ReaderDocumentMetadata {
-        let key = SharedPDFIdentity.storageKey(in: bytes, readerID: stamp)
+        let verifiedStamp = SharedPDFIdentity.stamp(in: bytes, readerID: stamp)
+        let key = verifiedStamp ?? DocumentIdentity.byteHash(bytes)
         let base = store.root.url.appendingPathComponent(".vellum/documents/").appendingPathComponent(key)
         struct Meta: Decodable {
             let kind: String
@@ -114,12 +115,39 @@ public struct ReaderMetadataCatalog: Sendable {
         if DocumentIdentity.isCanonicalKey(key),
            let data = try await store.read(base.appendingPathComponent("meta.json")),
            let meta = try? JSONDecoder().decode(Meta.self, from: data), meta.kind == "pdf",
-           let relative = location.relativePath(for: file), meta.last_known_path.utf8.elementsEqual(relative.utf8) {
+           let relative = location.relativePath(for: file),
+           try await matchesLocator(meta.last_known_path, selected: relative, hashBytes: verifiedStamp == nil ? bytes : nil) {
             let result = pdf(stableIdentifier: key, fallbackTitle: fallbackTitle)
             return ReaderDocumentMetadata(displayTitle: Self.title(meta.title) ?? result.displayTitle,
                                           position: result.position, hasInkSidecar: false)
         }
-        return pdf(stableIdentifier: SharedPDFIdentity.stamp(in: bytes, readerID: stamp), fallbackTitle: fallbackTitle)
+        return pdf(stableIdentifier: verifiedStamp, fallbackTitle: fallbackTitle)
+    }
+
+    private func matchesLocator(_ recorded: String, selected: String, hashBytes: Data?) async throws -> Bool {
+        // The selected relative path has already passed shared PDF path validation.
+        guard recorded == selected else { return false }
+        if recorded.utf8.elementsEqual(selected.utf8) { return true }
+        guard let hashBytes else { return false }
+
+        // Linux can store both spellings. Walk directory entries by canonical
+        // equivalence, retaining their actual spelling until the whole path matches.
+        let parts = selected.split(separator: "/")
+        var candidates = [store.root.url]
+        for (index, part) in parts.enumerated() {
+            var next: [URL] = []
+            for directory in candidates {
+                for entry in try await store.list(directory, suffix: nil)
+                    where entry.name == part && entry.url.hasDirectoryPath == (index < parts.count - 1) {
+                    next.append(entry.url)
+                }
+            }
+            candidates = next
+        }
+        guard candidates.count == 1, let candidate = candidates.first,
+              candidate.path.utf8.elementsEqual(store.root.url.appendingPathComponent(selected).path.utf8)
+        else { return false }
+        return try await store.read(candidate) == hashBytes
     }
 
     private static func webKey(_ url: String) -> DocumentKey? {

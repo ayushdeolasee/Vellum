@@ -486,11 +486,12 @@ actor StorageCoordinator {
     /// admission reopens, leaving no old-root/new-root race window.
     func performExclusiveStorageOperation<T: Sendable>(
         reconfigureAfter: Bool = false,
+        committed: @escaping @Sendable (T) -> Bool = { _ in true },
         _ operation: @escaping @Sendable () async -> T
     ) async -> T {
         await enqueueLifecycle {
             await self.performExclusiveStorageOperationImpl(
-                reconfigureAfter: reconfigureAfter,
+                reconfigureAfter: reconfigureAfter, committed: committed,
                 operation)
         }
     }
@@ -965,6 +966,7 @@ actor StorageCoordinator {
 
     private func performExclusiveStorageOperationImpl<T: Sendable>(
         reconfigureAfter: Bool,
+        committed: @Sendable (T) -> Bool,
         _ operation: @Sendable () async -> T
     ) async -> T {
         if lifecycle == .idle || lifecycle == .stopped {
@@ -985,7 +987,7 @@ actor StorageCoordinator {
 
         let result = await operation()
 
-        if reconfigureAfter {
+        if reconfigureAfter && committed(result) {
             let next = await resolveConfiguration(chosenMode: modeProvider())
             if let container = access.container, !containerIsSuspended {
                 await container.suspend()
@@ -993,6 +995,8 @@ actor StorageCoordinator {
             install(next)
             await rediscoverArchivedConflicts()
         } else {
+            // A refused preference change resumes the very same container.
+            if reconfigureAfter { await rediscoverArchivedConflicts() }
             lifecycle = .active
             switch access {
             case .coordinated(let container, _):

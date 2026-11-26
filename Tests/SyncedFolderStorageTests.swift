@@ -77,6 +77,117 @@ struct SyncedFolderStorageTests {
         }
     }
 
+    @Test("Changing or replacing a shared folder waits for closed documents and saves drafts in their original root")
+    @MainActor
+    func sharedFolderSwitchDrainsDocumentOwners() async throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let local = tmp.appendingPathComponent("private/web")
+        let first = tmp.appendingPathComponent("first")
+        let second = tmp.appendingPathComponent("second")
+        for root in [local, first, second] { try fm.createDirectory(at: root, withIntermediateDirectories: true) }
+        defer { try? fm.removeItem(at: tmp) }
+        let previousStore = WebLibrary.storeDirOverride
+        let previousDocuments = DocumentDataStore.rootDirectoryOverride
+        WebLibrary.storeDirOverride = local
+        DocumentDataStore.rootDirectoryOverride = nil
+        defer {
+            WebLibrary.storeDirOverride = previousStore
+            DocumentDataStore.rootDirectoryOverride = previousDocuments
+        }
+        let suite = "vellum.switch-test." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try await AppDefaults.withDefaults(defaults) {
+            WebStorageSettings.setMode(.local)
+            let coordinator = StorageCoordinator(storeDir: local, rootResolver: { nil }, containerFactory: { nil },
+                conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+            let workspace = WorkspaceStore(sessions: DocumentSessionManager(), storageCoordinator: coordinator)
+            let pane = workspace.focusedPane
+            let site = "https://example.invalid/" + UUID().uuidString
+            let key = DocumentIdentity.sha256Hex(site)
+            let doc = DocumentInfo(kind: .web, pdfPath: site, title: "Fixture", pageCount: nil, lastPage: nil, docId: key)
+            let tab = PdfTab(id: "source", document: doc, currentPage: 1, numPages: 1, zoom: 1,
+                             visiblePages: [], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view)
+            let message = AiPersistence.makeMessage(role: .user, content: "private transcript")
+            let privateDocs = WebStorageLayout.local(storeDir: local).documentsDir
+            func select(_ root: URL) async {
+                await WebStorageRelocator.selectSyncedFolder(.init(path: root.path, bookmarkData: Data()), workspace: workspace)
+            }
+            await coordinator.start()
+            defer { AiPersistence.invalidateCachedConversation(forKey: key) }
+            do {
+                pane.app.attachTab(tab)
+                await pane.scratchpad.loadForDocument(doc).value
+                pane.scratchpad.text = "private notes"
+                #expect(AiPersistence.saveConversation(for: doc, messages: [message], coordinator: coordinator))
+                await select(first)
+                #expect(WebStorageSettings.chosenMode == .local)
+                #expect(WebStorageRelocator.status.message.contains("close all document tabs"))
+                #expect(!fm.fileExists(atPath: first.appendingPathComponent(".vellum/documents/" + key).path))
+                await pane.app.closeTab(tab.id)
+                await select(first)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == first.path)
+                #expect(try String(contentsOf: privateDocs.appendingPathComponent(key + "/scratchpad.md"),
+                                   encoding: .utf8) == "private notes")
+                #expect(try JSONDecoder().decode([AiMessage].self, from: Data(contentsOf:
+                    privateDocs.appendingPathComponent(key + "/conversations.json"))) == [message])
+                #expect(await AiPersistence.loadConversation(for: doc, coordinator: coordinator).isEmpty)
+
+                pane.app.attachTab(tab)
+                await select(second)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == first.path)
+                await WebStorageRelocator.apply(mode: .local, workspace: workspace)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == first.path)
+                await pane.app.closeTab(tab.id)
+
+                // A failed close-release remains joinable by the next attempt.
+                let saved = tmp.appendingPathComponent("release-complete")
+                workspace.tabTeardowns.registerReleaseFlush(document: doc) { fm.fileExists(atPath: saved.path) }
+                await select(second)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == first.path)
+                try Data().write(to: saved)
+                await select(second)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == second.path)
+                // Hold the old backend in use until the transition has closed
+                // coordinator admission. A document admitted during that await
+                // must veto the preference write at the final commit boundary.
+                let (entered, didEnter) = AsyncStream<Void>.makeStream()
+                let (release, finish) = AsyncStream<Void>.makeStream()
+                let reader = Task {
+                    try await coordinator.withStorageContext { _ in
+                        didEnter.finish()
+                        for await _ in release {}
+                    }
+                }
+                for await _ in entered {}
+                let switching = Task { await WebStorageRelocator.apply(mode: .local, workspace: workspace) }
+                let deadline = ContinuousClock.now + .seconds(3)
+                while await coordinator.currentStatus().lifecycle != .starting && ContinuousClock.now < deadline {
+                    await Task.yield()
+                }
+                #expect(await coordinator.currentStatus().lifecycle == .starting)
+                pane.app.attachTab(tab)
+                finish.finish()
+                try await reader.value
+                await switching.value
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == second.path)
+                await pane.app.closeTab(tab.id)
+                await WebStorageRelocator.apply(mode: .local, workspace: workspace)
+                #expect(await coordinator.currentStatus().effectiveMode == .local)
+                #expect(await AiPersistence.loadConversation(for: doc, coordinator: coordinator) == [message])
+                for root in [first, second] {
+                    #expect(!fm.fileExists(atPath: root.appendingPathComponent(".vellum/documents/" + key + "/scratchpad.md").path))
+                    #expect(!fm.fileExists(atPath: root.appendingPathComponent(".vellum/documents/" + key + "/conversations.json").path))
+                }
+            } catch {
+                await coordinator.stop()
+                throw error
+            }
+            await coordinator.stop()
+        }
+    }
+
     @Test("Shared-folder layout matches iCloud paths and selects a distinct backend")
     func layout() {
         let root = URL(fileURLWithPath: "/fixture/library", isDirectory: true)

@@ -10,10 +10,13 @@ import Glibc
 public struct SharedPDFMigration: Sendable {
     public enum Failure: LocalizedError {
         case changed(String), invalid(String)
+        case originalChanged(sharedCopy: URL)
         public var errorDescription: String? {
             switch self {
             case .changed(let path): "Migration stopped because the contents changed at \(path). Both versions have been kept."
             case .invalid(let path): "Cannot verify the library data at \(path)."
+            case .originalChanged(let url):
+                "The original PDF has changed since migration. To continue with the migrated notes and reading position, open the verified shared copy at \(url.path)."
             }
         }
     }
@@ -42,7 +45,8 @@ public struct SharedPDFMigration: Sendable {
         var inputs: [Source] = []
         var directories: [String: [String]] = [:]
         var changes: [Change] = []
-        var createdDirectories: [URL] = []
+        // Older journals did not record directory ownership. Leave those directories intact.
+        var createdDirectories: [URL]?
         var completed = 0
         var pending = false
         var reversing = false
@@ -193,14 +197,20 @@ public struct SharedPDFMigration: Sendable {
         guard let j = try journal(),
               let pdf = j.pdfs.first(where: { $0.source.standardizedFileURL.path == source.standardizedFileURL.path })
         else { return nil }
-        if fm.fileExists(atPath: source.path) {
-            guard let input = j.inputs.first(where: { $0.url.path == pdf.source.path }),
-                  try DocumentIdentity.byteHash(Data(contentsOf: source)) == input.digest else { throw Failure.changed(source.path) }
-        }
         guard !j.reversing, j.completed == j.changes.count,
               let url = location.resolve(pdf.relative), let bytes = try await store.read(url),
               SharedPDFIdentity.storageKey(in: bytes, readerID: readID(bytes)) == pdf.key else {
             throw Failure.changed(source.path)
+        }
+        guard let input = j.inputs.first(where: { $0.url.path == pdf.source.path }) else {
+            throw Failure.invalid(source.path)
+        }
+        do {
+            if try DocumentIdentity.byteHash(Data(contentsOf: source)) != input.digest {
+                throw Failure.originalChanged(sharedCopy: url)
+            }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // A saved tab can still reopen its verified copy after the original moves.
         }
         return url
     }
@@ -394,7 +404,7 @@ public struct SharedPDFMigration: Sendable {
         }
         // rmdir only removes empty directories this batch created. Never
         // recursively remove a folder that may contain a new peer attachment.
-        for dir in j.createdDirectories where dir.pathComponents.starts(with: location.root.pathComponents) {
+        for dir in j.createdDirectories ?? [] where dir.pathComponents.starts(with: location.root.pathComponents) {
             guard dir.resolvingSymlinksInPath().standardizedFileURL.path == dir.standardizedFileURL.path else {
                 throw Failure.changed(dir.path)
             }
