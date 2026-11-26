@@ -17,6 +17,7 @@ app=/build/linux/debug/vellum-linux
 [[ -x $app ]] || { echo "build vellum-linux with --scratch-path /build/linux -c debug first" >&2; exit 1; }
 
 run_case() (
+  set -e
   pump=$1 load=$2
   echo "requested=$pump load=$load" >&2
   export XDG_RUNTIME_DIR="$tmp/$pump-$load"
@@ -24,7 +25,8 @@ run_case() (
   log="$XDG_RUNTIME_DIR/weston.log"
   wpid= apid=
   cleanup() {
-    if (( $? != 0 )); then cat "$log" >&2; fi
+    rc=$?
+    if (( rc != 0 && rc != 77 )); then cat "$log" >&2; fi
     if [[ -n $apid ]]; then kill "$apid" 2>/dev/null || true; fi
     if [[ -n $wpid ]]; then kill "$wpid" 2>/dev/null || true; fi
     wait 2>/dev/null || true
@@ -56,11 +58,65 @@ run_case() (
     timeout -k 1 12 "$app" --probe "$pump" "$load" >&2
   fi
 )
+failed=0 unavailable=0
 for pump in auto timer missing eventfd; do
   for load in idle busy; do
-    run_case "$pump" "$load"
+    report="$tmp/$pump-$load.log"
+    set +e
+    run_case "$pump" "$load" 2>"$report"
+    rc=$?
+    set -e
+    cat "$report" >&2
+    if [[ $rc == 77 && $pump == eventfd ]]; then
+      unavailable=$((unavailable + 1))
+    elif (( rc != 0 )); then
+      echo "$pump/$load failed (status $rc)" >&2
+      failed=1
+    fi
   done
 done
+(( failed == 0 ))
+# An unavailable SPI must still demonstrate both working fallback paths.
+python3 - "$tmp" "$unavailable" <<'PYTHON'
+from pathlib import Path
+import sys
+
+root, missing = Path(sys.argv[1]), int(sys.argv[2])
+def read(mode, load):
+    words = (root / f"{mode}-{load}.log").read_text().split()
+    return dict(word.split("=", 1) for word in words if "=" in word)
+
+def require(ok, reason):
+    if not ok:
+        sys.exit(reason)
+
+require(missing in (0, 2), "inconsistent strict eventfd availability")
+for load in ("idle", "busy"):
+    timer = read("timer", load)
+    for mode in ("timer", "missing", "auto", "eventfd"):
+        if missing and mode == "eventfd":
+            continue
+        row = read(mode, load)
+        fd = mode in ("auto", "eventfd") and not missing
+        expect = "eventfd" if fd else "timer"
+        case = f"{mode}/{load}"
+        require(row["selected"] == row["effective"] == expect, f"{case}: unexpected pump")
+        if not fd:
+            continue
+        # One-second quiet baselines. Allow 2 ms of CPU noise and occasional empty turns.
+        require(int(row["idle_wakes"]) <= int(timer["idle_wakes"]) / 4, f"{case}: idle wakes")
+        require(float(row["idle_cpu_ms"]) <= max(2, .75 * float(timer["idle_cpu_ms"])), f"{case}: idle CPU")
+        require(int(row["no_progress"]) <= 64, f"{case}: excessive wakes without probe progress")
+        if load == "busy":
+            for count, gap, slack in (("input", "input_gap_us", 15000), ("paints", "paint_gap_us", 32000)):
+                require(int(row[count]) >= .70 * int(timer[count]), f"{case}: too few {count}")
+                ref = int(timer[gap])
+                require(int(row[gap]) <= max(2 * ref, ref + slack), f"{case}: excessive {gap}")
+PYTHON
+if (( unavailable )); then
+  echo "strict eventfd unavailable in both loads (77); fallback cases passed" >&2
+  exit 77
+fi
 shopt -s nullglob
 png=("$XDG_PICTURES_DIR"/*.png)
 [[ ${#png[@]} == 1 && -s ${png[0]} ]]
