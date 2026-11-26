@@ -151,18 +151,26 @@ final class PdfEditEligibilityTests: XCTestCase {
         for n in [0, 1, 8, 12, base.count / 2, base.count - 4] {
             classify(base.prefix(n), .readOnly(.malformed))
         }
-        classify(document(extra: [String(repeating: "[", count: 65) + String(repeating: "]", count: 65)]), .readOnly(.malformed))
+        classify(document(extra: [String(repeating: "[", count: 65) + String(repeating: "]", count: 65)]), .readOnly(.inspectionLimit))
         classify(document("/Rotate 0 /Rotate 90"), .readOnly(.malformed))
-        classify(document(extra: ["<< /Type /Example /Nested [<01> << /Name (endobj) >>] >>"]), .readOnly(.malformed))
+        let nested = "<< /Type /Example /Nested [<01> << /Name (endobj) >>] >>"
+        let withLiteral = document(extra: [nested])
+        classify(withLiteral, .editable)
+        XCTAssertEqual(try ClassicPdfFile(data: withLiteral).rawObjectValue(4), Array(nested.utf8))
+        // Change only the real terminator or its delimiter; keep xref offsets intact.
+        for broken in ["endobX\nxref", "endobjXxref"] {
+            classify(try replacing("endobj\nxref", with: broken, in: withLiteral), .readOnly(.malformed))
+        }
         var bytes = base
         for _ in 1..<64 {
             var increment = PdfIncrement(file: try ClassicPdfFile(data: bytes))
             increment.setObject(3, source: Array(page().utf8))
             bytes = increment.appended()
         }
-        classify(bytes, .editable)
+        try PdfEditEligibility.inspect(bytes, reservingRevision: false)
+        classify(bytes, .readOnly(.inspectionLimit))
         var increment = PdfIncrement(file: try ClassicPdfFile(data: bytes))
         increment.setObject(3, source: Array(page().utf8))
-        classify(increment.appended(), .readOnly(.malformed))
+        classify(increment.appended(), .readOnly(.inspectionLimit))
     }
 }

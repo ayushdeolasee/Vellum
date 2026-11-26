@@ -28,3 +28,5 @@ void shell_probe_turn_finished(void);
 #include "scratchpad_panel.h"
 #include "reader_window.h"
 #include "web_reader.h"
+
+#include "pdf_annotations.h"

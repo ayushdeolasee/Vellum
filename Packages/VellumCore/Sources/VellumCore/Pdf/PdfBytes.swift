@@ -378,17 +378,38 @@ public struct PdfDictSource {
     }
 
     public func name(forKey key: String) -> String? {
-        guard let raw = rawValue(forKey: key), raw.first == UInt8(ascii: "/") else { return nil }
+        rawValue(forKey: key).flatMap(Self.decodeName)
+    }
+
+    static func decodeName(_ raw: [UInt8]) -> String? {
+        guard raw.first == UInt8(ascii: "/") else { return nil }
         return String(decoding: PdfSyntax.nameBytes(raw.dropFirst()), as: UTF8.self)
     }
 
-    /// Decoded text-string value (literal with escapes, or hex; UTF-16BE BOM aware).
+    /// Decoded PDF text string (PDFDocEncoding, UTF-16BE BOM, or PDF 2.0 UTF-8 BOM).
     public func textString(forKey key: String) -> String? {
         guard let raw = rawValue(forKey: key) else { return nil }
         return PdfDictSource.decodeTextString(raw)
     }
 
     static func decodeTextString(_ raw: [UInt8]) -> String? {
+        decodeTextString(raw, identity: false)
+    }
+
+    /// CGPDF can interpret a PDF 2.0 UTF-8 BOM as three PDFDocEncoding
+    /// characters. Such a string can be displayed, but cannot witness an
+    /// identity shared between the Linux and Apple readers.
+    static func decodeIdentityString(_ raw: [UInt8]) -> String? {
+        decodeTextString(raw, identity: true)
+    }
+
+    static func annotationIdentity(_ raw: [UInt8]) -> String? {
+        guard raw.count <= 1024, let id = decodeIdentityString(raw), !id.isEmpty,
+              id.utf8.allSatisfy({ (32...126).contains($0) }) else { return nil }
+        return id
+    }
+
+    private static func decodeTextString(_ raw: [UInt8], identity: Bool) -> String? {
         var content: [UInt8] = []
         if raw.first == UInt8(ascii: "("), raw.last == UInt8(ascii: ")") {
             var i = 1
@@ -398,6 +419,9 @@ public struct PdfDictSource {
                 if byte == UInt8(ascii: "\\"), i + 1 < end {
                     let next = raw[i + 1]
                     switch next {
+                    case 10, 13: // Escaped EOL is a continuation, including CRLF.
+                        i += next == 13 && i + 2 < end && raw[i + 2] == 10 ? 3 : 2
+                        continue
                     case UInt8(ascii: "n"): content.append(0x0a)
                     case UInt8(ascii: "r"): content.append(0x0d)
                     case UInt8(ascii: "t"): content.append(0x09)
@@ -420,17 +444,22 @@ public struct PdfDictSource {
                     i += 2
                     continue
                 }
-                content.append(byte)
+                if byte == 13 {
+                    content.append(10) // PDF literal EOLs normalize to LF.
+                    if i + 1 < end && raw[i + 1] == 10 { i += 1 }
+                } else {
+                    content.append(byte)
+                }
                 i += 1
             }
-        } else if raw.first == UInt8(ascii: "<"), raw.last == UInt8(ascii: ">") {
+        } else if raw.first == UInt8(ascii: "<"), raw.last == UInt8(ascii: ">"), !raw.starts(with: [60, 60]) {
             var nibbles: [UInt8] = []
             for byte in raw.dropFirst().dropLast() {
                 switch byte {
                 case UInt8(ascii: "0")...UInt8(ascii: "9"): nibbles.append(byte - UInt8(ascii: "0"))
                 case UInt8(ascii: "a")...UInt8(ascii: "f"): nibbles.append(byte - UInt8(ascii: "a") + 10)
                 case UInt8(ascii: "A")...UInt8(ascii: "F"): nibbles.append(byte - UInt8(ascii: "A") + 10)
-                default: continue
+                default: guard PdfBytes.isWhitespace(byte) else { return nil }
                 }
             }
             if nibbles.count % 2 == 1 { nibbles.append(0) }
@@ -441,15 +470,34 @@ public struct PdfDictSource {
             return nil
         }
 
-        if content.count >= 2, content[0] == 0xfe, content[1] == 0xff {
+        if content.starts(with: [0xef, 0xbb, 0xbf]) {
+            guard !identity else { return nil }
+            return String(bytes: content.dropFirst(3), encoding: .utf8)
+        }
+        if content.starts(with: [0xfe, 0xff]) {
+            guard content.count.isMultiple(of: 2) else { return nil }
             let utf16 = stride(from: 2, to: content.count - 1, by: 2).map {
                 UInt16(content[$0]) << 8 | UInt16(content[$0 + 1])
             }
             return String(decoding: utf16, as: UTF16.self)
         }
-        // PDFDocEncoding ≈ Latin-1 for the identifiers this module compares.
-        return String(bytes: content, encoding: .isoLatin1)
+        // ISO 32000-2, Annex D, Table D.2. Most codes map directly to
+        // Unicode; these are the two blocks of accents and punctuation.
+        var text = String.UnicodeScalarView()
+        for byte in content {
+            switch byte {
+            case 0x18...0x1f: text.append(pdfDocAccents[Int(byte) - 0x18])
+            case 0x80...0x9e: text.append(pdfDocPunctuation[Int(byte) - 0x80])
+            case 0xa0: text.append("€")
+            case 0x7f, 0x9f, 0xad: text.append("�") // Undefined in PDFDocEncoding.
+            default: text.append(Unicode.Scalar(byte))
+            }
+        }
+        return String(text)
     }
+
+    private static let pdfDocAccents = Array("˘ˇˆ˙˝˛˚˜".unicodeScalars)
+    private static let pdfDocPunctuation = Array("•†‡…—–ƒ⁄‹›−‰„“”‘’‚™ﬁﬂŁŒŠŸŽıłœšž".unicodeScalars)
 
     // MARK: Mutation
 
@@ -776,7 +824,7 @@ extension ClassicPdfFile {
               value.first == UInt8(ascii: "(") ||
                 (value.first == UInt8(ascii: "<") && !value.starts(with: "<<".utf8))
         else { return nil }
-        return PdfDictSource.decodeTextString(value)
+        return key == "VellumDocId" ? PdfDictSource.decodeIdentityString(value) : PdfDictSource.decodeTextString(value)
     }
 }
 

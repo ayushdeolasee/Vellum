@@ -39,6 +39,7 @@ final class PdfClassicStructure {
     private var remainingComparisonBytes = 64 * 1024 * 1024
     private var portableSyntax = true
     private let objectLimit = 100_000
+    private let revisionLimit = 64
     private var offsets: [Int: Int] = [:]
     private var free: [Int: (next: Int, generation: Int)] = [:]
     private(set) var objects: [Int: Value] = [:]
@@ -47,15 +48,16 @@ final class PdfClassicStructure {
     private var previousSize = 0
     private var hadInfo = false
     private var hadID = false
+    var hasDocumentID = false
 
     init(_ data: Data) { bytes = Array(data) }
 
     func charge(_ count: Int = 1) throws {
-        guard count <= remaining else { throw Reason.malformed }
+        guard count <= remaining else { throw Reason.inspectionLimit }
         remaining -= count
     }
 
-    func inspect() throws {
+    func inspect(reservingRevision: Bool) throws {
         guard consume("%PDF-"), i + 3 < bytes.count,
               bytes[i + 1] == 46, [10, 13].contains(bytes[i + 3]),
               (bytes[i] == 49 && (48...55).contains(bytes[i + 2])) || (bytes[i] == 50 && bytes[i + 2] == 48)
@@ -64,22 +66,21 @@ final class PdfClassicStructure {
         var revisions = 0
         repeat {
             revisions += 1
-            guard revisions <= 64 else { throw Reason.malformed }
+            guard revisions <= revisionLimit else { throw Reason.inspectionLimit }
             var newObjects = Set<Int>()
             skipOuterTrivia()
             while !starts("xref") {
                 try charge()
                 let offset = i
                 let number = try unsigned()
-                guard (1..<objectLimit).contains(number), newObjects.insert(number).inserted
+                guard number < objectLimit else { throw Reason.inspectionLimit }
+                guard number > 0, newObjects.insert(number).inserted
                 else { throw Reason.malformed }
                 guard try unsigned() == 0 else { throw Reason.nonzeroGeneration }
                 try keyword("obj")
-                guard i - offset < 64 else { throw Reason.malformed }
+                guard i - offset < 64 else { throw Reason.inspectionLimit }
                 skipSpace()
-                let bodyStart = i
                 let body = try value()
-                let bodyEnd = i
                 skipSpace()
                 if consumeWord("stream") {
                     guard let dict = body.dictionary else { throw Reason.malformed }
@@ -94,12 +95,6 @@ final class PdfClassicStructure {
                     streams[number] = body
                     objects[number] = .stream
                 } else {
-                    // rawObjectValue uses the first endobj marker. Its range
-                    // must agree even when that word occurs inside a string.
-                    if bytes[bodyStart..<bodyEnd].contains(101),
-                       bytes[bodyStart..<bodyEnd].firstRange(of: "endobj".utf8) != nil {
-                        portableSyntax = false
-                    }
                     streams.removeValue(forKey: number)
                     objects[number] = body
                 }
@@ -111,6 +106,7 @@ final class PdfClassicStructure {
             skipSpace()
         } while i < bytes.count
         guard portableSyntax else { throw Reason.malformed }
+        if reservingRevision && revisions == revisionLimit { throw Reason.inspectionLimit }
     }
 
     private func revision(newObjects: Set<Int>) throws {
@@ -126,7 +122,8 @@ final class PdfClassicStructure {
             while i < bytes.count, bytes[i] == 32 { i += 1 }
             guard i < bytes.count, PdfBytes.isDigit(bytes[i]) else { throw Reason.malformed }
             let count = try unsigned()
-            guard count > 0, first < objectLimit, count <= objectLimit - first else { throw Reason.malformed }
+            guard count > 0, first <= Int.max - count else { throw Reason.malformed }
+            guard first < objectLimit, count <= objectLimit - first else { throw Reason.inspectionLimit }
             try charge(count)
             skipSpace()
             for number in first..<(first + count) {
@@ -193,7 +190,7 @@ final class PdfClassicStructure {
     }
 
     private func budgetComparison(length: Int, passes: Int) throws {
-        guard length <= remainingComparisonBytes / passes else { throw Reason.malformed }
+        guard length <= remainingComparisonBytes / passes else { throw Reason.inspectionLimit }
         remainingComparisonBytes -= length * passes
     }
 
@@ -251,7 +248,8 @@ final class PdfClassicStructure {
     private func token() throws -> String {
         let start = i
         while i < bytes.count, !PdfBytes.isWhitespace(bytes[i]), !PdfBytes.isDelimiter(bytes[i]) { i += 1 }
-        guard i > start, i - start <= 256, bytes[start..<i].allSatisfy({ (33...126).contains($0) })
+        guard i - start <= 256 else { throw Reason.inspectionLimit }
+        guard i > start, bytes[start..<i].allSatisfy({ (33...126).contains($0) })
         else { throw Reason.malformed }
         return String(decoding: bytes[start..<i], as: UTF8.self)
     }
@@ -281,7 +279,8 @@ final class PdfClassicStructure {
     private func value(depth: Int = 0) throws -> Value {
         try charge()
         skipSpace()
-        guard depth < 64, i < bytes.count else { throw Reason.malformed }
+        guard depth < 64 else { throw Reason.inspectionLimit }
+        guard i < bytes.count else { throw Reason.malformed }
         let start = i
         if consume("<<") {
             var dict: [String: Value] = [:]

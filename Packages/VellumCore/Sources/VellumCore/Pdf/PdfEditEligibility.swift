@@ -1,8 +1,23 @@
 import Foundation
 
-public enum PdfReadOnlyReason: Error, Equatable, Sendable {
+public enum PdfReadOnlyReason: LocalizedError, Equatable, Sendable {
     case unsupportedXref, encrypted, signed, nonzeroGeneration
-    case malformed, ambiguousAnnotation, unsupportedGeometry
+    case malformed, ambiguousAnnotation, unsupportedGeometry, inspectionLimit
+    case conflictingDocumentID
+
+    public var errorDescription: String? {
+        switch self {
+        case .inspectionLimit: "Vellum reached its PDF inspection limit. You can keep reading this document, but further edits cannot be saved safely."
+        case .conflictingDocumentID: "Vellum could not match this PDF’s embedded ID to its library record. Use Scratchpad for notes."
+        case .unsupportedXref: "This PDF uses an unsupported cross-reference format."
+        case .encrypted: "Editing encrypted PDFs is unavailable."
+        case .signed: "This PDF contains signature information. Vellum keeps it read-only."
+        case .nonzeroGeneration: "This PDF uses object generations that Vellum cannot edit."
+        case .malformed: "Vellum could not verify this PDF’s structure."
+        case .ambiguousAnnotation: "Vellum could not uniquely identify the annotation or its owner."
+        case .unsupportedGeometry: "Vellum cannot safely map annotations onto this PDF’s pages."
+        }
+    }
 }
 
 public enum PdfEditEligibility: Equatable, Sendable {
@@ -12,15 +27,35 @@ public enum PdfEditEligibility: Equatable, Sendable {
     /// Classify the byte snapshot obtained by the reader, before normalization.
     /// Unknown syntax or an exhausted work budget leaves the reader read-only.
     public static func classify(_ original: Data) -> Self {
-        guard original.count <= 128 * 1024 * 1024 else { return .readOnly(.malformed) }
+        classify(original, requiringAbsentDocumentID: false)
+    }
+
+    /// A legacy hash-keyed sidecar can follow an edit only if the first edit can
+    /// stamp that key, or the reader already verified the same embedded ID.
+    public static func classify(_ original: Data, requiringAbsentDocumentID: Bool) -> Self {
         do {
-            try PdfClassicStructure(original).inspect()
+            try inspect(original, reservingRevision: true, requiringAbsentDocumentID: requiringAbsentDocumentID)
             return .editable
         } catch let reason as PdfReadOnlyReason {
             return .readOnly(reason)
         } catch {
             return .readOnly(.malformed)
         }
+    }
+
+    /// Prove the existing revision within the normal structure and work limits.
+    /// This does not reserve room for an edit; writers must still use classify.
+    public static func validateForReading(_ data: Data) throws {
+        try inspect(data, reservingRevision: false)
+    }
+
+    // The last provable revision can be saved and read. Classifying it for
+    // another edit must report the limit before starting a new increment.
+    static func inspect(_ data: Data, reservingRevision: Bool, requiringAbsentDocumentID: Bool = false) throws {
+        guard data.count <= 128 * 1024 * 1024 else { throw PdfReadOnlyReason.inspectionLimit }
+        let structure = PdfClassicStructure(data)
+        try structure.inspect(reservingRevision: reservingRevision)
+        if requiringAbsentDocumentID && structure.hasDocumentID { throw PdfReadOnlyReason.conflictingDocumentID }
     }
 }
 
@@ -71,6 +106,9 @@ extension PdfClassicStructure {
               trailer["Info"] == nil || resolved(trailer["Info"])?.dictionary != nil
         else { throw Reason.malformed }
 
+        // Use the live Info dictionary from this revision, including inline or
+        // indirect Info and every value type. A failed text lookup is not absence.
+        hasDocumentID = resolved(trailer["Info"])?.dictionary?["VellumDocId"] != nil
         if let info = trailer["Info"]?.reference, inbound[info] != 1 { throw Reason.malformed }
 
         if let form = catalog["AcroForm"] {
@@ -80,7 +118,8 @@ extension PdfClassicStructure {
             var visited = Set<Int>()
             func field(_ value: Value, depth: Int) throws {
                 try charge()
-                guard depth < 64, let n = value.reference, visited.insert(n).inserted,
+                guard depth < 64 else { throw Reason.inspectionLimit }
+                guard let n = value.reference, visited.insert(n).inserted,
                       let node = objects[n]?.dictionary else { throw Reason.malformed }
                 if let children = node["Kids"] {
                     guard case .array(let items) = resolved(children) else { throw Reason.malformed }
@@ -99,7 +138,8 @@ extension PdfClassicStructure {
         var pageNumber = 0
         func walk(_ n: Int, parent: Int?, inherited: [String: Value], depth: Int) throws -> Int {
             try charge()
-            guard depth < 64, visited.insert(n).inserted, let node = objects[n]?.dictionary,
+            guard depth < 64 else { throw Reason.inspectionLimit }
+            guard visited.insert(n).inserted, let node = objects[n]?.dictionary,
                   node["Parent"]?.reference == parent, parent != nil || node["Parent"] == nil
             else { throw Reason.malformed }
             var geometry = inherited
@@ -204,8 +244,7 @@ extension PdfClassicStructure {
                 // The writer reads a direct PDF text string. Bound decoding
                 // and reject IDs outside the unambiguous portable subset.
                 guard case .string(let range) = nm, range.count <= 1024,
-                      let string = PdfDictSource.decodeTextString(Array(bytes[range])),
-                      !string.isEmpty, string.utf8.allSatisfy({ (32...126).contains($0) })
+                      let string = PdfDictSource.annotationIdentity(Array(bytes[range]))
                 else { throw Reason.ambiguousAnnotation }
                 id = string
             } else {

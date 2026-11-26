@@ -10,13 +10,19 @@ public enum PdfAtomicFile {
     /// `.{name}.vellum-{uuid}.tmp` in the same directory, original permissions
     /// preserved, POSIX rename. Error strings mirror save_document/replace_file.
     public static func save(_ data: Data, toPath path: String) throws {
+        try save(data, toPath: path, beforeReplacing: {})
+    }
+
+    /// The stage is complete and synced when the disposable writer compares its snapshot.
+    public static func save(_ data: Data, toPath path: String, beforeReplacing: () throws -> Void) throws {
         try save(data, toPath: path) { source, destination in
-            rename(source, destination) == 0 ? 0 : errno
+            try beforeReplacing()
+            return rename(source, destination) == 0 ? 0 : errno
         }
     }
 
     // The replacement returns the captured POSIX error (zero on success).
-    static func save(_ data: Data, toPath path: String, replace: (String, String) -> Int32) throws {
+    static func save(_ data: Data, toPath path: String, replace: (String, String) throws -> Int32) throws {
         let url = URL(fileURLWithPath: path)
         let parent = url.deletingLastPathComponent()
         let fileName = url.lastPathComponent.isEmpty ? "document.pdf" : url.lastPathComponent
@@ -54,7 +60,7 @@ public enum PdfAtomicFile {
             throw PdfCoreError.io("Failed to write annotated PDF: \(error.localizedDescription)")
         }
 
-        let failure = replace(temporaryURL.path, path)
+        let failure = try replace(temporaryURL.path, path)
         guard failure == 0 else { throw ioError("Failed to replace PDF with annotated copy", failure) }
         committed = true
 

@@ -13,9 +13,21 @@ public enum PdfInfoIncrement {
     /// a lazy doc_id stamp onto a metadata write that was happening anyway, so
     /// the file is still rewritten only once per user action.
     public static func setMetadataIncrement(normalizedData: Data, entries: [(key: String, value: String)]) throws -> Data {
+        try setMetadataIncrement(normalizedData: normalizedData, entries: entries, requiringAbsentKey: nil)
+    }
+
+    static func setMetadataIncrement(normalizedData: Data, entries: [(key: String, value: String)],
+                                     requiringAbsentKey: String?) throws -> Data {
         let file = try ClassicPdfFile(data: normalizedData)
 
         var increment = PdfIncrement(file: file)
+        let number = try setMetadata(in: &increment, file: file, entries: entries, requiringAbsentKey: requiringAbsentKey)
+        return increment.appended(infoNumber: number)
+    }
+
+    /// Add the Info object to the caller’s revision and return its trailer reference.
+    static func setMetadata(in increment: inout PdfIncrement, file: ClassicPdfFile,
+                            entries: [(key: String, value: String)], requiringAbsentKey: String?) throws -> Int {
         var infoNumber: Int
         var info: PdfDictSource
         if let existing = file.infoNumber, let source = file.objectSource(existing) {
@@ -33,6 +45,9 @@ public enum PdfInfoIncrement {
             }
         }
 
+        if let key = requiringAbsentKey, info.hasKey(key) {
+            throw PdfCoreError.invalidDocument("PDF already has /\(key)")
+        }
         for (key, value) in entries {
             switch key {
             case "title":
@@ -46,7 +61,7 @@ public enum PdfInfoIncrement {
         }
 
         increment.setObject(infoNumber, source: info.sourceBytes)
-        return increment.appended(infoNumber: infoNumber)
+        return infoNumber
     }
 
     /// u32::from_str error surface, mirrored: empty / non-digit / overflow.

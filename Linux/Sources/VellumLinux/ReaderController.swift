@@ -5,6 +5,7 @@ import VellumCore
 
 @MainActor
 final class ReaderController {
+    private let annotations = PdfAnnotationPane()
     private let rootOverride: URL?
     private let preferences = ReaderPreferences()
     let settings = ReaderSettingsController()
@@ -23,6 +24,7 @@ final class ReaderController {
     private var selection: URL?
     private var bytes: Data?
     private var pdfTitle: String?
+    private var annotationIdentity: PdfAnnotationIdentity = .unverified
     private var pageIndex = 0
     private var pageCount = 0
     private var generation = 0
@@ -58,10 +60,12 @@ final class ReaderController {
     private func replaceWork(_ operation: @escaping @MainActor (Int) async -> Void) {
         generation += 1
         let token = generation
+        let annotationSave = annotations.detach()
         let prior = work
         prior?.cancel()
         work = Task {
             await prior?.value
+            _ = await annotationSave?.value
             guard isCurrent(token) else { return }
             await operation(token)
         }
@@ -113,9 +117,9 @@ final class ReaderController {
                 }
             }
         case READER_PREVIOUS:
-            if pageIndex > 0 { showPage(pageIndex - 1, window: window) }
+            if pageIndex > 0 { navigatePage(pageIndex - 1, window: window) }
         case READER_NEXT:
-            if pageIndex + 1 < pageCount { showPage(pageIndex + 1, window: window) }
+            if pageIndex + 1 < pageCount { navigatePage(pageIndex + 1, window: window) }
         case READER_SEARCH:
             guard !entries.isEmpty else { return }
             updateSearch(String(cString: reader_search_query(window)), window: window)
@@ -184,12 +188,25 @@ final class ReaderController {
 
     private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
         guard !closing, transition == nil else { return }
-        if positionSession == nil && scratchpad?.pendingSave == nil && (!flushDrafts || scratchpad == nil) { proceed(); return }
+        if annotations.hasDraft {
+            annotations.showDraft()
+            let message = "Save or discard your comment in the PDF’s Annotations panel."
+            reader_show_status(window, message)
+            reader_settings_set_library(reader_settings(window), libraryRoot?.path ?? "", message, false)
+            if let selectedEntry { reader_reselect_entry(window, Int32(selectedEntry)) }
+            return
+        }
+        let annotationSave = annotations.pending
+        if annotationSave == nil && positionSession == nil && scratchpad?.pendingSave == nil &&
+            (!flushDrafts || scratchpad == nil) { proceed(); return }
         reader_set_close_pending(window, true)
         let rendering = work
         transition = Task {
             await rendering?.value
             do {
+                if await annotationSave?.value == false {
+                    throw LibraryFileError.io("The annotation could not be saved.")
+                }
                 await scratchpad?.pendingSave?.value
                 await flushPosition()
                 if flushDrafts, let scratchpad, await scratchpad.flush() == false {
@@ -269,6 +286,7 @@ final class ReaderController {
                 reader_set_editing(window, enabling, true)
                 reader_settings_set_library(panel, store.root.url.path, message, false)
                 reader_show_status(window, message)
+                if bytes != nil { showPage(pageIndex, window: window) }
             } catch {
                 reader_settings_set_library(panel, store.root.url.path, "Could not change editing mode: \(error)", false)
             }
@@ -366,6 +384,7 @@ final class ReaderController {
         selection = nil
         bytes = nil
         pdfTitle = nil
+        annotationIdentity = .unverified
         pageCount = 0
         pageIndex = 0
         webPage = nil
@@ -449,7 +468,17 @@ final class ReaderController {
         }
     }
 
-    private func showPage(_ requestedIndex: Int, window: OpaquePointer) {
+    private func navigatePage(_ index: Int, window: OpaquePointer) {
+        if annotations.pending == nil && !annotations.hasDraft { showPage(index, window: window) }
+        else { leaveDocument(window, flushDrafts: false) { self.showPage(index, window: window) } }
+    }
+
+    private func pdfReplacement(for file: URL) -> PdfConditionalReplace? {
+        guard let context = writeContext else { return nil }
+        return { original, edited in try await context.replace(file, with: edited, ifCurrent: original) }
+    }
+
+    private func showPage(_ requestedIndex: Int, window: OpaquePointer, recoveredComment: String? = nil) {
         guard let file = selection, let store else { return }
         let loadingTitle = pdfTitle ?? file.lastPathComponent
         pageIndex = requestedIndex
@@ -470,18 +499,22 @@ final class ReaderController {
                     let opening = try await PdfiumDocument.openingInfo(in: loaded)
                     guard self.isCurrent(token) else { return }
                     var restored: ReadingPosition?
-                    var storageKey: String?
+                    var storageKey = opening.stableIdentifier
+                    var identity = PdfAnnotationIdentity.unverified
                     if let catalog = try? await self.catalog(in: store, token: token),
                        let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
                                                                stamp: opening.stableIdentifier, fallbackTitle: title) {
+                        identity = saved.storageKey == opening.stableIdentifier ? .ready : .requiresAbsentStamp
                         restored = saved.position
                         storageKey = saved.storageKey
                         title = saved.displayTitle
-                        if let page = saved.lastPage, (1...opening.pageCount).contains(page) {
+                        if recoveredComment == nil, let page = saved.lastPage, (1...opening.pageCount).contains(page) {
                             index = page - 1
                         }
                     }
                     guard self.isCurrent(token) else { return }
+                    self.annotationIdentity = identity
+                    index = min(index, opening.pageCount - 1)
                     self.bindPosition(key: storageKey.map { .pdf(stableIdentifier: $0) },
                                       storageKey: storageKey, restored: restored, window: window)
                     self.pageCount = opening.pageCount
@@ -507,6 +540,19 @@ final class ReaderController {
                                     buffer.bindMemory(to: UInt8.self).baseAddress,
                                     Int32(bitmap.width), Int32(bitmap.height), bitmap.bytesPerRow)
                 }
+                await self.annotations.bind(window: window, bytes: data, index: index, info: info,
+                                            replace: self.pdfReplacement(for: file), storageKey: self.documentStorageKey,
+                                            identity: self.annotationIdentity,
+                                            recoveredComment: recoveredComment, reload: { draft in
+                    self.bytes = nil
+                    self.showPage(index, window: window, recoveredComment: draft)
+                }, publish: { edited, visible in
+                    guard self.selection == file else { return }
+                    self.bytes = edited
+                    // The writer and PDFium verified the selected key on the published bytes.
+                    self.annotationIdentity = .ready
+                    if visible { self.showPage(index, window: window) }
+                })
             } catch {
                 guard self.isCurrent(token) else { return }
                 if self.bytes == nil { self.scratchpad?.select(nil) }
