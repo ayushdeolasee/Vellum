@@ -62,10 +62,7 @@ struct CoordinatedPositionStorage: PositionStorage {
         for item in items {
             guard let parsed = PositionLayout.parseFileName(item.name) else { continue }
             do {
-                var record = try await container.read(item.url) { data in
-                    try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: data)
-                }
-                record.fileNameVersion = parsed.version
+                let record = try await container.read(item.url) { try parsed.decode($0) }
                 if parsed.version != record.schemaVersion && record.schemaVersion <= PositionLayout.schemaVersion {
                     try await quarantine(item.url, in: root, container: container)
                 }

@@ -75,6 +75,19 @@ struct PositionWireFormatTests {
         #expect(String(decoding: bytes, as: UTF8.self) == String(decoding: documentedBytes, as: UTF8.self))
     }
 
+    @Test("Concurrent reads accept both legacy ISO forms and keep the canonical timestamp bytes")
+    func concurrentTimestampParsing() async {
+        let canonical = "2026-08-02T17:40:11.000000+00:00"
+        let inputs = [canonical, "2026-08-02T18:40:11.000+01:00", "2026-08-02T18:40:11+01:00"]
+        await withTaskGroup(of: String?.self) { group in
+            for index in 0..<48 {
+                let input = inputs[index % inputs.count]
+                group.addTask { PositionTimestamp.parse(input).map(PositionTimestamp.string(from:)) }
+            }
+            for await output in group { #expect(output == canonical) }
+        }
+    }
+
     @Test("Every written file carries schema_version and it matches the file name")
     func schemaVersionIsInTheBodyAndTheName() async throws {
         let root = PositionFixtures.scratchDirectory("position-wire")
