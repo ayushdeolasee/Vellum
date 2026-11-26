@@ -15,12 +15,19 @@ final class ReaderController {
     private var generation = 0
     private var work: Task<Void, Never>?
 
-    init(root: URL) { self.root = root }
+    private var metadataCatalog: ReaderMetadataCatalog?
+    private var webPage: WebPageHost?
+    private let webProbe: WebProbe?
+
+    init(root: URL, webProbe: WebProbe? = nil) {
+        self.root = root
+        self.webProbe = webProbe
+    }
 
     func run() -> Int32 {
         guard shell_install_pump(SHELL_AUTO, serviceSwiftMainQueue) >= 0 else { return 1 }
         defer { shell_remove_pump() }
-        return withExtendedLifetime(self) {
+        let status = withExtendedLifetime(self) {
             reader_run({ window, event, row, context in
                 precondition(shell_on_gtk_thread())
                 MainActor.assumeIsolated {
@@ -29,6 +36,7 @@ final class ReaderController {
                 }
             }, Unmanaged.passUnretained(self).toOpaque())
         }
+        return status == 0 ? (webProbe?.result() ?? 0) : status
     }
 
     // Superseded reads/renders can still be unwinding on their worker. Joining
@@ -56,13 +64,15 @@ final class ReaderController {
                 do {
                     let root = try await RootDirectory.open(self.root)
                     let store = ReadOnlyLibraryFileStore(root: root)
-                    let entries = try await LibraryCatalog.pdfs(in: store)
+                    let catalog = try await ReaderMetadataCatalog.load(in: store)
+                    let entries = try await LibraryCatalog.documents(in: store)
                     guard self.isCurrent(token) else { return }
                     self.store = store
+                    self.metadataCatalog = catalog
                     self.entries = entries
                     for entry in entries { reader_add_row(window, entry.name) }
                     if entries.isEmpty {
-                        reader_set_message(window, "Vellum", "No PDFs in this library.")
+                        reader_set_message(window, "Vellum", "No documents in this library.")
                     } else {
                         reader_select_row(window, 0)
                     }
@@ -76,12 +86,19 @@ final class ReaderController {
             selection = entries[row].url
             bytes = nil
             pageCount = 0
-            showPage(0, window: window)
+            pageIndex = 0
+            webPage = nil
+            if let file = selection, file.pathExtension.lowercased() == "vellumweb" {
+                showArchive(file, window: window)
+            } else {
+                showPage(0, window: window)
+            }
         case READER_PREVIOUS:
             if pageIndex > 0 { showPage(pageIndex - 1, window: window) }
         case READER_NEXT:
             if pageIndex + 1 < pageCount { showPage(pageIndex + 1, window: window) }
         case READER_CLOSE:
+            webPage = nil
             replaceWork { _ in
                 await PdfiumActor.shared.shutdown()
                 reader_finish_close(window)
@@ -91,12 +108,33 @@ final class ReaderController {
         }
     }
 
+    private func showArchive(_ file: URL, window: OpaquePointer) {
+        guard let store, let metadataCatalog else { return }
+        let title = file.lastPathComponent
+        reader_set_message(window, title, "Opening offline archive…")
+        replaceWork { token in
+            do {
+                let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
+                guard self.isCurrent(token) else { return }
+                self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
+                                           probe: self.webProbe) {
+                    let position = metadata.position.map { position in
+                        "Saved page \(position.page)" + (position.pageCount.map { " of \($0)" } ?? "")
+                    }
+                    reader_web_ready(window, metadata.displayTitle, position ?? "")
+                }
+            } catch {
+                guard self.isCurrent(token) else { return }
+                reader_set_message(window, title, "Could not open archive: \(error.localizedDescription)")
+            }
+        }
+    }
+
     private func showPage(_ index: Int, window: OpaquePointer) {
         guard let file = selection, let store else { return }
         let title = file.lastPathComponent
         pageIndex = index
-        reader_set_message(window, title, "Loading page \(index + 1)…")
-        if pageCount > 0 { reader_set_position(window, Int32(index + 1), Int32(pageCount)) }
+        reader_page_message(window, title, "Loading page \(index + 1)…", Int32(index + 1), Int32(pageCount))
         replaceWork { token in
             do {
                 let data: Data
@@ -129,15 +167,20 @@ final class ReaderController {
                 let message: String
                 switch error {
                 case PdfiumError.passwordRequired: message = "This PDF requires a password."
+                case PdfiumError.invalidPage, PdfiumError.invalidDimensions:
+                    message = "Page \(index + 1) could not be displayed."
+                case PdfiumError.queueFull: message = "The PDF reader is busy. Open another file, then reopen this PDF."
+                case PdfiumError.unsupportedSecurity: message = "This PDF uses an unsupported security method."
+                case PdfiumError.engineFailure: message = "PDFium could not render this page."
+                case LibraryFileError.io(let reason): message = "Could not read this PDF: \(reason)"
+                case LibraryFileError.symbolicLink, LibraryFileError.outsideAllowedRoot:
+                    message = "Open a regular PDF inside the library’s PDFs folder."
                 case PdfiumError.invalidDocument: message = "This file could not be read as a PDF."
                 case ReaderFileError.fileTooLarge, PdfiumError.limitExceeded:
                     message = "This PDF exceeds the reader’s size limit."
                 default: message = "Could not open page \(index + 1): \(error.localizedDescription)"
                 }
-                reader_set_message(window, title, message)
-                if self.pageCount > 0 {
-                    reader_set_position(window, Int32(index + 1), Int32(self.pageCount))
-                }
+                reader_page_message(window, title, message, Int32(index + 1), Int32(self.pageCount))
             }
         }
     }

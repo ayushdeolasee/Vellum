@@ -39,6 +39,7 @@ struct StorageSettingsTab: View {
     @State private var relocationStatus = WebStorageRelocator.status
     @State private var relocationReloadTask: Task<Void, Never>?
     @State private var pendingLocation: PendingLocation?
+    @State private var isPickingSharedFolder = false
 
     // Pending destructive confirmations (user data confirms with the title).
     @State private var pendingDeleteAll: StorageInventory.DocumentRow?
@@ -327,7 +328,7 @@ struct StorageSettingsTab: View {
         }
     }
 
-    // MARK: - Storage location (unchanged from v1)
+    // MARK: - Storage location
 
     @ViewBuilder
     private var storageLocationSection: some View {
@@ -336,8 +337,11 @@ struct StorageSettingsTab: View {
                 Text("iCloud Drive").tag(WebStorageMode.icloud)
                 Text("Custom Folder").tag(WebStorageMode.custom)
                 Text("This Mac").tag(WebStorageMode.local)
+                Text("Shared Folder (Preview)").tag(WebStorageMode.syncedFolder)
+                    .disabled(relocationStatus.isInProgress || relocationStatus.needsRecovery)
             }
             .accessibilityIdentifier("storage.locationPicker")
+            .disabled(isPickingSharedFolder)
 
             if relocationStatus.isInProgress {
                 ProgressView(relocationStatus.message)
@@ -385,6 +389,11 @@ struct StorageSettingsTab: View {
                 }
                 .accessibilityIdentifier("storage.changeFolder")
             }
+            if storageMode == .syncedFolder {
+                Button("Change Shared Folder…", action: chooseSyncedFolder)
+                    .disabled(isPickingSharedFolder)
+                    .accessibilityIdentifier("storage.changeSharedFolder")
+            }
         } header: {
             Text("Storage location")
         } footer: {
@@ -398,6 +407,7 @@ struct StorageSettingsTab: View {
         switch storageMode {
         case .icloud: return WebStorageSettings.icloudVellumRoot?.path
         case .custom: return AppDefaults.current.string(forKey: WebStorageSettings.customPathKey)
+        case .syncedFolder: return AppDefaults.current.string(forKey: WebStorageSettings.syncedFolderPathKey)
         case .local: return nil
         }
     }
@@ -409,8 +419,8 @@ struct StorageSettingsTab: View {
                 return "iCloud Drive isn't available right now (signed out, or iCloud Drive is off). Vellum is storing everything on this Mac until it comes back."
             case .custom:
                 return "The chosen folder can't be found. Vellum is storing everything on this Mac until you pick a folder again."
-            case .local:
-                return ""
+            case .local, .syncedFolder:
+                break
             }
         }
         switch storageMode {
@@ -420,6 +430,8 @@ struct StorageSettingsTab: View {
             return "Offline copies live in your folder. iCloud syncing is not available for a custom folder: highlights, notes, AI conversations, and reading positions stay on this Mac."
         case .local:
             return "Everything stays in Vellum's private app folder on this Mac. No syncing."
+        case .syncedFolder:
+            return "Vellum saved this folder for shared-library setup. Your library uses local storage in this build."
         }
     }
 
@@ -438,6 +450,8 @@ struct StorageSettingsTab: View {
                             mode: .custom, customPath: selection.path,
                             customBookmark: selection.bookmarkData)
                     }
+                case .syncedFolder:
+                    chooseSyncedFolder()
                 case .icloud:
                     guard WebStorageSettings.icloudVellumRoot != nil else { return }
                     pendingLocation = PendingLocation(mode: .icloud, customPath: nil)
@@ -446,6 +460,18 @@ struct StorageSettingsTab: View {
                 }
             }
         )
+    }
+
+    private func chooseSyncedFolder() {
+        guard !isPickingSharedFolder, !relocationStatus.isInProgress,
+              WebStorageMigrator.pendingMarker == nil else { return }
+        isPickingSharedFolder = true
+        Task {
+            defer { isPickingSharedFolder = false }
+            guard let selection = await WebStorageRelocator.pickSyncedFolder() else { return }
+            WebStorageRelocator.selectSyncedFolder(selection, coordinator: workspace.storageCoordinator)
+            refreshSettings()
+        }
     }
 
     private var autoSaveBinding: Binding<Bool> {
@@ -712,7 +738,7 @@ struct StorageSettingsTab: View {
         var label: String {
             switch mode {
             case .icloud: "iCloud Drive"
-            case .custom: "the selected folder"
+            case .custom, .syncedFolder: "the selected folder"
             case .local: "this Mac"
             }
         }
@@ -828,17 +854,24 @@ struct StorageSettingsTab: View {
             } message: {
                 Text("This removes the downloaded copy of every web page. Your saved-pages list, highlights, and notes are not affected — pages just load from the network (and re-download) the next time you open them.")
             }
+        let isLeavingSharedFolder = storageMode == .syncedFolder
         return recoveryDialogs
             .confirmationDialog(
-                pendingLocation.map { "Move Vellum storage to \($0.label)?" } ?? "",
+                pendingLocation.map { choice in
+                    isLeavingSharedFolder ? "Use \(choice.label)?" : "Move Vellum storage to \(choice.label)?"
+                } ?? "",
                 isPresented: bindingFor($pendingLocation),
                 presenting: pendingLocation
             ) { choice in
-                Button("Move Storage") { applyPendingLocation(choice) }
+                Button(isLeavingSharedFolder ? "Change Location" : "Move Storage") { applyPendingLocation(choice) }
                     .accessibilityIdentifier("storage.confirmMigration")
                 Button("Cancel", role: .cancel) { refreshSettings() }
             } message: { _ in
-                Text("Vellum will move offline pages, notes, highlights, reading positions, and AI conversations in the background. Keep Vellum open until the move finishes. If the destination becomes unavailable, Vellum keeps using its safe local copy and resumes the move when that location returns.")
+                if isLeavingSharedFolder {
+                    Text("Vellum will open the library at the location you choose.")
+                } else {
+                    Text("Vellum will move offline pages, notes, highlights, reading positions, and AI conversations in the background. Keep Vellum open until the move finishes. If the destination becomes unavailable, Vellum keeps using its safe local copy and resumes the move when that location returns.")
+                }
             }
             .alert(
                 "Couldn't relink",

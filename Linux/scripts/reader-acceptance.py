@@ -45,8 +45,11 @@ def button(name):
 
 def select(name):
     rows = find("list")
-    index = next(i for i, row in enumerate(rows) if find("label", name, row) is not None)
-    assert rows.querySelection().selectChild(index), f"Could not select {name}"
+    for i, row in enumerate(rows):
+        if find("label", name, row) is not None:
+            assert rows.querySelection().selectChild(i), f"Could not select {name}"
+            return
+    raise RuntimeError(f"Library row {name!r} is missing from the mounted fixture")
 
 
 def page(number):
@@ -97,7 +100,77 @@ def capture(number):
     return wait_for(painted, f"painted P7 landmarks on page {number}")
 
 
+def archive_ready(filename, title, position, ink):
+    select(filename)
+    wait_for(lambda: find("frame", title) and find("label", position) and
+             find("label", "Offline archive · Read only") and
+             (find("label", "Has handwriting: view on iPad/Mac") is not None) == ink,
+             f"{title}, {position}, handwriting={ink}")
+    for name in ("Previous page", "Next page"):
+        assert not find("push button", name).getState().contains(pyatspi.STATE_SENSITIVE)
+
+
+def harbor():
+    archive_ready("harbor.vellumweb", "Exchange 東京", "Saved page 1 of 1", True)
+
+    def painted():
+        for path in pictures.glob("*.png"):
+            path.unlink()
+        subprocess.run(["weston-screenshooter"], cwd=pictures, check=True, timeout=4)
+        path, = pictures.glob("*.png")
+        with Image.open(path) as source:
+            frame = source.convert("RGB")
+        # sample.png is a solid 17 x 11 rectangle of this exact color.
+        diff = ImageChops.difference(frame, Image.new("RGB", frame.size, (34, 112, 94))).split()
+        distance = ImageChops.lighter(ImageChops.lighter(*diff[:2]), diff[2])
+        box = distance.point(lambda d: 255 if d == 0 else 0).getbbox()
+        if box and (box[2] - box[0], box[3] - box[1]) == (17, 11):
+            print(f"Painted Harbor image at {box}", flush=True)
+            return frame
+    return wait_for(painted, "painted Harbor offline image")
+
+
+def verify_webkit_sandbox():
+    def status(pid):
+        fields = Path(f"/proc/{pid}/status").read_text().splitlines()
+        return dict(line.split(":", 1) for line in fields)
+    processes = []
+    for process in Path("/proc").glob("[0-9]*"):
+        try:
+            processes.append(status(process.name))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    owner = next(p for p in processes if p["Name"].strip() == "vellum-linux")
+    for child in processes:
+        if not child["Name"].strip().startswith("WebKitWebProces"):
+            continue
+        if (len(child["NSpid"].split()) > len(owner["NSpid"].split()) and
+            int(child["Seccomp_filters"]) > int(owner["Seccomp_filters"]) and
+            int(child["NoNewPrivs"]) == 1 and int(child["CapEff"], 16) == 0):
+            print(f"WebKitWebProcess NSpid={child['NSpid'].split()}, "
+                  f"seccomp filters {int(owner['Seccomp_filters'])} -> {int(child['Seccomp_filters'])}, "
+                  "NoNewPrivs=1 CapEff=0", flush=True)
+            return
+    raise RuntimeError("No WebKit web process with nested PID namespace and additional seccomp filter")
+
+
 wait_for(lambda: find("list item"), "library rows")
+if sys.argv[2:3] == ["web"]:
+    select(rotated)
+    page(1)
+    harbor()
+    verify_webkit_sandbox()
+    select(rotated)
+    page(1)
+    assert find("label", "Has handwriting: view on iPad/Mac") is None
+    if sys.argv[3:] == ["normal"] and find("label", "sidecar-only.vellumweb") is not None:
+        archive_ready("sidecar-only.vellumweb", "Sidecar article", "Saved page 3 of 5", True)
+        archive_ready("plain.vellumweb", "Plain article", "Saved page 1 of 1", False)
+        print("Record title + peer position + sidecar-only badge verified; plain archive has no badge", flush=True)
+    harbor().save(sys.argv[1])
+    button("Close")
+    print("Closed the window with the web row selected", flush=True)
+    sys.exit(0)
 # Exercise a superseded selection through the real sidebar.
 if find("label", "damaged.pdf") is not None:
     select("damaged.pdf")
@@ -108,11 +181,19 @@ select(rotated)
 page(1)
 assert not find("push button", "Previous page").getState().contains(pyatspi.STATE_SENSITIVE)
 first = capture(1)
+next_button = find("push button", "Next page")
 button("Next page")
 page(2)
 second = capture(2)
+previous = find("push button", "Previous page")
+assert previous.getState().contains(pyatspi.STATE_SENSITIVE), "Previous is disabled on page 2"
 button("Previous page")
 page(1)
+capture(1)
+assert not previous.getState().contains(pyatspi.STATE_SENSITIVE), "Previous is enabled on page 1"
+assert next_button.getState().contains(pyatspi.STATE_SENSITIVE), "Next is disabled on page 1"
+if find("label", "harbor.vellumweb") is not None:
+    harbor()
 button("Close")
 print("Activated the GTK window’s Close button", flush=True)
 pair = Image.new("RGB", (first.width + second.width, first.height))

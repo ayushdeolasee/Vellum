@@ -3,7 +3,7 @@
 # Write diagnostics to stderr and the probe screenshot or reader page pair to stdout.
 set -euo pipefail
 mode=${1:-probe}
-[[ ( $mode == probe || $mode == reader ) && $# -le 1 ]] || { echo "usage: $0 [probe|reader]" >&2; exit 64; }
+[[ ( $mode == probe || $mode == reader || $mode == web ) && $# -le 1 ]] || { echo "usage: $0 [probe|reader|web]" >&2; exit 64; }
 if [[ ${VELLUM_PRIVATE_BUS:-0} != 1 ]]; then
   # Keep D-Bus activated services' stdout out of the PNG stream.
   exec dbus-run-session -- env VELLUM_PRIVATE_BUS=1 bash -c 'exec bash "$@" >&3' -- "$0" "$mode" 3>&1 >&2
@@ -15,7 +15,7 @@ export XDG_CONFIG_HOME="$tmp/config" XDG_DATA_HOME="$tmp/data" XDG_PICTURES_DIR=
 export WAYLAND_DISPLAY=vellum-probe GDK_BACKEND=wayland GSK_RENDERER=cairo LIBGL_ALWAYS_SOFTWARE=1
 export GTK_A11Y=none
 mkdir -m 700 -p "$XDG_PICTURES_DIR"
-app=/build/linux/debug/vellum-linux
+app=${VELLUM_READER_BINARY:-/build/linux/debug/vellum-linux}
 [[ -x $app ]] || { echo "build vellum-linux with --scratch-path /build/linux -c debug first" >&2; exit 1; }
 
 # First check dispatch order deterministically across stalls without depending on Weston timing.
@@ -42,7 +42,7 @@ run_case() (
   }
   trap cleanup EXIT
   shell=kiosk-shell.so width=800 height=480
-  if [[ $pump == reader ]]; then
+  if [[ $pump == reader || $pump == web ]]; then
     shell=desktop-shell.so width=1100 height=760
     export GTK_A11Y=atspi
   fi
@@ -57,13 +57,41 @@ run_case() (
   done
   [[ -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]]
 
-  if [[ $pump == reader ]]; then
+  if [[ $pump == web ]]; then
+    # First exercise the ordinary entry point, then repeat with page-side negative checks.
+    for variant in normal probe; do
+      options=()
+      if [[ $variant == probe ]]; then options+=(--web-probe); fi
+      timeout -k 1 60 "$app" "${options[@]}" >&2 &
+      apid=$!
+      timeout -k 1 55 python3 "$(dirname "$0")/reader-acceptance.py" "$tmp/$variant.png" web "$variant" >&2
+      wait "$apid"
+      apid=
+    done
+  elif [[ $pump == reader ]]; then
     # Drive the normal executable (default root /library), including title-bar close.
     timeout -k 1 40 "$app" >&2 &
     apid=$!
     timeout -k 1 35 python3 "$(dirname "$0")/reader-acceptance.py" "$tmp/reader.png" >&2
     wait "$apid"
     apid=
+    cc -shared -fPIC "$(dirname "$0")/../Tests/GTKReader/pending-exit.c" \
+      $(pkg-config --cflags --libs gtk4 pdfium) -ldl -o "$tmp/pending-exit.so"
+    for action in close destroy quit; do
+      report="$tmp/pending-$action.log"
+      timeout -k 1 10 env LD_PRELOAD="$tmp/pending-exit.so" READER_TEST_EXIT="$action" \
+        G_DEBUG=fatal-criticals "$app" >"$report" 2>&1 || {
+        rc=$?
+        cat "$report" >&2
+        echo "Pending PDF $action test failed (exit $rc)" >&2
+        exit "$rc"
+      }
+      cat "$report" >&2
+      grep -Fxq "Drained pending PDF on $action" "$report" || {
+        echo "Reader exited before PDFium drained the pending page on $action" >&2
+        exit 1
+      }
+    done
   elif [[ $pump == auto && $load == busy ]]; then
     VELLUM_PROBE_CAPTURE_DIR="$tmp" timeout -k 1 12 "$app" --probe "$pump" "$load" >&2 &
     apid=$!
@@ -79,6 +107,11 @@ run_case() (
     timeout -k 1 12 "$app" --probe "$pump" "$load" >&2
   fi
 )
+if [[ $mode == web ]]; then
+  run_case web library
+  cat "$tmp/normal.png"
+  exit
+fi
 if [[ $mode == reader ]]; then
   run_case reader library
   cat "$tmp/reader.png"

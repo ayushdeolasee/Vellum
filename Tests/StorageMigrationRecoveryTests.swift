@@ -14,8 +14,8 @@ struct StorageMigrationRecoveryTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let local = root.appendingPathComponent("local/web")
         return (root,
-                .pretty(root: root.appendingPathComponent("custom"), recordsInRoot: false, localStoreDir: local),
-                .pretty(root: root.appendingPathComponent("cloud"), recordsInRoot: true, localStoreDir: local),
+                .custom(root: root.appendingPathComponent("custom"), storeDir: local),
+                .iCloud(root: root.appendingPathComponent("cloud")),
                 FakeSyncedContainer())
     }
 

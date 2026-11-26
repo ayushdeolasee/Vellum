@@ -10,8 +10,7 @@ struct StorageRelocationContextTests {
         let localStore = URL(fileURLWithPath: "/local/web", isDirectory: true)
         let cloudRoot = URL(fileURLWithPath: "/cloud/Vellum", isDirectory: true)
         let local = WebStorageLayout.local(storeDir: localStore)
-        let cloud = WebStorageLayout.pretty(
-            root: cloudRoot, recordsInRoot: true, localStoreDir: localStore)
+        let cloud = WebStorageLayout.iCloud(root: cloudRoot)
         let container = FakeSyncedContainer()
         let coordinator = StorageCoordinator(
             storeDir: localStore,
@@ -50,8 +49,7 @@ struct StorageRelocationContextTests {
         let localStore = URL(fileURLWithPath: "/local/web", isDirectory: true)
         let cloudRoot = URL(fileURLWithPath: "/cloud/Vellum", isDirectory: true)
         let local = WebStorageLayout.local(storeDir: localStore)
-        let cloud = WebStorageLayout.pretty(
-            root: cloudRoot, recordsInRoot: true, localStoreDir: localStore)
+        let cloud = WebStorageLayout.iCloud(root: cloudRoot)
         let coordinator = StorageCoordinator(
             storeDir: localStore,
             modeProvider: { .local },

@@ -334,9 +334,11 @@ final class WorkspaceStore {
             await startStorageCoordinator()
             await integrations.start()
             await integrations.prefetchOfflineCopies()
-            await Task.detached(priority: .utility) {
-                WebStorageSettings.resolveICloudRoot()
-            }.value
+            if WebStorageSettings.chosenMode != .syncedFolder {
+                await Task.detached(priority: .utility) {
+                    WebStorageSettings.resolveICloudRoot()
+                }.value
+            }
             let openDocuments = root.allLeaves().flatMap { $0.app.tabs }.compactMap(\.document)
             let openKeys = Set(openDocuments.filter { $0.kind == .pdf }.map {
                 DocumentIdentity.storageKey(for: $0)
