@@ -24,7 +24,7 @@ The map is done when nothing is left to decide before someone starts building.
 ## Notes
 
 - Domain: macOS app on `main` (this repo). iPhone/iPad code is not ported.
-- Agents consulted while charting: Gemini 4 Neon and GPT 6.2 Astra (round 1 research, round 2 review, round 3 work items).
+- Agents consulted while charting: Gemini 4 Neon and GPT 6.2 Astra (round 1 research, round 2 review, round 3 work items, round 4 cross-review).
 - Standing preferences: native feel over convenience; personal use first, public later;
   every step must keep the Mac app building and behaving the same.
 - `project.yml` stays the source of truth for Apple targets. Linux builds with SwiftPM.
@@ -81,26 +81,31 @@ not a promise.
 
 | # | Milestone | Items | Effort | Done when |
 |---|---|---|---|---|
-| M0 | Foundations | C0, C1, P7, I0 | ~2 | Container builds; `VellumCore` exists and the Mac + iOS Debug builds pass; fixtures committed |
-| M1 | Shared formats in `VellumCore` | C2, C3, C4 | ~6 | Same hashes, positions and `.vellumweb` bytes read identically on Mac and Linux |
-| M2 | **Read-only Linux reader** | C5a, P1, C5b, I1, C5c, I2 | ~6.5 | GTK window shows library, PDF pages (with iPad ink) and an offline article; library checksum unchanged |
-| M3 | Shared library sync | S1–S9 | ~10.5 | Mac and Linux share one Syncthing folder; two-peer offline conflict test recovers everything |
-| M4 | Linux edits PDFs | P4/C6, P3/C7a, P2, P5/C7b, P6 | ~10.5 | Linux highlights and notes read back identically on the Mac, including on xref-stream PDFs |
-| M5 | Portable ink | I3–I8 | ~5.5 | iPad writes portable strokes; Linux shows web ink |
-| M6 | Linux draws ink | I9–I12 | ~5 | Mixed-version iPad + Mac + Linux round trip loses nothing |
+| M0 | Foundations | C0, C1, P7, I0 | ~2.5 | Container builds; `VellumCore` exists; Mac + iOS Debug builds pass; one shared fixture corpus |
+| M1 | Shared formats in `VellumCore` | C2, C3, C4 | ~6 | Same hashes, positions and `.vellumweb` bytes on Mac and Linux |
+| M2 | **Read-only Linux reader** | C5a, P1, C5b, I1, C5c, I2, S5a | ~7 | GTK window shows library, PDF pages (with iPad ink) and an offline article; library checksum unchanged |
+| M3 | PDF primitives + eligibility | P4/C6, P3/C7a, P2 | ~4.5 | Core can decide per PDF whether Linux may edit it; Linux text matches PDFKit goldens |
+| M4 | Shared library sync | S1–S4, S5b, S6–S9 | ~13 | Mac and Linux share one Syncthing folder; S9 two-peer offline test recovers everything |
+| M5 | Linux edits PDFs | P5/C7b, P6 | ~6 | Linux highlights and notes read back identically on the Mac, incl. xref-stream PDFs |
+| M6 | Portable ink | I3–I8 | ~6 | iPad writes portable strokes; Linux shows web ink |
+| M7 | Linux draws ink | I9, I9b, I10–I12 | ~6 | Mixed-version iPad + Mac + Linux round trip loses and resurrects nothing |
 | — | Network seams | C8 | ~2 | Streaming AI and libsecret credentials work on Linux |
 | — | Linux app screens (not itemized yet, see fog) | — | ~10 (guess) | Library/search UI, highlight + note UI, scratchpad, AI chat, settings |
 
-**Personal-use v1 = M0–M4 + C8 + the app screens + I1/I2 ≈ 48 agent-days.** M5–M6 follow.
-P6 (xref streams) stays in v1 because many modern PDFs use them; without it Linux could annotate only some files.
+Each double-ID item (P3 = C7a, P4 = C6, P5 = C7b) is counted once.
 
-**Critical path:** C0 → C1 → C2 → C3/C4 → C5b → C6 → C7a → C7b. Track S (shared library) runs in parallel from
-C1, and must finish before Linux may write to a library that the Mac also writes.
+**Personal-use v1 = M0–M5 + C8 + the app screens ≈ 51 agent-days.** M6–M7 (ink beyond viewing) follow.
+P6 (xref streams) stays in v1, because many modern PDFs use them; without it, Linux could annotate only some files.
+
+Round 4 changed the order: P4/C6 and P3/C7a now come **before** the shared-library work, because S8 (stamping
+PDFs on import) needs the eligibility check. Linux writing to a shared library waits for S9.
+
+**Critical path:** C0 → C1 → C2 → C3/C4 → C5b → C6 → C7a → S8 → S9 → C7b.
 
 **Parallel tracks after M0:**
-- Track A: C2 → C3/C4 → C5a/C5b/C5c (Linux reader)
-- Track B: S2, S3, then S1 → S4/S5 → S6/S7 → S8 → S9 (mostly Mac-side work)
-- Track C: I3 → I4 → I5/I6 → I7 (iPad-side ink work, independent of Linux)
+- Track A: C2 → C3/C4 → C5a/C5b/C5c (Linux reader), then C6 → C7a
+- Track B: S2, S3, S1 → S4/S5a (mostly Mac-side), then S5b → S6/S7 → S8 → S9 once C7a lands
+- Track C: I3 → I4 → I5 → I7 (iPad-side ink work). I6 also needs P4/C6.
 
 ## Not yet specified (fog)
 
