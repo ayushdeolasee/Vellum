@@ -2,7 +2,6 @@ import XCTest
 import PDFKit
 import CoreGraphics
 import CoreText
-import CryptoKit
 @testable import Vellum
 
 // DocumentID layer (Services/DocumentIdentity.swift, /VellumDocId stamping in
@@ -257,8 +256,9 @@ final class DocumentIdentityTests: XCTestCase {
     /// byteHash is the plain lowercase-hex sha256 of the bytes (not the partial
     /// content-hash validator).
     func testByteHashIsFullSha256() {
-        let data = Data("vellum".utf8)
-        let expected = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let data = Data([0, 10, 255, 128])
+        let expected = "07116a8c00bb25c3b23b246f1d41aebd33345b48b671936f4b8dc9d11ad3f7e1"
         XCTAssertEqual(DocumentIdentity.byteHash(data), expected)
+        XCTAssertEqual(WebArchive.sha256Hex(data), "sha256:" + expected)
     }
 }
