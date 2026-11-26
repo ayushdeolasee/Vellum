@@ -56,7 +56,7 @@ public final class RootDirectory: Sendable {
         }
     }
 
-    private func relativePath(to url: URL) throws -> String {
+    func relativePath(to url: URL) throws -> String {
         let path = try Self.pathComponents(of: url)
         // Linux compares filesystem names bytewise, including Unicode normalization.
         guard path.count >= components.count,

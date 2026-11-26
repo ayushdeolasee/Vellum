@@ -131,7 +131,11 @@ final class ReaderController {
             updateSearch(String(cString: reader_search_query(window)), window: window)
         case READER_CLOSE_REQUEST:
             if transition != nil { closeRequested = true; return }
-            leaveDocument(window, flushDrafts: true) { reader_commit_close(window) }
+            leaveDocument(window, flushDrafts: true) {
+                self.webPage?.session = nil
+                self.positionSession = nil
+                reader_commit_close(window)
+            }
         case READER_CLOSE:
             closing = true
             let changing = transition
@@ -163,6 +167,19 @@ final class ReaderController {
         try await session.flush()
     }
 
+    private func confirmLeaving(_ window: OpaquePointer, scratchpad: Bool) async -> Bool {
+        // The dialog always replies once, including when GTK shuts down.
+        final class Reply {
+            let continuation: CheckedContinuation<Bool, Never>
+            init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+        }
+        return await withCheckedContinuation { continuation in
+            reader_confirm_leave(window, scratchpad, { owner, discard in
+                Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: discard)
+            }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
+        }
+    }
+
     private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
         guard !closing, transition == nil else { return }
         let pendingChat = chat.drain(reader_chat_panel(window))
@@ -176,10 +193,14 @@ final class ReaderController {
             await rendering?.value
             do {
                 await scratchpad?.pendingSave?.value
-                if await pendingChat?.value == false { throw LibraryFileError.retryable }
-                try await flushPosition()
+                _ = await pendingChat?.value
+                do { try await flushPosition() }
+                catch {
+                    guard await confirmLeaving(window, scratchpad: false) else { throw error }
+                }
                 if flushDrafts, await scratchpad?.flush() == false {
-                    throw LibraryFileError.io("A scratchpad draft could not be saved.")
+                    guard await confirmLeaving(window, scratchpad: true) else { throw LibraryFileError.retryable }
+                    scratchpad?.discardUnsavedDrafts()
                 }
                 guard !closing else { return }
                 transition = nil
@@ -223,13 +244,18 @@ final class ReaderController {
             }
             do {
                 let next = enabling ? try await SharedLibraryWriteContext.activate(root: store.root) : nil
-                try await preferences.saveEditing(enabling, for: store.root)
+                var message = enabling ? "Shared editing enabled for this folder." : "This folder is read only."
+                do { try await preferences.saveEditing(enabling, for: store.root) }
+                catch {
+                    if enabling { throw error }
+                    message = "Read only for this session. Could not save the setting for next launch."
+                }
                 await scratchpad?.shutdown()
                 await writeContext?.retire()
                 guard !closing else { await next?.retire(); return }
                 writeContext = next
                 chat.setContext(next, provider: settings.provider, panel: reader_chat_panel(window))
-                let storage = await scratchpadStorage(files: store)
+                let storage = await scratchpadStorage(files: store, context: next)
                 guard !closing else { return }
                 scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
                 scratchpad?.select(documentStorageKey)
@@ -237,7 +263,6 @@ final class ReaderController {
                 webPage?.session = positionSession
                 if let point = await webPage?.location() ?? displayedPosition { positionSession?.moved(point) }
                 reader_set_editing(window, enabling, true)
-                let message = enabling ? "Shared editing enabled for this folder." : "This folder is read only."
                 reader_settings_set_library(panel, store.root.url.path, message, false)
                 reader_show_status(window, message)
             } catch {
@@ -290,14 +315,15 @@ final class ReaderController {
                     catch { message = "Could not remember this folder." }
                 }
                 guard self.isCurrent(token) else { return }
+                var context: SharedLibraryWriteContext?
                 if await self.preferences.editingEnabled(for: root) {
-                    do { self.writeContext = try await SharedLibraryWriteContext.activate(root: root) }
+                    do { context = try await SharedLibraryWriteContext.activate(root: root) }
                     catch { message = "Could not enable shared editing. This folder is read only." }
                 }
-                guard self.isCurrent(token) else { return }
-                reader_set_editing(window, self.writeContext != nil, true)
-                let storage = await self.scratchpadStorage(files: store)
-                guard self.isCurrent(token) else { return }
+                let storage = await self.scratchpadStorage(files: store, context: context)
+                guard self.isCurrent(token) else { await context?.retire(); return }
+                self.writeContext = context
+                reader_set_editing(window, context != nil, true)
                 self.scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
                 self.store = store
                 self.metadataCatalog = catalog
@@ -335,8 +361,8 @@ final class ReaderController {
         webPage = nil
     }
 
-    private func scratchpadStorage(files: ReadOnlyLibraryFileStore) async -> ScratchpadStorage {
-        if let writeContext {
+    private func scratchpadStorage(files: ReadOnlyLibraryFileStore, context: SharedLibraryWriteContext?) async -> ScratchpadStorage {
+        if let writeContext = context {
             return ScratchpadStorage(files: files, importDirectory: files.root.url) { url, data, expected in
                 try await writeContext.replace(url, with: data, ifCurrent: expected)
             }

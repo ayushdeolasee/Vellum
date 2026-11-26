@@ -14,6 +14,7 @@ struct ReaderWindow {
     ReaderChatPanel *chat;
     ReaderCallback callback;
     void *context;
+    GCancellable *leave_dialog;
     gboolean closing, drained, editing;
 };
 
@@ -66,6 +67,7 @@ static void clicked(GtkButton *button, ReaderWindow *r) {
 static void begin_close(ReaderWindow *r) {
     if (!r->window || r->closing) return;
     r->closing = TRUE;
+    if (r->leave_dialog) g_cancellable_cancel(r->leave_dialog);
     reader_settings_dismiss(r->settings);
     notify(r, READER_CLOSE, -1);
 }
@@ -87,6 +89,36 @@ ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *r) {
 void reader_set_close_pending(ReaderWindow *r, bool pending) {
     g_assert(shell_on_gtk_thread());
     if (!r->closing) gtk_widget_set_sensitive(GTK_WIDGET(r->window), !pending);
+}
+
+typedef struct {
+    ReaderWindow *reader;
+    ReaderLeaveReply reply;
+    void *context;
+} LeaveRequest;
+
+static void leave_answered(GObject *source, GAsyncResult *result, gpointer data) {
+    g_autofree LeaveRequest *request = data;
+    int answer = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source), result, NULL);
+    g_clear_object(&request->reader->leave_dialog);
+    request->reply(request->context, answer == 1);
+}
+
+void reader_confirm_leave(ReaderWindow *r, bool scratchpad, ReaderLeaveReply reply, void *context) {
+    if (r->closing || r->leave_dialog) { reply(context, false); return; }
+    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("%s", scratchpad
+        ? "Some scratchpad changes could not be saved." : "Your reading position could not be saved.");
+    gtk_alert_dialog_set_detail(dialog, scratchpad
+        ? "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk."
+        : "You can stay and retry, or continue with the last saved position.");
+    const char *buttons[] = {"Stay Here", scratchpad ? "Discard Unsaved Drafts" : "Continue Without Saving Position", NULL};
+    gtk_alert_dialog_set_buttons(dialog, buttons);
+    gtk_alert_dialog_set_cancel_button(dialog, 0);
+    gtk_alert_dialog_set_default_button(dialog, 0);
+    LeaveRequest *request = g_new(LeaveRequest, 1);
+    *request = (LeaveRequest){r, reply, context};
+    r->leave_dialog = g_cancellable_new();
+    gtk_alert_dialog_choose(dialog, r->window, r->leave_dialog, leave_answered, request);
 }
 
 void reader_commit_close(ReaderWindow *r) {
