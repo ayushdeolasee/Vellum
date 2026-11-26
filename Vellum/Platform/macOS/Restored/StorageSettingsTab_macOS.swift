@@ -531,7 +531,7 @@ struct StorageSettingsTab: View {
             defer { isPickingSharedFolder = false }
             guard let selection = await WebStorageRelocator.pickSyncedFolder() else { return }
             sharedFolderStatus = nil
-            WebStorageRelocator.selectSyncedFolder(selection, coordinator: workspace.storageCoordinator)
+            await WebStorageRelocator.selectSyncedFolder(selection, workspace: workspace)
             refreshSettings()
         }
     }
@@ -837,13 +837,15 @@ struct StorageSettingsTab: View {
     }
 
     private func applyPendingLocation(_ choice: PendingLocation) {
-        WebStorageRelocator.apply(
-            mode: choice.mode,
-            customPath: choice.customPath,
-            customBookmark: choice.customBookmark,
-            coordinator: workspace.storageCoordinator)
-        refreshSettings()
-        relocationStatus = WebStorageRelocator.status
+        Task {
+            await WebStorageRelocator.apply(
+                mode: choice.mode,
+                customPath: choice.customPath,
+                customBookmark: choice.customBookmark,
+                workspace: workspace)
+            refreshSettings()
+            relocationStatus = WebStorageRelocator.status
+        }
     }
 
     private func relink(_ row: StorageInventory.DocumentRow) {

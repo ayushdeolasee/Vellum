@@ -508,6 +508,15 @@ final class WorkspaceStore {
     #endif
 
     #if os(macOS)
+    func changeSharedStorageLocation(
+        path: String, operation: @escaping @MainActor @Sendable () async -> Void
+    ) async throws {
+        try await performStorageRecovery(key: nil, path: path) {
+            await self.awaitPendingPositionRecords()
+            try await self.positions.store.withStorageChange { await operation() }
+        }
+    }
+
     func migrateSharedPDFs(_ sources: [URL], rollback: Bool) async throws {
         let coordinator = storageCoordinator
         let location = try await DocumentAccessResolver.live.configured(for: coordinator).sharedPDFs
@@ -518,26 +527,28 @@ final class WorkspaceStore {
             guard await self.flushScratchpadsForTermination(), await AiPersistence.awaitPendingFlush() else {
                 throw ConflictRecoveryError.pendingChanges
             }
-            try await self.positions.store.prepareForExternalRekey()
-            guard self.recoveryDocumentIsClosed(nil), !self.recoveryHasPendingDrafts(nil) else {
-                throw ConflictRecoveryError.pendingChanges
-            }
+            await self.awaitPendingPositionRecords()
             let local = WebLibrary.storeDir.deletingLastPathComponent()
-            let result = await coordinator.performExclusiveSharedPDFOperation(root: location.root) {
-                do {
-                    let migration = try SharedPDFMigration(root: location.root, localData: local,
-                        journals: local.appendingPathComponent("PDF Migration Journals", isDirectory: true))
-                    if rollback { try await migration.rollback() }
-                    else {
-                        // Keep the selected external originals readable throughout planning and verification.
-                        let scopes = sources.filter { $0.startAccessingSecurityScopedResource() }
-                        defer { for url in scopes { url.stopAccessingSecurityScopedResource() } }
-                        try await migration.migrate(sources, readID: SharedPDFImport.readID)
-                    }
-                    return Result<Void, Error>.success(())
-                } catch { return .failure(error) }
+            try await self.positions.store.withStorageChange { @MainActor in
+                guard self.recoveryDocumentIsClosed(nil), !self.recoveryHasPendingDrafts(nil) else {
+                    throw ConflictRecoveryError.pendingChanges
+                }
+                let result = await coordinator.performExclusiveSharedPDFOperation(root: location.root) {
+                    do {
+                        let migration = try SharedPDFMigration(root: location.root, localData: local,
+                            journals: local.appendingPathComponent("PDF Migration Journals", isDirectory: true))
+                        if rollback { try await migration.rollback() }
+                        else {
+                            // Keep the selected external originals readable throughout planning and verification.
+                            let scopes = sources.filter { $0.startAccessingSecurityScopedResource() }
+                            defer { for url in scopes { url.stopAccessingSecurityScopedResource() } }
+                            try await migration.migrate(sources, readID: SharedPDFImport.readID)
+                        }
+                        return Result<Void, Error>.success(())
+                    } catch { return .failure(error) }
+                }
+                try result.get()
             }
-            try result.get()
         }
     }
     #endif
