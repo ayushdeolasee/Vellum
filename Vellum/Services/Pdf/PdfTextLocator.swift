@@ -1,5 +1,6 @@
 import Foundation
 import PDFKit
+import VellumCore
 
 // Cross-platform PDF text geometry + AI highlight locator — the pure algorithms
 // from the macOS PdfViewerController's static helpers, extracted so the iPad
@@ -89,50 +90,8 @@ enum PdfTextLocator {
     ) -> LocatedText? {
         guard pageNumber >= 1, pageNumber <= document.pageCount,
               let page = document.page(at: pageNumber - 1) else { return nil }
-        let needle = query
-            .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
-            .lowercased()
-        guard !needle.isEmpty, !pageString.isEmpty else { return nil }
-
-        // Whitespace-free lowercase haystack; every character remembers the
-        // UTF-16 range of the source character that produced it.
-        var haystack: [Character] = []
-        var ownerStarts: [Int] = []
-        var ownerLengths: [Int] = []
-        var utf16Offset = 0
-        for character in pageString {
-            let length = String(character).utf16.count
-            if !character.isWhitespace {
-                for lowered in String(character).lowercased() {
-                    haystack.append(lowered)
-                    ownerStarts.append(utf16Offset)
-                    ownerLengths.append(length)
-                }
-            }
-            utf16Offset += length
-        }
-        let needleChars = Array(needle)
-        guard !needleChars.isEmpty, haystack.count >= needleChars.count else { return nil }
-
-        var matchStart = -1
-        for start in 0...(haystack.count - needleChars.count) {
-            var matches = true
-            for offset in 0..<needleChars.count where haystack[start + offset] != needleChars[offset] {
-                matches = false
-                break
-            }
-            if matches {
-                matchStart = start
-                break
-            }
-        }
-        guard matchStart >= 0 else { return nil }
-        let matchLast = matchStart + needleChars.count - 1
-        let rangeStart = ownerStarts[matchStart]
-        let rangeEnd = ownerStarts[matchLast] + ownerLengths[matchLast]
-        guard rangeEnd > rangeStart,
-              let selection = page.selection(
-                for: NSRange(location: rangeStart, length: rangeEnd - rangeStart))
+        guard let range = PdfTextSelectionMath.firstMatch(of: query, in: pageString),
+              let selection = page.selection(for: NSRange(location: range.lowerBound, length: range.count))
         else { return nil }
 
         var rects: [AnnotationRect] = []
@@ -162,28 +121,7 @@ enum PdfTextLocator {
 
     /// Merge rects on the same visual line: |Δy| ≤ 0.6 × min heights.
     static func mergeLineRects(_ rects: [AnnotationRect]) -> [AnnotationRect] {
-        guard !rects.isEmpty else { return [] }
-        let sorted = rects.sorted { $0.y != $1.y ? $0.y < $1.y : $0.x < $1.x }
-        var lines: [AnnotationRect] = []
-        for rect in sorted {
-            if var last = lines.last {
-                let tolerance = min(rect.height, last.height) * 0.6
-                if abs(rect.y - last.y) <= tolerance {
-                    let left = min(last.x, rect.x)
-                    let right = max(last.x + last.width, rect.x + rect.width)
-                    let top = min(last.y, rect.y)
-                    let bottom = max(last.y + last.height, rect.y + rect.height)
-                    last.x = left
-                    last.y = top
-                    last.width = right - left
-                    last.height = bottom - top
-                    lines[lines.count - 1] = last
-                    continue
-                }
-            }
-            lines.append(rect)
-        }
-        return lines
+        PdfTextSelectionMath.mergeLineRects(rects)
     }
 
     /// pdf_to_ui with UserUnit = 1: PDF page space (bottom-left, CropBox-relative)

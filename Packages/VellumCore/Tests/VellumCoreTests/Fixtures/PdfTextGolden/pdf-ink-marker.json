@@ -1,0 +1,29 @@
+{
+  "fixture" : "pdf-ink-marker.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 240,
+        "width" : 320,
+        "x" : 0,
+        "y" : 0
+      },
+      "displayHeight" : 240,
+      "displayWidth" : 320,
+      "drags" : [
+
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 0,
+      "pdfkitText" : "",
+      "probes" : [
+        {
+          "query" : "missing quote"
+        }
+      ],
+      "rotation" : 0
+    }
+  ],
+  "pdfSHA256" : "6bfcddee8e4cca25bd1a19d290935e55aab1debbc664239673fc19acbf0104fd",
+  "version" : 1
+}

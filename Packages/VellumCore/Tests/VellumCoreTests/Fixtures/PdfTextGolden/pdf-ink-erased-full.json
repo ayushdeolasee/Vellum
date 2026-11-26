@@ -1,0 +1,29 @@
+{
+  "fixture" : "pdf-ink-erased-full.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 240,
+        "width" : 320,
+        "x" : 0,
+        "y" : 0
+      },
+      "displayHeight" : 240,
+      "displayWidth" : 320,
+      "drags" : [
+
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 0,
+      "pdfkitText" : "",
+      "probes" : [
+        {
+          "query" : "missing quote"
+        }
+      ],
+      "rotation" : 0
+    }
+  ],
+  "pdfSHA256" : "940be2d1ac984cfc27d9ffb1df7c3595c3a052262a1812f2b6c6b4ee8f0c5910",
+  "version" : 1
+}

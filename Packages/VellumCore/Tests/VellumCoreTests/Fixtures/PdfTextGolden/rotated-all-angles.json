@@ -1,0 +1,415 @@
+{
+  "fixture" : "rotated-all-angles.pdf",
+  "pages" : [
+    {
+      "cropBox" : {
+        "height" : 708,
+        "width" : 552,
+        "x" : 24,
+        "y" : 36
+      },
+      "displayHeight" : 708,
+      "displayWidth" : 552,
+      "drags" : [
+        {
+          "edge" : "end",
+          "initialQuery" : "Rotation",
+          "name" : "extend end on rotated page",
+          "result" : {
+            "page_height" : 708,
+            "page_width" : 552,
+            "rects" : [
+              {
+                "height" : 14,
+                "width" : 95.71800000000002,
+                "x" : 48,
+                "y" : 33.2197265625
+              }
+            ],
+            "selected_text" : "Rotation 0 degr"
+          },
+          "x" : 147.61,
+          "y" : 40.2197265625
+        },
+        {
+          "edge" : "start",
+          "initialQuery" : "degrees",
+          "name" : "extend start on rotated page",
+          "result" : {
+            "page_height" : 708,
+            "page_width" : 552,
+            "rects" : [
+              {
+                "height" : 14,
+                "width" : 96.50200000000004,
+                "x" : 69.78399999999999,
+                "y" : 33.2197265625
+              }
+            ],
+            "selected_text" : "ation 0 degrees"
+          },
+          "x" : 67.838,
+          "y" : 40.2197265625
+        }
+      ],
+      "page" : 1,
+      "pdfkitCharacterCount" : 18,
+      "pdfkitText" : "Rotation 0 degrees",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              0,
+              10
+            ]
+          ],
+          "pdfkitSelectionText" : "Rotation 0",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 63.81200000000001,
+              "x" : 48,
+              "y" : 33.2197265625
+            }
+          ],
+          "query" : "Rotation 0",
+          "utf16Range" : [
+            0,
+            10
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              11,
+              18
+            ]
+          ],
+          "pdfkitSelectionText" : "degrees",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 50.58200000000002,
+              "x" : 115.70400000000001,
+              "y" : 33.2197265625
+            }
+          ],
+          "query" : "degrees",
+          "utf16Range" : [
+            11,
+            18
+          ]
+        }
+      ],
+      "rotation" : 0
+    },
+    {
+      "cropBox" : {
+        "height" : 708,
+        "width" : 552,
+        "x" : 24,
+        "y" : 36
+      },
+      "displayHeight" : 552,
+      "displayWidth" : 708,
+      "drags" : [
+        {
+          "edge" : "end",
+          "initialQuery" : "Rotation",
+          "name" : "extend end on rotated page",
+          "result" : {
+            "page_height" : 552,
+            "page_width" : 708,
+            "rects" : [
+              {
+                "height" : 73.93400000000001,
+                "width" : 14,
+                "x" : 660.7802734375,
+                "y" : 77.568
+              }
+            ],
+            "selected_text" : "tion 90 degr"
+          },
+          "x" : 667.7802734375,
+          "y" : 155.394
+        },
+        {
+          "edge" : "start",
+          "initialQuery" : "degrees",
+          "name" : "extend start on rotated page",
+          "result" : {
+            "page_height" : 552,
+            "page_width" : 708,
+            "rects" : [
+              {
+                "height" : 77.05600000000004,
+                "width" : 14,
+                "x" : 660.7802734375,
+                "y" : 69.78399999999999
+              }
+            ],
+            "selected_text" : "ation 90 deg"
+          },
+          "x" : 667.7802734375,
+          "y" : 67.838
+        }
+      ],
+      "page" : 2,
+      "pdfkitCharacterCount" : 19,
+      "pdfkitText" : "Rotation 90 degrees",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              0,
+              11
+            ]
+          ],
+          "pdfkitSelectionText" : "Rotation 90",
+          "pdfkitUiRects" : [
+            {
+              "height" : 71.596,
+              "width" : 14,
+              "x" : 660.7802734375,
+              "y" : 48
+            }
+          ],
+          "query" : "Rotation 90",
+          "utf16Range" : [
+            0,
+            11
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              12,
+              19
+            ]
+          ],
+          "pdfkitSelectionText" : "degrees",
+          "pdfkitUiRects" : [
+            {
+              "height" : 50.58200000000005,
+              "width" : 14,
+              "x" : 660.7802734375,
+              "y" : 123.488
+            }
+          ],
+          "query" : "degrees",
+          "utf16Range" : [
+            12,
+            19
+          ]
+        }
+      ],
+      "rotation" : 90
+    },
+    {
+      "cropBox" : {
+        "height" : 708,
+        "width" : 552,
+        "x" : 24,
+        "y" : 36
+      },
+      "displayHeight" : 708,
+      "displayWidth" : 552,
+      "drags" : [
+        {
+          "edge" : "end",
+          "initialQuery" : "Rotation",
+          "name" : "extend end on rotated page",
+          "result" : {
+            "page_height" : 708,
+            "page_width" : 552,
+            "rects" : [
+              {
+                "height" : 14,
+                "width" : 59.150000000000034,
+                "x" : 392.714,
+                "y" : 660.7802734375
+              }
+            ],
+            "selected_text" : " 180 degr"
+          },
+          "x" : 388.822,
+          "y" : 667.7802734375
+        },
+        {
+          "edge" : "start",
+          "initialQuery" : "degrees",
+          "name" : "extend start on rotated page",
+          "result" : {
+            "page_height" : 708,
+            "page_width" : 552,
+            "rects" : [
+              {
+                "height" : 14,
+                "width" : 61.488,
+                "x" : 420.728,
+                "y" : 660.7802734375
+              }
+            ],
+            "selected_text" : "ation 180 "
+          },
+          "x" : 484.16200000000003,
+          "y" : 667.7802734375
+        }
+      ],
+      "page" : 3,
+      "pdfkitCharacterCount" : 20,
+      "pdfkitText" : "Rotation 180 degrees",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              0,
+              12
+            ]
+          ],
+          "pdfkitSelectionText" : "Rotation 180",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 79.38,
+              "x" : 424.62,
+              "y" : 660.7802734375
+            }
+          ],
+          "query" : "Rotation 180",
+          "utf16Range" : [
+            0,
+            12
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              13,
+              20
+            ]
+          ],
+          "pdfkitSelectionText" : "degrees",
+          "pdfkitUiRects" : [
+            {
+              "height" : 14,
+              "width" : 50.581999999999994,
+              "x" : 370.146,
+              "y" : 660.7802734375
+            }
+          ],
+          "query" : "degrees",
+          "utf16Range" : [
+            13,
+            20
+          ]
+        }
+      ],
+      "rotation" : 180
+    },
+    {
+      "cropBox" : {
+        "height" : 708,
+        "width" : 552,
+        "x" : 24,
+        "y" : 36
+      },
+      "displayHeight" : 552,
+      "displayWidth" : 708,
+      "drags" : [
+        {
+          "edge" : "end",
+          "initialQuery" : "Rotation",
+          "name" : "extend end on rotated page",
+          "result" : {
+            "page_height" : 552,
+            "page_width" : 708,
+            "rects" : [
+              {
+                "height" : 81.71800000000002,
+                "width" : 14,
+                "x" : 33.2197265625,
+                "y" : 392.714
+              }
+            ],
+            "selected_text" : "tion 270 degr"
+          },
+          "x" : 40.2197265625,
+          "y" : 388.822
+        },
+        {
+          "edge" : "start",
+          "initialQuery" : "degrees",
+          "name" : "extend start on rotated page",
+          "result" : {
+            "page_height" : 552,
+            "page_width" : 708,
+            "rects" : [
+              {
+                "height" : 84.84000000000003,
+                "width" : 14,
+                "x" : 33.2197265625,
+                "y" : 397.376
+              }
+            ],
+            "selected_text" : "ation 270 deg"
+          },
+          "x" : 40.2197265625,
+          "y" : 484.16200000000003
+        }
+      ],
+      "page" : 4,
+      "pdfkitCharacterCount" : 20,
+      "pdfkitText" : "Rotation 270 degrees",
+      "probes" : [
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              0,
+              12
+            ]
+          ],
+          "pdfkitSelectionText" : "Rotation 270",
+          "pdfkitUiRects" : [
+            {
+              "height" : 79.38,
+              "width" : 14,
+              "x" : 33.2197265625,
+              "y" : 424.62
+            }
+          ],
+          "query" : "Rotation 270",
+          "utf16Range" : [
+            0,
+            12
+          ]
+        },
+        {
+          "pdfkitSelectionRanges" : [
+            [
+              13,
+              20
+            ]
+          ],
+          "pdfkitSelectionText" : "degrees",
+          "pdfkitUiRects" : [
+            {
+              "height" : 50.581999999999994,
+              "width" : 14,
+              "x" : 33.2197265625,
+              "y" : 370.146
+            }
+          ],
+          "query" : "degrees",
+          "utf16Range" : [
+            13,
+            20
+          ]
+        }
+      ],
+      "rotation" : 270
+    }
+  ],
+  "pdfSHA256" : "9f141574be25c4b266bff0cfe8d78b1fec228ad7446a6d46599cfb0a1b1e1dab",
+  "version" : 1
+}
