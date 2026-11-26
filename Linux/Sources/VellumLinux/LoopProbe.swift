@@ -2,10 +2,9 @@ import CShell
 import Dispatch
 import Foundation
 
-private let swiftTurn: @convention(c) () -> Void = {
+func serviceSwiftMainQueue() {
     precondition(shell_on_gtk_thread())
     _ = RunLoop.main.run(mode: .default, before: .distantPast)
-    shell_probe_turn_finished()
 }
 
 private func checkThread() {
@@ -67,7 +66,10 @@ private func startSamples(busy: Bool) {
 }
 
 func runLoopProbe(mode: ShellPump, busy: Bool) -> Int32 {
-    let selected = shell_install_pump(mode, swiftTurn)
+    let selected = shell_install_pump(mode) {
+        serviceSwiftMainQueue()
+        shell_probe_turn_finished()
+    }
     defer { shell_remove_pump() }
     guard selected >= 0 else {
         fputs("effective=unavailable requested pump unavailable\n", stderr)

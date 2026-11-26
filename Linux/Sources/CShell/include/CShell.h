@@ -24,3 +24,5 @@ bool shell_probe_load_step(int slot);
 void shell_probe_turn_finished(void);
 
 #include "library_io.h"
+
+#include "reader_window.h"
