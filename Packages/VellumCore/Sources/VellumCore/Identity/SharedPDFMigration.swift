@@ -32,6 +32,46 @@ public struct SharedPDFMigration: Sendable {
         let digest: String
     }
 
+    /// The Apple loader hashes realpath(3)'s spelling. Foundation can shorten
+    /// that same existing path (for example /private/tmp to /tmp).
+    private struct SourcePaths: Codable {
+        let physical: String
+        let spellings: [String]
+
+        static func realPath(_ path: String) -> String? {
+            guard !path.utf8.contains(0), let resolved = realpath(path, nil) else { return nil }
+            defer { free(resolved) }
+            return String(validatingCString: resolved)
+        }
+
+        init(selected: URL) throws {
+            guard selected.isFileURL, let physical = Self.realPath(selected.path) else { throw Failure.invalid(selected.path) }
+            self.physical = physical
+            let standard = selected.standardizedFileURL
+            var paths = [String]()
+            for path in [selected.path, standard.path, standard.resolvingSymlinksInPath().path, physical]
+                where !paths.contains(where: { $0.utf8.elementsEqual(path.utf8) }) {
+                paths.append(path)
+            }
+            spellings = paths
+            try verify()
+        }
+
+        func contains(_ path: String) -> Bool {
+            spellings.contains { $0.utf8.elementsEqual(path.utf8) }
+        }
+
+        func resolvesToOriginal(_ path: String) -> Bool {
+            Self.realPath(path)?.utf8.elementsEqual(physical.utf8) == true
+        }
+
+        func verify() throws {
+            guard try FileManager.default.attributesOfItem(atPath: physical)[.type] as? FileAttributeType == .typeRegular
+            else { throw Failure.changed(physical) }
+            for path in spellings where !resolvesToOriginal(path) { throw Failure.changed(path) }
+        }
+    }
+
     private struct Journal: Codable {
         let root: URL
         let local: URL
@@ -40,6 +80,12 @@ public struct SharedPDFMigration: Sendable {
             let source: URL
             let relative: String
             let key: String
+            let paths: SourcePaths? // Absent in journals created before physical-path lookup.
+
+            func matches(_ url: URL) -> Bool {
+                guard url.isFileURL else { return false }
+                return paths?.contains(url.path) ?? (source.standardizedFileURL.path == url.standardizedFileURL.path)
+            }
         }
         var pdfs: [PDF] = []
         var inputs: [Source] = []
@@ -160,8 +206,8 @@ public struct SharedPDFMigration: Sendable {
         defer { try? lock.close() }
         if var prior = try journal() {
             guard !prior.reversing else { throw Failure.invalid("rollback in progress") }
-            guard sources.isEmpty || Set(sources.map(\.standardizedFileURL.path)) ==
-                    Set(prior.pdfs.map(\.source.path)) else {
+            guard sources.isEmpty || (sources.allSatisfy { url in prior.pdfs.contains { $0.matches(url) } } &&
+                                      prior.pdfs.allSatisfy { pdf in sources.contains(where: pdf.matches) }) else {
                 throw Failure.invalid("a previous batch is recorded; finish or undo that migration first")
             }
             try await apply(&prior, checkpoint: checkpoint)
@@ -172,7 +218,7 @@ public struct SharedPDFMigration: Sendable {
         var j = Journal(root: location.root, local: local, id: UUID())
         var positions = [DocumentKey: DocumentKey]()
         for url in sources {
-            try await plan(url.standardizedFileURL, readID: readID, journal: &j, positions: &positions)
+            try await plan(url, readID: readID, journal: &j, positions: &positions)
         }
         let payloads = j.changes.filter { $0.relative.hasPrefix("PDFs/") }
         j.changes.removeAll { $0.relative.hasPrefix("PDFs/") }
@@ -195,7 +241,7 @@ public struct SharedPDFMigration: Sendable {
     /// entire transaction commits, and prove the destination's identity again.
     public func migratedURL(for source: URL, readID: (Data) -> String?) async throws -> URL? {
         guard let j = try journal(),
-              let pdf = j.pdfs.first(where: { $0.source.standardizedFileURL.path == source.standardizedFileURL.path })
+              let pdf = j.pdfs.first(where: { $0.matches(source) })
         else { return nil }
         guard !j.reversing, j.completed == j.changes.count,
               let url = location.resolve(pdf.relative), let bytes = try await store.read(url),
@@ -206,7 +252,8 @@ public struct SharedPDFMigration: Sendable {
             throw Failure.invalid(source.path)
         }
         do {
-            if try DocumentIdentity.byteHash(Data(contentsOf: source)) != input.digest {
+            let digest = try DocumentIdentity.byteHash(Data(contentsOf: source))
+            if digest != input.digest || pdf.paths?.resolvesToOriginal(source.path) == false {
                 throw Failure.originalChanged(sharedCopy: url)
             }
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
@@ -215,9 +262,15 @@ public struct SharedPDFMigration: Sendable {
         return url
     }
 
-    private func plan(_ source: URL, readID: (Data) -> String?, journal j: inout Journal,
+    private func plan(_ selected: URL, readID: (Data) -> String?, journal j: inout Journal,
                       positions: inout [DocumentKey: DocumentKey]) async throws {
-        guard source.pathExtension.lowercased() == "pdf", location.relativePath(for: source) == nil,
+        let paths = try SourcePaths(selected: selected)
+        let source = selected.standardizedFileURL
+        if let root = SourcePaths.realPath(location.root.path), paths.physical.hasPrefix(root + "/") {
+            throw Failure.invalid(source.path)
+        }
+        guard !j.pdfs.contains(where: { $0.paths?.contains(paths.physical) == true }),
+              source.pathExtension.lowercased() == "pdf", location.relativePath(for: source) == nil,
               !source.resolvingSymlinksInPath().pathComponents.starts(with: location.root.pathComponents)
         else { throw Failure.invalid(source.path) }
         let original = try Data(contentsOf: source)
@@ -226,8 +279,7 @@ public struct SharedPDFMigration: Sendable {
         let prepared = SharedPDFIdentity.prepare(original, writable: fm.isWritableFile(atPath: source.path), readID: readID)
         let oldID = readID(original).flatMap { DocumentIdentity.isCanonicalKey($0) ? $0 : nil }
         let stable = DocumentKey.pdf(stableIdentifier: prepared.key)
-        let urlPaths = Set([source.path, source.resolvingSymlinksInPath().path])
-        var keys = Set(urlPaths.map(DocumentIdentity.sha256Hex))
+        var keys = Set(paths.spellings.map(DocumentIdentity.sha256Hex))
         keys.insert(DocumentIdentity.byteHash(original))
         if let oldID { keys.insert(oldID) }
         for key in keys {
@@ -235,7 +287,7 @@ public struct SharedPDFMigration: Sendable {
             if let prior = positions[sourceKey], prior != stable { throw Failure.invalid(source.path) }
             positions[sourceKey] = stable
         }
-        for path in urlPaths { positions[.pdfPath(path)] = stable }
+        for path in paths.spellings { positions[.pdfPath(path)] = stable }
         let base = source.deletingPathExtension().lastPathComponent
         var relative = "PDFs/" + source.lastPathComponent
         var number = 1
@@ -245,7 +297,7 @@ public struct SharedPDFMigration: Sendable {
             number += 1
             relative = "PDFs/\(base) \(number).pdf"
         }
-        j.pdfs.append(.init(source: source, relative: relative, key: prepared.key))
+        j.pdfs.append(.init(source: source, relative: relative, key: prepared.key, paths: paths))
         let prefix = ".vellum/documents/" + prepared.key + "/"
         guard try files(in: location.root.appendingPathComponent(prefix)).isEmpty else { throw Failure.changed(prefix) }
         var metadata: [String: Any] = ["version": 1, "kind": "pdf", "last_opened": ISO8601DateFormatter().string(from: Date())]
@@ -262,7 +314,7 @@ public struct SharedPDFMigration: Sendable {
                     guard !foundMeta, let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                           object["kind"] as? String == "pdf", object["version"] as? Int == 1,
                           let path = object["last_known_path"] as? String, object["last_opened"] is String,
-                          key == oldID || urlPaths.contains(path) || key == DocumentIdentity.byteHash(original)
+                          key == oldID || paths.contains(path) || key == DocumentIdentity.byteHash(original)
                     else { throw Failure.invalid(input.path) }
                     metadata = object
                     foundMeta = true
@@ -317,6 +369,7 @@ public struct SharedPDFMigration: Sendable {
     }
 
     private func verifySources(_ j: Journal) throws {
+        for pdf in j.pdfs { try pdf.paths?.verify() }
         for (path, expected) in j.directories {
             guard try files(in: URL(fileURLWithPath: path)) == expected else { throw Failure.changed(path) }
         }

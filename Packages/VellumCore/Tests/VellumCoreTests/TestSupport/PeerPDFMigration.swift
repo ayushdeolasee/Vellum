@@ -88,3 +88,110 @@ extension PeerLibrary {
         return id
     }
 }
+
+extension CrossPlatformRoundTripTests {
+    @Test func historicalPDFPathMigration() async throws {
+        let fm = FileManager.default
+        let name = "vellum-path-migration-" + UUID().uuidString
+        let base = URL(fileURLWithPath: "/tmp").appendingPathComponent(name)
+        defer { try? fm.removeItem(at: base) }
+        for physicalHistory in [true, false] {
+            let folder = base.appendingPathComponent(physicalHistory ? "physical" : "logical")
+            let physicalDir: URL
+            let logicalDir: URL
+            #if os(macOS)
+            physicalDir = URL(fileURLWithPath: "/private" + folder.path)
+            logicalDir = folder
+            #else
+            physicalDir = folder.appendingPathComponent("originals")
+            logicalDir = folder.appendingPathComponent("alias")
+            #endif
+            try fm.createDirectory(at: physicalDir, withIntermediateDirectories: true)
+            #if !os(macOS)
+            try fm.createSymbolicLink(at: logicalDir, withDestinationURL: physicalDir)
+            #endif
+            let physical = physicalDir.appendingPathComponent("Paper.pdf")
+            let logical = logicalDir.appendingPathComponent("Paper.pdf")
+            let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column"))
+            try original.write(to: physical)
+            let historical = physicalHistory ? physical : logical
+            #if os(macOS)
+            let selected = physicalHistory ? logical : physical
+            #else
+            // An arbitrary symlink is discoverable only when supplied by the caller.
+            let selected = logical
+            #endif
+            let local = PeerLibrary(root: folder.appendingPathComponent("local"))
+            let shared = PeerLibrary(root: folder.appendingPathComponent("shared"))
+            let journals = folder.appendingPathComponent("journals")
+            let migration = try SharedPDFMigration(root: shared.root, localData: local.root, journals: journals)
+            func privateDir(_ url: URL) -> String { "documents/" + DocumentIdentity.sha256Hex(url.path) + "/" }
+            let legacy = privateDir(historical)
+            let alternate = privateDir(physicalHistory ? logical : physical)
+            try #require(legacy != alternate)
+            let meta = try JSONEncoder().encode(["version": JSONValue.int(1), "kind": .string("pdf"),
+                "last_known_path": .string(historical.path), "last_opened": .string("t"), "future_pdf": PeerLibrary.future])
+            let sidecars = ["scratchpad.md": Data(PeerLibrary.imageLink.utf8),
+                            "attachments/" + PeerLibrary.imageName: PeerLibrary.png,
+                            "conversations.json": try PeerLibrary.messageBytes(["old"])]
+            for (name, bytes) in sidecars { try await local.write(legacy + name, bytes) }
+            try await local.write(legacy + "meta.json", meta)
+            var position = PeerLibrary.position("mac")
+            let entry = try #require(position.documents[PeerLibrary.key])
+            position.documents = [.pdfPath(historical.path): entry,
+                                  .pdf(stableIdentifier: DocumentIdentity.sha256Hex(historical.path)): entry]
+            let name = "positions/" + PositionLayout.fileName(for: position.deviceID)
+            let positionBytes = try PositionCoding.encoder.encode(position)
+            try await local.write(name, positionBytes)
+
+            let other = physicalDir.appendingPathComponent("Other.pdf")
+            try original.write(to: other) // Equal bytes alone cannot authorize a different path's notes.
+            try await local.write(privateDir(other) + "foreign.md", Data([99]))
+            let collision = local.url(alternate + "scratchpad.md")
+            try await local.write(alternate + "scratchpad.md", Data([12]))
+            await #expect(throws: SharedPDFMigration.Failure.self) {
+                try await migration.migrate([selected], readID: PeerLibrary.documentID)
+            }
+            #expect(!fm.fileExists(atPath: shared.root.path))
+            #expect(try Data(contentsOf: collision) == Data([12]))
+            try fm.removeItem(at: collision)
+            await #expect(throws: CancellationError.self) {
+                try await migration.migrate([selected], readID: PeerLibrary.documentID) { if $0 == 0 { throw CancellationError() } }
+            }
+            let fresh = try SharedPDFMigration(root: shared.root, localData: local.root, journals: journals)
+            try fm.removeItem(at: physical)
+            try fm.createSymbolicLink(at: physical, withDestinationURL: other)
+            await #expect(throws: SharedPDFMigration.Failure.self) {
+                try await fresh.migrate([], readID: PeerLibrary.documentID)
+            }
+            #expect(!fm.fileExists(atPath: shared.url(PeerLibrary.pdf).path))
+            try fm.removeItem(at: physical)
+            try original.write(to: physical)
+            try await fresh.migrate([physical], readID: PeerLibrary.documentID)
+            try await fresh.migrate([logical], readID: PeerLibrary.documentID)
+            let pdf = try #require(try await fresh.migratedURL(for: historical, readID: PeerLibrary.documentID))
+            let id = try #require(PeerLibrary.documentID(Data(contentsOf: pdf)))
+            let published = ".vellum/documents/" + id + "/"
+            #expect(try fm.contentsOfDirectory(atPath: shared.url("PDFs").path) == ["Paper.pdf"])
+            #expect(try shared.store.occupiedNames(in: shared.url(".vellum/documents")) == [id])
+            #expect(!fm.fileExists(atPath: shared.url(published + "foreign.md").path))
+            let object = try JSONDecoder().decode([String: JSONValue].self, from: shared.read(published + "meta.json"))
+            #expect(object["future_pdf"] == PeerLibrary.future)
+            #expect(object["last_known_path"] == .string("PDFs/Paper.pdf"))
+            for (name, bytes) in sidecars { #expect(try shared.read(published + name) == bytes) }
+            let saved = try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: shared.read(".vellum/" + name))
+            #expect(saved.documents == [.pdf(stableIdentifier: id): entry])
+
+            try await fresh.rollback()
+            try await fresh.rollback()
+            #expect(!fm.fileExists(atPath: pdf.path))
+            #expect(!fm.fileExists(atPath: shared.url(published).path))
+            #expect(!fm.fileExists(atPath: shared.url(".vellum/" + name).path))
+            #expect(try Data(contentsOf: physical) == original)
+            #expect(try local.read(legacy + "meta.json") == meta)
+            #expect(try local.read(name) == positionBytes)
+            for (name, bytes) in sidecars { #expect(try local.read(legacy + name) == bytes) }
+            #expect(try local.read(privateDir(other) + "foreign.md") == Data([99]))
+        }
+    }
+}
