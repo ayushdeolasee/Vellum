@@ -8,11 +8,11 @@ enum App {
     @MainActor static func main() {
         let args = Array(CommandLine.arguments.dropFirst())
         if args.isEmpty || (args.count == 2 && args[0] == "--library" && args[1].hasPrefix("/")) {
-            let root = URL(fileURLWithPath: args.last ?? "/library", isDirectory: true)
-            exit(ReaderController(root: root).run())
+            let root = args.last.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            exit(ReaderController(rootOverride: root).run())
         }
         if args == ["--web-probe"] {
-            exit(ReaderController(root: URL(fileURLWithPath: "/library"), webProbe: WebProbe()).run())
+            exit(ReaderController(rootOverride: ReaderPreferences.defaultLibrary, webProbe: WebProbe()).run())
         }
         let modes = ["auto": SHELL_AUTO, "timer": SHELL_TIMER,
                      "missing": SHELL_MISSING, "eventfd": SHELL_EVENTFD]

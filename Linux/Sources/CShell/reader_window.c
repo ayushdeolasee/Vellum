@@ -1,5 +1,4 @@
-#include "CShell.h"
-#include <gtk/gtk.h>
+#include "reader_settings.h"
 
 struct ReaderWindow {
     GtkWindow *window;
@@ -7,6 +6,9 @@ struct ReaderWindow {
     GtkEventController *keys;
     GtkWidget *search, *no_matches;
     GtkWidget *title, *page, *previous, *next, *message, *picture, *stack, *status;
+    GtkStack *screens;
+    GtkWidget *paging, *body, *settings_button;
+    ReaderSettings *settings;
     ReaderCallback callback;
     void *context;
     gboolean closing, drained;
@@ -14,7 +16,7 @@ struct ReaderWindow {
 
 static void notify(ReaderWindow *r, ReaderEvent event, int entry) {
     g_assert(shell_on_gtk_thread());
-    r->callback(r, event, entry, r->context);
+    r->callback(r, event, entry, NULL, r->context);
 }
 
 static void selected(GtkListBox *list, GtkListBoxRow *row, ReaderWindow *r) {
@@ -23,7 +25,7 @@ static void selected(GtkListBox *list, GtkListBoxRow *row, ReaderWindow *r) {
 }
 
 static void search_changed(GtkEditable *entry, ReaderWindow *r) {
-    if (!r->closing) notify(r, READER_SEARCH, -1);
+    if (!r->closing && gtk_widget_get_sensitive(r->search)) notify(r, READER_SEARCH, -1);
 }
 
 static void search_activated(GtkSearchEntry *entry, ReaderWindow *r) {
@@ -39,7 +41,8 @@ static void search_stopped(GtkSearchEntry *entry, ReaderWindow *r) {
 static gboolean focus_search(GtkEventControllerKey *controller, guint key, guint keycode,
                              GdkModifierType state, ReaderWindow *r) {
     GdkModifierType modifiers = state & gtk_accelerator_get_default_mod_mask();
-    if (!r->closing && key == GDK_KEY_f && modifiers == GDK_CONTROL_MASK)
+    if (!r->closing && gtk_stack_get_visible_child(r->screens) == r->body &&
+        key == GDK_KEY_f && modifiers == GDK_CONTROL_MASK)
         return gtk_widget_grab_focus(r->search);
     return FALSE;
 }
@@ -54,6 +57,7 @@ static void clicked(GtkButton *button, ReaderWindow *r) {
 static void begin_close(ReaderWindow *r) {
     if (!r->window || r->closing) return;
     r->closing = TRUE;
+    reader_settings_dismiss(r->settings);
     notify(r, READER_CLOSE, -1);
 }
 
@@ -72,6 +76,11 @@ GtkStack *reader_content_stack(ReaderWindow *r) {
     return GTK_STACK(r->stack);
 }
 
+ReaderSettings *reader_settings(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    return r->settings;
+}
+
 void reader_finish_close(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread() && r->closing);
     gtk_window_destroy(r->window);
@@ -81,6 +90,13 @@ void reader_finish_close(ReaderWindow *r) {
 void reader_enable_search(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread());
     gtk_widget_set_sensitive(r->search, TRUE);
+}
+
+void reader_reset_search(ReaderWindow *r) {
+    g_assert(shell_on_gtk_thread());
+    gtk_widget_set_sensitive(r->search, FALSE);
+    gtk_editable_set_text(GTK_EDITABLE(r->search), "");
+    reader_clear_rows(r);
 }
 
 const char *reader_search_query(ReaderWindow *r) {
@@ -131,8 +147,9 @@ void reader_select_row(ReaderWindow *r, int index) {
 }
 
 static void set_title(ReaderWindow *r, const char *title) {
-    gtk_window_set_title(r->window, title);
     gtk_label_set_text(GTK_LABEL(r->title), title);
+    if (gtk_stack_get_visible_child(r->screens) == r->body)
+        gtk_window_set_title(r->window, title);
 }
 
 void reader_set_position(ReaderWindow *r, int number, int count) {
@@ -193,6 +210,37 @@ static GtkWidget *page_button(const char *icon, const char *name, ReaderWindow *
     return button;
 }
 
+static void show_settings(GSimpleAction *action, GVariant *parameter, ReaderWindow *r) {
+    if (r->closing) return;
+    gtk_stack_set_visible_child(r->screens, reader_settings_page(r->settings));
+    gtk_widget_set_visible(r->title, FALSE);
+    gtk_widget_set_visible(r->paging, FALSE);
+    gtk_widget_set_visible(r->settings_button, FALSE);
+    gtk_window_set_title(r->window, "Vellum Settings");
+}
+
+static void settings_event(ReaderWindow *r, ReaderEvent event, int index, const char *text, void *unused) {
+    g_assert(shell_on_gtk_thread());
+    if (r->closing) return;
+    if (event == READER_SETTINGS_DONE) {
+        reader_settings_dismiss(r->settings);
+        gtk_stack_set_visible_child(r->screens, r->body);
+        gtk_widget_set_visible(r->title, TRUE);
+        gtk_widget_set_visible(r->paging, TRUE);
+        gtk_widget_set_visible(r->settings_button, TRUE);
+        gtk_window_set_title(r->window, gtk_label_get_text(GTK_LABEL(r->title)));
+    } else {
+        r->callback(r, event, index, text, r->context);
+    }
+}
+
+// Settings and document panels can register with the same window action map.
+static void add_window_action(ReaderWindow *r, const char *name, GCallback activate) {
+    g_autoptr(GSimpleAction) action = g_simple_action_new(name, NULL);
+    g_signal_connect(action, "activate", activate, r);
+    g_action_map_add_action(G_ACTION_MAP(r->window), G_ACTION(action));
+}
+
 static void activated(GtkApplication *app, ReaderWindow *r) {
     if (r->closing) return;
     if (r->window) {
@@ -211,18 +259,29 @@ static void activated(GtkApplication *app, ReaderWindow *r) {
     gtk_label_set_ellipsize(GTK_LABEL(r->title), PANGO_ELLIPSIZE_END);
     gtk_widget_add_css_class(r->title, "title");
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), r->title);
-    GtkWidget *controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    add_window_action(r, "settings", G_CALLBACK(show_settings));
+    r->settings_button = gtk_button_new_with_label("Settings");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(r->settings_button), "win.settings");
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), r->settings_button);
+    r->paging = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     r->previous = page_button("go-previous-symbolic", "Previous page", r);
     r->next = page_button("go-next-symbolic", "Next page", r);
     r->page = gtk_label_new(NULL);
-    gtk_box_append(GTK_BOX(controls), r->previous);
-    gtk_box_append(GTK_BOX(controls), r->page);
-    gtk_box_append(GTK_BOX(controls), r->next);
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), controls);
+    gtk_box_append(GTK_BOX(r->paging), r->previous);
+    gtk_box_append(GTK_BOX(r->paging), r->page);
+    gtk_box_append(GTK_BOX(r->paging), r->next);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), r->paging);
     gtk_window_set_titlebar(r->window, header);
 
     GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_window_set_child(r->window, body);
+    r->body = body;
+    r->screens = GTK_STACK(gtk_stack_new());
+    gtk_stack_set_hhomogeneous(r->screens, FALSE);
+    gtk_stack_set_vhomogeneous(r->screens, FALSE);
+    gtk_window_set_child(r->window, GTK_WIDGET(r->screens));
+    gtk_stack_add_child(r->screens, body);
+    r->settings = reader_settings_new(r->window, r, settings_event);
+    gtk_stack_add_child(r->screens, reader_settings_page(r->settings));
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_widget_set_vexpand(paned, TRUE);
     gtk_box_append(GTK_BOX(body), paned);
@@ -302,6 +361,7 @@ int reader_run(ReaderCallback callback, void *context) {
         g_signal_handlers_disconnect_by_data(reader.previous, &reader);
         g_signal_handlers_disconnect_by_data(reader.next, &reader);
         g_clear_object(&reader.window);
+        reader_settings_free(reader.settings);
     }
     return status;
 }
