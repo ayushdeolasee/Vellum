@@ -1,6 +1,7 @@
 #include "CPdfiumJob.h"
 #include <fpdfview.h>
 #include <fpdf_edit.h>
+#include <fpdf_doc.h>
 #include <fpdf_text.h>
 #include <math.h>
 #include <stdlib.h>
@@ -119,6 +120,18 @@ PdfStatus pdf_run_job(PdfOperation op, const void *bytes, size_t length,
         status = PDF_LIMIT;
         goto close;
     }
+    if (op == PDF_OPEN_INFO) {
+        // This text API also accepts PDF Names. Swift verifies the original object
+        // is a String before using the value. A reconstructed xref cannot prove it.
+        if (FPDF_DocumentHasValidCrossReferenceTable(doc)) {
+            unsigned long n = FPDF_GetMetaText(doc, "VellumDocId", out->document_id,
+                                               sizeof(out->document_id));
+            if (n >= 2 && n <= sizeof(out->document_id) && n % 2 == 0)
+                out->document_id_units = n / 2 - 1;
+        }
+        status = PDF_OK;
+        goto close;
+    }
     if (page_index < 0 || page_index >= out->pages)
         goto close;
     page = FPDF_LoadPage(doc, page_index);
@@ -144,6 +157,7 @@ PdfStatus pdf_run_job(PdfOperation op, const void *bytes, size_t length,
     case PDF_INFO: status = PDF_OK; break;
     case PDF_BITMAP: status = render(page, scale, out); break;
     case PDF_TEXT: status = extract(page, out); break;
+    case PDF_OPEN_INFO: break;  // Handled before loading a page.
     }
 close:
     if (page)

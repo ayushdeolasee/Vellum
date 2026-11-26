@@ -6,7 +6,7 @@
 
 enum { PDF_MAX_INPUT_BYTES = 128 * 1024 * 1024 };
 
-typedef enum { PDF_INFO, PDF_BITMAP, PDF_TEXT } PdfOperation;
+typedef enum { PDF_INFO, PDF_BITMAP, PDF_TEXT, PDF_OPEN_INFO } PdfOperation;
 typedef enum {
     PDF_OK, PDF_BAD_DOCUMENT, PDF_PASSWORD_REQUIRED, PDF_SECURITY_ERROR,
     PDF_BAD_PAGE, PDF_BAD_DIMENSIONS, PDF_LIMIT, PDF_ENGINE_ERROR
@@ -19,6 +19,8 @@ typedef struct {
 } PdfCharacter;
 
 typedef struct {
+    uint16_t document_id[65];        // UTF-16LE from /Info, including a terminator.
+    size_t document_id_units;        // Excludes the terminator; zero means unavailable.
     int pages, rotation;             // Clockwise degrees; dimensions are already rotated.
     double width_pt, height_pt;
     double visible_left, visible_bottom; // Unrotated media/crop intersection in PDF user space.
