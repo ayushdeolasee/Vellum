@@ -678,6 +678,93 @@ public struct ClassicPdfFile {
     }
 }
 
+extension PdfDictSource {
+    /// Reading an identity requires one unambiguous key, including #NN spellings.
+    fileprivate func uniqueValue(forKey key: String) -> [UInt8]? {
+        guard let first = keyTokenRange(key), let value = valueSpan(afterKeyToken: first) else { return nil }
+        var i = value.upperBound
+        let token = Array("/\(key)".utf8)
+        while i < bytes.count {
+            i = PdfSyntax.skipTrivia(bytes, from: i, to: bytes.count)
+            if bytes[i...].elementsEqual(">>".utf8) { return Array(bytes[value]) }
+            guard i < bytes.count, bytes[i] == UInt8(ascii: "/") else { return nil }
+            let end = PdfSyntax.wordEnd(bytes, from: i + 1, to: bytes.count)
+            guard PdfSyntax.nameBytes(bytes[i..<end]) != token,
+                  let next = valueSpan(afterKeyToken: i..<end) else { return nil }
+            i = next.upperBound
+        }
+        return nil
+    }
+}
+
+extension ClassicPdfFile {
+    /// A bounded type witness for a metadata value returned by a PDF engine with a
+    /// valid xref. Check the original's current classic xref subsection directly.
+    /// Older revisions, hybrid/stream xrefs and indirect string values require a
+    /// general typed PDF API; callers simply omit optional metadata in those cases.
+    public static func currentInfoText(forKey key: String, in data: Data) -> String? {
+        guard data.starts(with: "%PDF-".utf8),
+              let marker = data.suffix(1024).range(of: Data("startxref".utf8), options: .backwards)
+        else { return nil }
+        let footer = data[marker.upperBound...].split(whereSeparator: PdfBytes.isWhitespace)
+        guard footer.count == 2, footer[0].allSatisfy(PdfBytes.isDigit), footer[1].elementsEqual("%%EOF".utf8),
+              let offset = Int(String(decoding: footer[0], as: UTF8.self)),
+              offset >= 0, offset < marker.lowerBound - data.startIndex,
+              data.count - offset <= 1024 * 1024 else { return nil }
+        let table = Array(data[(data.startIndex + offset)..<marker.lowerBound])
+        guard table.starts(with: "xref".utf8) else { return nil }
+        var i = 4
+        func consumeLineEnding() -> Bool {
+            if i < table.count, table[i] == 13 {
+                i += 1
+                if i < table.count, table[i] == 10 { i += 1 }
+                return true
+            }
+            guard i < table.count, table[i] == 10 else { return false }
+            i += 1
+            return true
+        }
+        guard consumeLineEnding(), let first = PdfBytes.unsigned(in: table, at: &i),
+              i < table.count, table[i] == 32 else { return nil }
+        i += 1
+        guard let count = PdfBytes.unsigned(in: table, at: &i), consumeLineEnding() else { return nil }
+        let entries = i
+        guard count <= (table.count - i) / 20 else { return nil }
+        i += count * 20
+        guard table[i...].starts(with: "trailer".utf8) else { return nil }
+        guard let span = PdfSyntax.valueSpan(in: table, from: i + 7, to: table.count),
+              table[span].starts(with: "<<".utf8),
+              PdfSyntax.skipTrivia(table, from: span.upperBound, to: table.count) == table.count else { return nil }
+        let trailer = PdfDictSource(Array(table[span]))
+        guard !trailer.hasKey("XRefStm"), let ref = trailer.uniqueValue(forKey: "Info") else { return nil }
+        let parts = ref.split(whereSeparator: PdfBytes.isWhitespace)
+        guard parts.count == 3, parts[0].allSatisfy(PdfBytes.isDigit),
+              parts[1].elementsEqual("0".utf8), parts[2].elementsEqual("R".utf8),
+              let number = Int(String(decoding: parts[0], as: UTF8.self)),
+              number >= first, number - first < count else { return nil }
+
+        // Only a generation-zero, in-use row in this active subsection can establish
+        // the address. Never search file contents for a matching key or object.
+        let row = entries + (number - first) * 20
+        let offsetBytes = table[row..<(row + 10)]
+        guard offsetBytes.allSatisfy(PdfBytes.isDigit),
+              table[(row + 10)..<(row + 18)].elementsEqual(" 00000 n".utf8),
+              let object = Int(String(decoding: offsetBytes, as: UTF8.self)), object < offset else { return nil }
+        let prefix = Array("\(number) 0 obj".utf8)
+        let objectStart = data.startIndex + object
+        let bytes = Array(data[objectStart..<(objectStart + min(offset - object, 64 * 1024))])
+        guard bytes.starts(with: prefix),
+              let info = PdfSyntax.valueSpan(in: bytes, from: prefix.count, to: bytes.count),
+              bytes[info].starts(with: "<<".utf8),
+              PdfSyntax.keyword("endobj", in: bytes, at: PdfSyntax.skipTrivia(bytes, from: info.upperBound, to: bytes.count)),
+              let value = PdfDictSource(Array(bytes[info])).uniqueValue(forKey: key),
+              value.first == UInt8(ascii: "(") ||
+                (value.first == UInt8(ascii: "<") && !value.starts(with: "<<".utf8))
+        else { return nil }
+        return PdfDictSource.decodeTextString(value)
+    }
+}
+
 // MARK: - Incremental update builder
 
 /// Builds an incremental update (new/replaced objects + classic xref section +
