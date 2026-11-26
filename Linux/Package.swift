@@ -28,7 +28,7 @@ let package = Package(
                 swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "LinuxReaderTests", dependencies: ["LinuxReader"]),
         .executableTarget(name: "VellumLinux",
-                          dependencies: ["CShell", "LinuxReader", "LinuxServices",
+                          dependencies: ["CShell", "LinuxReader", "LinuxServices", "LinuxHTTP",
                                          .product(name: "VellumCore", package: "VellumCore")],
                           swiftSettings: [.swiftLanguageMode(.v5)])
     ]

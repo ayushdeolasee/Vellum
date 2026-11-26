@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // Per-document AI settings + conversations. Settings stay in the global
 // UserDefaults blob (device-scoped, class D). Conversations moved to
@@ -21,8 +22,8 @@ enum AiPersistence {
     static let settingsKey = "research-reader-ai-settings-v1"
     /// Legacy path-keyed conversation blob — migration read source only.
     static let conversationsKey = "research-reader-ai-conversations-v1"
-    static let maxMessagesPerDocument = 120
-    static let maxMessageCharacters = 12_000
+    static let maxMessagesPerDocument = ConversationText.messageLimit
+    static let maxMessageCharacters = ConversationText.characterLimit
     /// Per-reference excerpt cap, the counterpart to `maxMessageCharacters` for
     /// `AiMessage.references`. A single selection can be a whole page and one
     /// message may carry several, so without this a turn could write far more to
@@ -1020,10 +1021,7 @@ enum AiPersistence {
     static func limitedMessages(_ messages: [AiMessage]) -> [AiMessage] {
         messages.suffix(maxMessagesPerDocument).map { message in
             var message = message
-            if message.content.count > maxMessageCharacters {
-                let end = message.content.index(message.content.startIndex, offsetBy: maxMessageCharacters)
-                message.content = String(message.content[..<end]) + "\n[truncated]"
-            }
+            message.content = ConversationText.limitedContent(message.content)
             message.references = capReferences(message.references)
             if let summaries = message.toolSummaries {
                 message.toolSummaries = sanitizeToolSummaries(summaries)

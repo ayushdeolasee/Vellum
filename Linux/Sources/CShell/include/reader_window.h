@@ -9,6 +9,7 @@ typedef struct ReaderWindow ReaderWindow;
 typedef struct ReaderSettings ReaderSettings;
 typedef enum {
     READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE, READER_SEARCH,
+    READER_CHAT_TOGGLE, READER_CHAT_SEND, READER_CHAT_STOP,
     READER_SETTINGS_DONE, READER_CHOOSE_LIBRARY, READER_REOPEN_LIBRARY,
     READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY
 } ReaderEvent;
@@ -43,3 +44,5 @@ void reader_settings_set_provider(ReaderSettings *settings, unsigned index, cons
 void reader_settings_set_library(ReaderSettings *settings, const char *path, const char *message, bool busy);
 void reader_settings_set_key(ReaderSettings *settings, const char *message, bool busy, bool removable);
 bool reader_settings_key_is_open(ReaderSettings *settings);
+
+#include "reader_chat.h"

@@ -318,6 +318,35 @@ public enum ArchiveCodec {
             maxUncompressedBytes: maxTotalUncompressedBytes))
     }
 
+    /// Text for the already-open snapshot. Replacing the archive on disk cannot
+    /// silently substitute another document into the pending provider request.
+    public static func articleExcerpt(in data: Data, matching expected: ManifestHashes) throws -> String {
+        struct Page: Decodable { let number: Int; let text: String }
+        let zip = try MiniZip(data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
+                              maxUncompressedBytes: maxTotalUncompressedBytes)
+        let manifest = try readManifest(from: zip)
+        guard manifest.hashes.snapshotHtml == expected.snapshotHtml,
+              manifest.hashes.pageText == expected.pageText else {
+            throw ArchiveCodecError.invalidDocument("The archive changed. Reopen the article before sending.")
+        }
+        let bytes = try zip.readCapped("text/pages.json", cap: 6 * maxSnapshotBytes)
+        guard sha256Hex(bytes) == expected.pageText else {
+            throw ArchiveCodecError.invalidDocument("Archived article text failed its integrity check.")
+        }
+        let pages = try JSONDecoder().decode([Page].self, from: bytes)
+        var excerpt = ""
+        var remaining = ConversationText.characterLimit
+        for page in pages {
+            let text = page.text.prefix(remaining).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let part = ("Page " + String(page.number) + "\n" + text + "\n").prefix(remaining)
+            excerpt.append(contentsOf: part)
+            remaining -= part.count
+            if remaining == 0 { break }
+        }
+        return excerpt
+    }
+
     private static func decode(from zip: MiniZip) throws -> DecodedWebArchive {
         let manifest = try readManifest(from: zip)
 

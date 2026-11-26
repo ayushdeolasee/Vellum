@@ -7,6 +7,8 @@ import VellumCore
 final class ReaderController {
     private let rootOverride: URL?
     private let preferences = ReaderPreferences()
+    private let chat = ReaderChatController()
+    private var pdfChatKey: String?
     let settings = ReaderSettingsController()
     private var libraryRoot: URL?
     private var store: ReadOnlyLibraryFileStore?
@@ -82,8 +84,17 @@ final class ReaderController {
             if let libraryRoot { openLibrary(libraryRoot, window: window) }
         case READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY:
             settings.handle(event, index: entry, text: text, panel: reader_settings(window))
+        case READER_SETTINGS_DONE:
+            chat.refreshProvider(settings.provider, panel: reader_chat_panel(window))
+        case READER_CHAT_TOGGLE:
+            chat.show(provider: settings.provider, panel: reader_chat_panel(window))
+        case READER_CHAT_SEND:
+            chat.send(provider: settings.provider, panel: reader_chat_panel(window))
+        case READER_CHAT_STOP:
+            chat.stop(panel: reader_chat_panel(window))
         case READER_SELECT:
             guard entries.indices.contains(entry), entry != selectedEntry else { return }
+            chat.reset(reader_chat_panel(window))
             resetDocument()
             selectedEntry = entry
             selection = entries[entry].file.url
@@ -103,10 +114,12 @@ final class ReaderController {
             webPage = nil
             let search = searchWork
             search?.cancel()
+            let pendingChat = chat.reset(reader_chat_panel(window))
             let pendingSettings = settings.beginClose()
             replaceWork { _ in
                 await search?.value
                 await pendingSettings?.value
+                await pendingChat?.value
                 await PdfiumActor.shared.shutdown()
                 reader_finish_close(window)
             }
@@ -119,6 +132,7 @@ final class ReaderController {
         let search = searchWork
         search?.cancel()
         searchWork = nil
+        let pendingChat = chat.reset(reader_chat_panel(window))
         resetDocument()
         store = nil
         metadataCatalog = nil
@@ -130,6 +144,7 @@ final class ReaderController {
         reader_settings_set_library(panel, path.path, "Opening library…", true)
 
         replaceWork { token in
+            await pendingChat?.value
             await search?.value
             guard self.isCurrent(token) else { return }
             do {
@@ -168,6 +183,7 @@ final class ReaderController {
         selection = nil
         bytes = nil
         pdfTitle = nil
+        pdfChatKey = nil
         pageCount = 0
         pageIndex = 0
         webPage = nil
@@ -219,6 +235,9 @@ final class ReaderController {
                 let metadataCatalog = try await self.catalog(in: store, token: token)
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
+                self.chat.bind(.article(resources.hashes, key: metadata.storageKey, title: metadata.displayTitle,
+                                        file: file, store: store),
+                               store: store, provider: self.settings.provider, panel: reader_chat_panel(window))
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
                                            probe: self.webProbe) {
                     let position = metadata.position.map { position in
@@ -262,6 +281,7 @@ final class ReaderController {
                         }
                     }
                     guard self.isCurrent(token) else { return }
+                    self.pdfChatKey = opening.stableIdentifier
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index
@@ -277,6 +297,8 @@ final class ReaderController {
                 guard self.isCurrent(token) else { return }
                 MainActor.preconditionIsolated()
                 precondition(shell_on_gtk_thread())
+                self.chat.bind(.pdf(data, key: self.pdfChatKey, file: file, title: title, page: index),
+                               store: store, provider: self.settings.provider, panel: reader_chat_panel(window))
                 bitmap.pixels.withUnsafeBytes { buffer in
                     reader_set_page(window, title, Int32(index + 1), Int32(info.pageCount),
                                     buffer.bindMemory(to: UInt8.self).baseAddress,
