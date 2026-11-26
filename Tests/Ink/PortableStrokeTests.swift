@@ -71,7 +71,15 @@ final class PortableStrokeTests: XCTestCase {
                 XCTAssertEqual(first.points, golden.points)
                 XCTAssertEqual(first.visibleRanges, golden.visibleRanges)
                 let rebuilt = try PKStroke(golden)
+                XCTAssertEqual(rebuilt.mask?.cgPath, strokes[0].mask?.cgPath)
                 XCTAssertEqual(rebuilt.maskedPathRanges, strokes[0].maskedPathRanges)
+                XCTAssertTrue(try golden.describes(strokes[0]))
+                // A clipped corner changes the filled mask away from the
+                // centerline while leaving both visible intervals identical.
+                var clipped = golden
+                clipped.mask?.path[2].coordinates[1] = 5
+                XCTAssertEqual(try PKStroke(clipped).maskedPathRanges, rebuilt.maskedPathRanges)
+                XCTAssertFalse(try clipped.describes(strokes[0]))
                 #if os(macOS)
                 XCTAssertEqual(first, golden)
                 #endif
@@ -123,6 +131,25 @@ final class PortableStrokeTests: XCTestCase {
         changed = portable
         changed.visibleRanges[0][1] -= 1e-8
         XCTAssertThrowsError(try PKStroke(changed), "Display intervals cannot supply a missing mask")
+    }
+
+    func testMovedMaskSurvivesPencilKitSerialization() throws {
+        let original = try XCTUnwrap(pdfStrokes("pdf-ink-erased-partial").first)
+        let payload = try fixture("portable-shifted", "zlib", in: "Ink").base64EncodedString()
+        var wire = try XCTUnwrap(PortableStroke.decodePDFPayload(payload).first)
+        let rebuilt = try PKStroke(wire)
+        let reopened = try XCTUnwrap(PKDrawing(data: PKDrawing(strokes: [rebuilt]).dataRepresentation()).strokes.first)
+        XCTAssertEqual(reopened.transform, CGAffineTransform(translationX: 20, y: 0))
+        XCTAssertEqual(reopened.mask?.cgPath, original.mask?.cgPath)
+        XCTAssertEqual(reopened.maskedPathRanges, original.maskedPathRanges)
+        XCTAssertTrue(try wire.describes(reopened))
+
+        // A stroke erased at its final placement can have different intervals.
+        let direct = PKStroke(ink: original.ink, path: original.path, transform: rebuilt.transform,
+                              mask: original.mask, randomSeed: original.randomSeed)
+        XCTAssertEqual(try PKStroke(PortableStroke(direct)).maskedPathRanges, direct.maskedPathRanges)
+        wire.visibleRanges = [[0, 8]]
+        XCTAssertThrowsError(try PKStroke(wire))
     }
 }
 
