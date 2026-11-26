@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // Relevance scoring and sectioning for the home screen's search field.
 //
@@ -81,38 +82,11 @@ struct HomeSearchResultSection: Identifiable, Hashable, Sendable {
     var id: HomeSearchSection { section }
 }
 
-enum HomeSearchRanker {
-    // MARK: - Score weights
-    //
-    // Absolute values are arbitrary; only their ORDER matters, and the order
-    // encodes one rule: a match in a name the user chose (title, filename,
-    // host) beats a match in machinery they never see (a deep folder path, a
-    // query string). Kept as named constants so a test can assert the ordering
-    // rather than a magic number.
+typealias HomeSearchRanker = VellumCore.HomeSearchRanker
 
-    static let titleExact = 1000
-    static let titlePrefix = 600
-    static let titleWordPrefix = 450
-    static let namePrefix = 400
-    static let titleSubstring = 300
-    static let initialsPrefix = 280
-    static let nameSubstring = 220
-    static let locationSubstring = 140
-    static let extraSubstring = 90
-
-    /// Awarded once when a multi-token query appears contiguously in the title,
-    /// so "all you need" outranks an item that merely contains all three words
-    /// scattered.
-    static let phraseBonus = 250
+extension HomeSearchRanker {
     /// Recents lead on ties: the thing you touched last is the likeliest answer.
     static let recentsSectionBonus = 30
-
-    // Deliberately NO general subsequence/fuzzy fallback. It was tried and cut:
-    // on a long title almost any short token matches as a subsequence ("example"
-    // is one of "…OxCaml to implement…"), which fills the list with results the
-    // user cannot see the reason for. Every result must visibly contain what was
-    // typed. The one fuzzy affordance that survives is the initials match, which
-    // is anchored and therefore explainable.
 
     // MARK: - Link lookup weights
 
@@ -124,68 +98,10 @@ enum HomeSearchRanker {
 
     // MARK: - Scoring
 
-    /// Score one item against pre-tokenized query terms, or nil when the item
-    /// does not match. EVERY token must land somewhere (an AND, not an OR):
-    /// typing more words must narrow the list, never widen it.
     static func score(_ item: HomeSearchItem, tokens: [String], now: Date) -> Int? {
-        guard !tokens.isEmpty else { return nil }
-        var total = 0
-        for token in tokens {
-            let best = fieldScore(item.haystack, token: token)
-            guard best > 0 else { return nil }
-            total += best
-        }
-        if tokens.count > 1 {
-            // The tokens are folded and split on non-alphanumerics, so rejoining
-            // them with single spaces is the normalized phrase — it matches the
-            // folded title's own spacing.
-            let phrase = tokens.joined(separator: " ")
-            if item.haystack.title.contains(phrase) { total += phraseBonus }
-        }
-        total += recencyBonus(for: item.date, now: now)
-        if item.section == .recents { total += recentsSectionBonus }
-        return total
-    }
-
-    /// The best score any single field yields for one token. Ordered cheapest-
-    /// and-strongest first, with early exits so a title-prefix hit never pays
-    /// for a path scan.
-    static func fieldScore(_ haystack: HomeSearchHaystack, token: String) -> Int {
-        guard !token.isEmpty else { return 0 }
-        var best = 0
-
-        let title = haystack.title
-        if title == token {
-            return titleExact
-        }
-        if title.hasPrefix(token) {
-            best = titlePrefix
-        } else if HomeSearchText.hasWordPrefix(title, token) {
-            best = titleWordPrefix
-        }
-
-        let name = haystack.name
-        if best < namePrefix, name.hasPrefix(token) {
-            best = namePrefix
-        }
-        if best < titleSubstring, title.contains(token) {
-            best = titleSubstring
-        }
-        // A two-letter initialism ("ml") is still a useful signal; a one-letter
-        // one matches half the library, so it is not.
-        if best < initialsPrefix, token.count >= 2, haystack.initials.hasPrefix(token) {
-            best = initialsPrefix
-        }
-        if best < nameSubstring, name.contains(token) {
-            best = nameSubstring
-        }
-        if best < locationSubstring, haystack.location.contains(token) {
-            best = locationSubstring
-        }
-        if best < extraSubstring, !haystack.extra.isEmpty, haystack.extra.contains(token) {
-            best = extraSubstring
-        }
-        return best
+        guard let textScore = score(item.haystack, tokens: tokens) else { return nil }
+        return textScore + recencyBonus(for: item.date, now: now)
+            + (item.section == .recents ? recentsSectionBonus : 0)
     }
 
     // MARK: - Link lookup

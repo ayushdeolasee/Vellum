@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 
 // The home screen's search corpus.
 //
@@ -81,33 +82,8 @@ struct HomeSearchBadges: OptionSet, Hashable, Sendable {
     static let capturedUnread = HomeSearchBadges(rawValue: 1 << 4)
 }
 
-/// Pre-folded text for one item, computed once when the corpus is built so a
-/// keystroke never re-lowercases the whole library. Split into fields rather
-/// than one blob because WHERE a token matches is most of the relevance signal:
-/// "swift" in a title means something very different from "swift" buried in a
-/// file path.
-struct HomeSearchHaystack: Hashable, Sendable {
-    /// The display title, folded.
-    let title: String
-    /// First letter of each title word ("Attention Is All You Need" → "aiayn"),
-    /// so an acronym the user remembers finds the document.
-    let initials: String
-    /// The short name: a PDF's filename, or a webpage's host.
-    let name: String
-    /// The full locator: absolute path or full URL.
-    let location: String
-    /// Anything else cheap and worth matching (page counts, source name).
-    let extra: String
-
-    init(title: String, name: String, location: String, extra: String = "") {
-        let foldedTitle = HomeSearchText.fold(title)
-        self.title = foldedTitle
-        initials = HomeSearchText.initials(ofFolded: foldedTitle)
-        self.name = HomeSearchText.fold(name)
-        self.location = HomeSearchText.fold(location)
-        self.extra = HomeSearchText.fold(extra)
-    }
-}
+typealias HomeSearchHaystack = VellumCore.HomeSearchHaystack
+typealias HomeSearchText = VellumCore.HomeSearchText
 
 /// One openable thing, normalized across every source.
 struct HomeSearchItem: Identifiable, Hashable, Sendable {
@@ -235,47 +211,5 @@ enum HomeSearchDateLabel {
             return date.formatted(.dateTime.day().month(.abbreviated))
         }
         return date.formatted(.dateTime.day().month(.abbreviated).year())
-    }
-}
-
-// MARK: - Text folding
-
-/// Case- and diacritic-insensitive text handling shared by the corpus builder
-/// and the ranker. Both sides MUST fold identically or a query would never
-/// match its own index, so the folding lives in exactly one place.
-enum HomeSearchText {
-    /// Fold to the canonical (locale-independent) case- and diacritic-free
-    /// form. `locale: nil` asks for the canonical mapping rather than a
-    /// locale-sensitive one — the corpus must not re-index when the user's
-    /// region changes, and the Turkish dotless-i rule would otherwise make
-    /// "I" stop matching "index" for tr_TR users.
-    static func fold(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                     locale: nil)
-    }
-
-    /// Split an already-folded string into word runs on anything that is not a
-    /// letter or a digit, so "read-later_v2.pdf" yields read/later/v2/pdf.
-    static func words(inFolded text: String) -> [Substring] {
-        text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-    }
-
-    /// First character of each word of an already-folded title.
-    static func initials(ofFolded title: String) -> String {
-        String(words(inFolded: title).compactMap(\.first))
-    }
-
-    /// Split a raw user query into folded, non-empty search tokens. Every token
-    /// must match for an item to qualify, which is what makes "att need" behave
-    /// the way people expect.
-    static func tokens(in query: String) -> [String] {
-        words(inFolded: fold(query)).map(String.init)
-    }
-
-    /// Does any word of `text` start with `token`? This is the match people
-    /// mean by "starts with" — "need" should find "Attention Is All You Need"
-    /// even though the title does not begin with it.
-    static func hasWordPrefix(_ text: String, _ token: String) -> Bool {
-        words(inFolded: text).contains { $0.hasPrefix(token) }
     }
 }
