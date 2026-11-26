@@ -82,8 +82,8 @@ shared with Linux lives in the Syncthing folder.
 
 ## The format contract (both apps obey)
 
-1. **Never drop unknown fields.** Today none of `WebPageRecord`, `WebInkRecord`, the document
-   metadata or `PositionDeviceRecord` preserve unknown keys. This must ship on Mac **and** iPad
+1. **Never drop unknown fields.** Today `WebPageRecord`, `WebInkRecord` and the document metadata drop
+   unknown keys. `PositionDeviceRecord` and its document entries already keep them (via `PositionJSON`). This must ship on Mac **and** iPad
    before any new cross-platform field (for example portable ink, layer 5) is written anywhere.
 2. **Every shared file carries a format version.** A reader seeing a newer major version opens
    the file read-only and says so.
@@ -143,11 +143,64 @@ Summary:
 | S2 | `CoordinatedPositionStorage` honours the layout in direct mode | S | — |
 | S3 | Unknown-field preservation (`JSONValue`) on every shared Codable | M | C2 (or before, in-app) |
 | S4 | `.stignore` manager (managed block, never clobbers user lines) | S | S1 |
-| S5 | Conflict-copy filtering in all 3 listing paths + `FolderSyncedContainer` + watcher | L | S1 |
-| S6 | Attachment GC keeps images referenced by conflict copies | S | S5 |
-| S7 | Pretty-name collisions + `index.json` merge | M | S3, S5 |
-| S8 | Shared `PDFs/` folder, open-in-place, stamp on import, portable paths, reversible migration | L | S1, S2, S3, P3 |
-| S9 | Round-trip harness + two-peer offline conflict harness (`SyncthingSimulator`) | M | S1–S8 |
+| S5a | Conflict-copy and temp-file filtering in every listing path (Mac + Linux) | S | S1 |
+| S5b | `FolderSyncedContainer` + platform watcher; resolver moved to Core with injected dependencies | L | S5a, C4 |
+| S6 | Shared-folder mode never auto-deletes attachments; explicit recoverable cleanup | S | S5a |
+| S7 | `.vellumweb` filename collisions + `index.json` merge (peer-independent) | M | S3, S5b, C4 |
+| S8 | Shared `PDFs/` folder, open-in-place, stamp on import, portable paths, reversible migration | L | S1, S2, S3, P3 (= C7a) |
+| S9 | Round-trip harness + two-peer offline conflict harness (`SyncthingSimulator`) | L | S1–S8 |
+
+### Round 4 corrections (authoritative: where a sketch below disagrees, this wins)
+
+Both agents cross-reviewed these items against the code. The sketches below are Neon's round-3 drafts; these
+corrections override them.
+
+- **S1/S2: extend the real types, don't replace them.** `WebStorageLayout` today stores `pretty` and `indexPath`
+  and *computes* `positionsDir` (`WebStorage.swift:231–269`). `StorageAccess` is `.coordinated(container, root:)`
+  and `StorageContext` is `.coordinated(container:layout:)` (`SyncedContainer.swift`). Add the `.syncedFolder`
+  case and a separate backend selector to these shapes. Keep the direct-mode test root overrides
+  (`PositionLayout.rootOverride`), the non-throwing `[PositionDeviceRecord]` load, and coordinated quarantine.
+  Custom mode keeps positions local, as today. S2's sketch (`context.backend`, `[PositionLoadOutcome]`) doesn't
+  match the code; implement it against the real `CoordinatedPositionStorage`.
+- **S3: one implementation.** Promote the **existing** `PositionJSON` code verbatim, including its single-value
+  decoder and encoder (`PositionModels.swift:529–589`), as `JSONValue` in Core, with `typealias PositionJSON = JSONValue`.
+  The sketch's synthesized enum coding would wrap unknown values and change the wire format. Drop the `Decimal`
+  claim (finite precision). C3 moves the type; S3 adopts it everywhere else.
+- **S4: correct `.stignore` patterns.** Vellum's real temp names are `.{name}.tmp-{pid}-{uuid}`
+  (`LibraryFileStore`, `PositionStorage`, `WebArchive`, `VellumBundle`), `.{name}.vellum-{uuid}.tmp`
+  (`PdfAtomicWriter`) and `{name}.tmp` (`WebLibrary`, `DocumentDataStore`, `WebInkStore`). Managed block:
+  `(?d).*.tmp-*`, `(?d).*.vellum-*.tmp`, `(?d)*.tmp`, plus OS clutter. Remove `(?d).vellum-tmp-*` (matches nothing).
+  The writer is injected (Core can't instantiate the Apple `DirectLibraryFileStore`).
+- **S5 is split.**
+  - **S5a** filters `.sync-conflict-` and `.syncthing.*.tmp` names in `DirectLibraryFileStore.list`,
+    `WebLibrary.recordFileNames`, `WebInkStore.inkFileNames` and the Linux read-only store. That is all the
+    read-only Linux reader needs.
+  - **S5b** builds the folder container. The file store and the watcher (inotify / FSEvents) are **injected
+    protocols**. Conditional replace must be atomic under one per-path lock, and otherwise returns `false`, as the
+    protocol's default already does. Losers are keyed by canonical path + version id (timestamp + peer alone can
+    collide). Watch `.vellum/`, `PDFs/` and `Web Pages/`. Moving `PreserveLosersConflictResolver` into Core means
+    injecting what it calls today: `WebLibrary.jsonEncoderPretty`, `WebArchive.mergeAnnotations`, and decoding
+    `AiMessage` and `DocumentDataStore.Meta`. Replace `NSLog`. Ownership is settled: C5b moves `LibraryFileStore`;
+    S5b moves `SyncedContainer`, the conflict types and the resolver. Apple storage implementations stay in the app.
+- **S6: never auto-delete attachments in shared-folder mode.** Scanning conflict files can't protect an image that
+  an offline peer already deleted before any conflict copy exists. So in shared-folder mode, unreferenced attachments
+  are kept until an explicit, recoverable cleanup moves them to `.vellum/trash/` with a retention period. Directory
+  enumeration failures abort cleanup (fail closed). Use real `URL`s, not `LibraryFileEntry`.
+- **S7: archives are `.vellumweb` ZIP files**, and the index is `entries[key] → filename.vellumweb`
+  (`WebStorage.swift:323–331`). There are no `.vellum/` directories with `manifest.json`. A same-title collision
+  shows up as `Web Pages/<Title>.sync-conflict-….vellumweb`; read its manifest with `ArchiveCodec.readManifest` (C4).
+  Filenames are a **peer-independent** function of (key, title): the lowest key keeps `<Title>.vellumweb`, others get
+  `<Title> (<key prefix 6>).vellumweb`. Never prefer "the local winner", because that makes the result depend on
+  which peer merges.
+- **S8: use the real hooks, journal first.** Open-in-place extends the instance method `appOwnedRoots()` with the
+  active, scoped `PDFs/` root, and keeps the separate managed-copy deletion check (`DocumentAccessResolver.swift:400–408,474–505`).
+  The migrator **writes its journal before each mutation** and checks every `rekey` result before moving on. No
+  stamping before P3 (= C7a) exists, because the PDFKit fallback would rewrite the file. Unstamped read-only PDFs use
+  a validated embedded ID or `DocumentIdentity.byteHash(originalBytes)`.
+- **S9: test the contract that ships.** The resolver deliberately archives the loser when annotation-ID or
+  message-ID sets differ. So concurrent additions are **recoverable from the archived copy**, not unioned. Assert
+  recovery from both the canonical and the archived version. Include: offline image deletion *before* any conflict
+  sibling exists (reopen the image and compare bytes), and a `.vellumweb` same-title collision. Size raised to L.
 
 ### S1 — Decouple `WebStorageLayout.requiresCoordination` and add `.syncedFolder` mode
 
@@ -307,7 +360,7 @@ func write(_ record: PositionDeviceRecord) async throws {
 
 * **Goal**: Promote the existing lossless JSON bag `PositionJSON` (`Vellum/Services/Position/PositionModels.swift`) into a reusable `JSONValue` + `UnknownFields` helper in `VellumCore` and adopt it across every shared `Codable` type that Linux and Mac both read/write, preventing older clients from silently stripping fields written by newer clients.
 * **Files changed**:
-  * **New**: `Packages/VellumCore/Sources/VellumCore/Models/JSONValue.swift` (or `Vellum/Models/JSONValue.swift` prior to `C2`)
+  * **New**: `Packages/VellumCore/Sources/VellumCore/Models/JSONValue.swift` (promoted from the existing `PositionJSON`; see Round 4 corrections)
   * `Vellum/Services/Position/PositionModels.swift` (`typealias PositionJSON = JSONValue`; add `unknownFields` to nested `ReadingPosition`, `OpenState`, `Stamped`)
   * `Vellum/Services/Web/WebLibrary.swift` (`WebPageRecord`, `WebAnnotation`, `WebAnchor` / nested structs — verify exact nested names during edit)
   * `Vellum/Services/Web/WebStorage.swift` (`WebArchiveIndex.Contents`)
