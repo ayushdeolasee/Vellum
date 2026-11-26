@@ -23,6 +23,8 @@ struct StorageSettingsTab: View {
     @State private var legacyAi: [LegacyRow] = []
     @State private var archivedConflicts: [StorageCoordinator.ArchivedConflict] = []
     @State private var showsConflictsSheet = false
+    @State private var showsScratchpadMaintenance = false
+    @State private var sharedFolderIsActive = false
     @State private var isLoading = true
 
     @State private var sortOrder: StorageInventory.SortOrder = .size
@@ -74,6 +76,7 @@ struct StorageSettingsTab: View {
             summaryTilesSection
             documentsSection
             if !archivedConflicts.isEmpty { syncConflictsSection }
+            if storageMode == .syncedFolder, sharedFolderIsActive { scratchpadMaintenanceSection }
             if hasOrphanSection { orphansSection }
             housekeepingSection
             removeStoredDataSection
@@ -94,8 +97,26 @@ struct StorageSettingsTab: View {
             StorageConflictsView(conflicts: $archivedConflicts)
                 .frame(minWidth: 440, minHeight: 420)
         }
+        .sheet(isPresented: $showsScratchpadMaintenance, onDismiss: {
+            Task { await reload() }
+        }) {
+            SharedScratchpadMaintenanceView()
+        }
         .onDisappear {
             relocationReloadTask?.cancel()
+        }
+    }
+
+    private var scratchpadMaintenanceSection: some View {
+        Section {
+            Button {
+                showsScratchpadMaintenance = true
+            } label: {
+                Label("Scratchpad Attachments…", systemImage: "photo.on.rectangle")
+            }
+            .accessibilityIdentifier("storage.scratchpadAttachments")
+        } footer: {
+            Text("Move unused images to recovery or restore images from an earlier cleanup.")
         }
     }
 
@@ -577,6 +598,7 @@ struct StorageSettingsTab: View {
         legacyAi = listing.legacyAi
         cacheEntries = cache
         archivedConflicts = await workspace.storageCoordinator.archivedConflicts()
+        sharedFolderIsActive = await workspace.storageCoordinator.currentStatus().effectiveMode == .syncedFolder
         isLoading = false
     }
 
