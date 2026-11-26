@@ -4,8 +4,8 @@ Decides: how code is shared (`VellumCore`), what the `Linux/` shell is built on,
 Swift concurrency runs inside GTK, and how we build and test in a container.
 
 Depends on: D4 (Swift core + GTK shell in `Linux/`), D5 (container on the Mac).
-Research: GPT 6.2 Astra, round 1, audited `4909b486` against Swift 6.4.3. Items marked
-**unverified** have not been built or run yet.
+Research: GPT 6.2 Astra, round 1, audited `4909b486` against Swift 6.4.3. Reviewed by Astra and
+Gemini 4 Neon (round 2). Items marked **unverified** have not been built or run yet.
 
 ## Question
 
@@ -56,15 +56,16 @@ They own types that Services need (`AiMessage` and others live in `AiStore.swift
 |---|---|---|
 | `URLSession.bytes(for:)` / `AsyncBytes` | 5 (+`AiStreaming` `.lines`) | **Missing on Linux.** Streaming AI and the web extractor's size cap both need it. Chunked delegate (Vellum already has one in `IntegrationDownloadClient`) or AsyncHTTPClient; an SSE line splitter that handles split UTF-8/CRLF |
 | `OSAllocatedUnfairLock` | 2 | `Synchronization.Mutex` |
+| Darwin `rename`/`errno`/`strerror` | `PdfAtomicWriter` and others | `#if canImport(Glibc)` imports |
 | `CryptoKit` | 10 | swift-crypto. **Hashes must be byte-identical**: they are document and web-record identities |
 | `Compression` | 1 (`WebArchive`) | zlib raw DEFLATE (`windowBits = -15`) |
 | `NSFileCoordinator` / `NSFilePresenter` / `NSMetadataQuery` | 1 (`ICloudSyncedContainer`) | Not needed: Linux uses a direct-folder `SyncedContainer` (layer 2) |
-| `UniformTypeIdentifiers` | 17 | MIME types at the core boundary; GIO content-type guessing in the shell |
+| `UniformTypeIdentifiers` | 17 non-iOS | MIME types at the core boundary; GIO content-type guessing in the shell |
 | `Security` / `SecItem` | 1 (`KeychainStore`) | libsecret backend behind the existing `KeychainStore.Backend` |
-| `AttributedString(markdown:)` | 3 | Missing on Linux. Share a parsed Markdown tree (swift-markdown); render with Pango/WebKitGTK |
+| `AttributedString(markdown:)` | 1–2 (`InlineMarkdown`) | Missing on Linux. Share a parsed Markdown tree (swift-markdown); render with Pango/WebKitGTK |
 | `CGColor`, `CGVector`, `CGPDF*` | few | Numeric geometry in core; colours/PDF in the shell |
-| `Observation` | 17 | Available; GTK needs an explicit `withObservationTracking` → widget-update bridge |
-| `UserDefaults` | 5 | Available; stays device-local behind `AppDefaults` |
+| `Observation` | 21 non-iOS | Available; GTK needs an explicit `withObservationTracking` → widget-update bridge |
+| `UserDefaults` | 16 non-iOS | Available; stays device-local behind `AppDefaults` |
 
 ## GTK from Swift: decision
 
@@ -98,9 +99,16 @@ static gboolean service_swift_main(gpointer _) {
 g_timeout_add_full(G_PRIORITY_DEFAULT, 8, service_swift_main, NULL, NULL);
 ```
 
-- 8 ms is a prototype value (about 125 idle wakeups/second). Refinement: watch libdispatch's
-  main-queue eventfd with `g_unix_fd_add_full` so it wakes only when work exists. That uses a
-  private SPI (`_dispatch_get_main_queue_handle_4CF`), so keep the timer as fallback.
+- 8 ms is a prototype value (about 125 idle wakeups/second, up to 8 ms added to every main-actor hop).
+- **Reviewers disagree on the primary design; the spike decides.** Astra: start with the timer
+  because it uses only public API. Neon: make the event-driven version primary (a GLib watch on
+  libdispatch's main-queue eventfd via `g_unix_fd_add_full`: zero idle wakeups, no added latency).
+  It relies on a private SPI (`_dispatch_get_main_queue_handle_4CF`). The spike builds both and measures
+  idle CPU and hop latency. Plan of record: **event-driven primary, timer as automatic fallback**
+  if the SPI is missing.
+- Drive the CF turn **from Swift** (`RunLoop.main.run(mode: .default, before: .distantPast)`), not
+  from C, so the C adapter doesn't depend on CoreFoundation headers, which on Linux ship inside
+  swift-corelibs-foundation.
 - Custom executors can't replace `MainActor` in Swift 6.4.3 (SE-0392 lists it as future work).
 - Never call `dispatchMain()` alongside this, and never drain the main queue from a worker.
   libdispatch traps on both.
@@ -112,28 +120,44 @@ label; also a `DispatchQueue.main.async` update. Assert `MainActor.preconditionI
 the same pthread as GTK startup, both updates visible before a watchdog deadline, at idle
 and under input.
 
-## Extraction sequence (each PR keeps the Mac building)
+## Extraction sequence (read first, write later)
 
-Astra proposed five steps; step 4 (PDF writer) was added after Neon found that Vellum's
-PDF writer is already pure Swift.
+Revised after review round 2. Both reviewers flagged that the earlier "move the PDF writer" step
+rested on a wrong premise (page annotations are written by PDFKit, see layer 3), and that the
+read-only Linux reader must come before any write work.
 
+0. **Concurrency mode.** `project.yml` builds with Swift 6, `SWIFT_STRICT_CONCURRENCY: minimal`
+   and warnings as errors. A Swift 6 SwiftPM package defaults to complete checking, which fails on
+   `nonisolated(unsafe)` test seams. Decision: `VellumCore` starts with `.swiftLanguageMode(.v5)`
+   plus minimal checking to match the app, then tightens per module.
 1. **Prove the package.** Create `Packages/VellumCore`, move `PdfZoomPolicy`, wire it in
-   `project.yml`. Gate: `xcodegen generate` + Debug `Vellum Mac` build + `swift test` on Linux.
-2. **Identity and wire models.** `Annotation`, `DocumentInfo`, `RecentDocument`, URL
-   normalisation, `DocumentIdentity` (+ swift-crypto on Linux). Keep coding keys and the
-   exact path-hash fallback.
-3. **Reading positions.** Wire types, merge, clock, storage protocol, direct-file store.
-   Give Linux its own platform label and device ID (today non-macOS records say `ipados`/`iPad`).
-4. **PDF writer.** Move the Foundation-only `PdfAtomicWriter` family (`ClassicPdfFile`,
-   `PdfIncrement`, `PdfBytePatch`, `PdfXrefRepair`) plus the dictionary codecs it needs.
-   This is how Linux writes annotations (layer 3), so it comes before the reader.
-5. **Archive codec.** `MiniZip`, raw DEFLATE, manifest, hashes, byte limits. Cross-read
-   Mac- and Linux-written fixtures. Network capture and PencilKit validation stay in the app.
-6. **First Linux reader.** `Linux/Package.swift`, the main-loop pump, one GTK window that
-   opens a local library record **read-only**.
+   `project.yml`. Decide here whether the share/widget extensions link `VellumCore` (they list
+   files like `DocumentIdentity.swift` individually today).
+2. **Identity and wire models.** `Annotation`, `DocumentInfo`, `RecentDocument`, URL normalisation,
+   `DocumentIdentity` (+ swift-crypto, byte-identical hashes). **Also consolidate
+   `WebLibrary.pageKey` and `PageTextCache.pathKey` into `DocumentIdentity`.** Positions depend on them.
+3. **Reading positions.** First inject the root (`WebLibrary.appDataDir`) and defaults
+   (`AppDefaults.current`) that `PositionModels`/`PositionStorage` reach for. Then move the wire types,
+   merge, clock, storage protocol and direct-file store. Give Linux its own platform label and
+   device ID (today non-macOS records say `ipados`/`iPad`).
+4. **Archive codec.** `MiniZip`, raw DEFLATE, manifest, hashes, byte limits. **`ink.json` is opaque
+   `Data` in the core codec.** `WebArchive` currently calls `WebInkStore.additivelyMerged` (PencilKit),
+   which stays in the Apple app. Cross-read Mac- and Linux-written fixtures.
+5. **Read-only Linux reader.** `Linux/Package.swift`, the main-loop bridge, PDFium rendering, one
+   GTK window showing a library on a **disposable copy**. Read-only is enforced at the
+   **filesystem boundary**, because ordinary "open" paths write: opening a `.vellumweb` through the
+   Apple import path installs assets, mutates the record and merges ink, and `FilePositionStorage.loadAll`
+   moves malformed records into quarantine. Acceptance: a checksum of the library before and after
+   a session is unchanged. Also spike WebKitGTK here: custom URI scheme, injected scripts,
+   page-to-app messages, offline assets.
+6. **PDF primitives.** Split `PdfAtomicWriter`'s byte primitives from `SessionServiceError` (translate
+   at the app boundary), and split the pure `/Info` and outline increments from their CGPDF readers.
+   The Mac mutation path stays unchanged.
+7. **Linux annotation writer** (layer 3 design), gated on the semantic round trip and the existing
+   rotated-page and foreign-annotation fixtures, including iOS-targeted persistence tests.
 
-Every PR: `xcodegen generate`, Debug `Vellum Mac` build with worktree-local derived data,
-the iOS/extension targets touched by the move, and Linux `swift test`.
+Every PR: `xcodegen generate`, Debug `Vellum Mac` build with worktree-local derived data, the
+iOS/extension targets touched by the move, and Linux `swift test`.
 
 ## Container dev loop
 
@@ -165,6 +189,6 @@ Either colima or OrbStack works; the commands are identical (`docker …`). **Yo
 ## Open questions
 
 - **N3:** colima or OrbStack?
-- **N8 (resolved here, pending review):** share formats and operations, not Stores, for now.
+- **N8 (resolved, both reviewers agree):** share formats and operations, not Stores, for now.
 - **N9:** look and feel (libadwaita vs plain GTK4) waits until the step-5 window exists.
-- Stable path for unstamped PDFs across machines (see layer 2: identity risk).
+- Stable path for unstamped PDFs across machines: resolved in layer 2 (stamp on import, root-relative fallback).
