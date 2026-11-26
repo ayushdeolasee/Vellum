@@ -8,7 +8,7 @@ import VellumCore
 @Suite(.serialized)
 struct PdfiumTests {
     // P7 owns the shared corpus. dev-shell stages Packages alongside Linux.
-    private func fixture(_ name: String) throws -> Data {
+    func fixture(_ name: String) throws -> Data {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let directory = repo.appendingPathComponent("Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf")
