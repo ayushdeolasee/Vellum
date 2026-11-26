@@ -28,15 +28,7 @@ private struct AnnotationPage: Sendable {
             }
         case .readOnly(let reason):
             records = []
-            switch reason {
-            case .unsupportedXref: restriction = "This PDF uses an unsupported cross-reference format."
-            case .encrypted: restriction = "This PDF is encrypted."
-            case .signed: restriction = "This PDF contains a digital signature."
-            case .nonzeroGeneration: restriction = "This PDF uses unsupported object generations."
-            case .malformed: restriction = "The original PDF structure could not be verified."
-            case .ambiguousAnnotation: restriction = "The PDF has ambiguous annotation identities."
-            case .unsupportedGeometry: restriction = "This PDF has unsupported page geometry."
-            }
+            restriction = reason.localizedDescription
         }
         return await Self(text: text, records: records, restriction: restriction)
     }
@@ -53,6 +45,7 @@ final class PdfAnnotationPane {
     private var picked: Annotation?
     private var mutate: ((PdfAnnotationEdit) -> Void)?
     private var saving = false
+    private var carryComment = false
     private var admissionError: String?
     private(set) var pending: Task<Bool, Never>?
 
@@ -81,6 +74,7 @@ final class PdfAnnotationPane {
         height = info.heightPt
         number = index + 1
         admissionError = nil
+        carryComment = recoveredComment?.isEmpty == false
         saving = false
         if let replace, page.restriction == nil {
             mutate = { [weak self] edit in
@@ -106,7 +100,8 @@ final class PdfAnnotationPane {
                             reload(String(cString: pdf_annotations_content(panel)))
                         } else if let reason = error as? PdfReadOnlyReason {
                             self.admissionError = reason.localizedDescription
-                            self.refresh("Edit could not be saved. The original is still open.")
+                            reader_show_status(window, reason.localizedDescription)
+                            self.refresh("The original is still open.")
                         } else {
                             self.refresh("Could not save the annotation. \(error.localizedDescription)")
                         }
@@ -180,7 +175,8 @@ final class PdfAnnotationPane {
             let index = Int(pdf_annotations_picked(panel))
             picked = page.records.indices.contains(index) ? page.records[index] : nil
             position = picked?.positionData
-            pdf_annotations_set_content(panel, picked?.content ?? "")
+            if !carryComment { pdf_annotations_set_content(panel, picked?.content ?? "") }
+            carryComment = false
             refresh(nil)
         case PDF_HIGHLIGHT, PDF_NOTE:
             guard picked == nil, admissionError == nil else { return }
