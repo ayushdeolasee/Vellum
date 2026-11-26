@@ -51,6 +51,10 @@ struct SyncedFolderStorageTests {
                     try await DocumentDataStore.touch(document: doc, coordinator: coordinator)
                     let path = try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)?.lastKnownPath
                     #expect(path == "PDFs/" + source.lastPathComponent)
+                    let repeated = try await resolver.openPickedPDF(url: source, sessionId: "repeat") { path, id in
+                        try await backend.open(path: path, sessionId: id).info
+                    }
+                    #expect(repeated.pdfPath == doc.pdfPath && repeated.docId == key)
                     let reopened = try await resolver.openPickedPDF(url: destination, sessionId: "again") { path, id in
                         try await backend.open(path: path, sessionId: id).info
                     }
