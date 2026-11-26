@@ -81,6 +81,47 @@ struct PdfiumTests {
         #expect(notePixels > 100)
     }
 
+    // Interior landmarks from the unstripped macOS PDFKit renders, at one pixel per point.
+    @Test func rendersIPadInkIncludingMaskAndRotationBehavior() async throws {
+        let indigo: [UInt8] = [143, 65, 69, 255]
+        let red: [UInt8] = [48, 58, 178, 255]
+        let yellow: [UInt8] = [138, 240, 254, 255]
+        let gray: [UInt8] = [153, 153, 153, 255]
+
+        func render(_ name: String, rotated: Bool = false) async throws -> PdfiumBitmap {
+            let image = try await PdfiumDocument.render(in: fixture(name), at: 0, scale: 1)
+            try #require(image.width == (rotated ? 240 : 320) && image.height == (rotated ? 320 : 240))
+            return image
+        }
+
+        let pens = try await render("ipad-vellum-ink")
+        let foreign = bgra(pens, 50, 36)
+        #expect(foreign[0] == foreign[1] && foreign[1] == foreign[2] && foreign[2] < 65)
+        #expect(bgra(pens, 100, 84) == indigo)
+        #expect(bgra(pens, 100, 150) == red)
+
+        let full = try await render("pdf-ink-erased-full")
+        let partial = try await render("pdf-ink-erased-partial")
+        #expect(bgra(full, 100, 150) == red && bgra(partial, 100, 150) == red)
+        // Full erasure omits the indigo annotation. The partially erased PDF
+        // exports the whole line, including PencilKit's masked x=110...185 gap.
+        for x in 48..<240 {
+            let bare = bgra(full, x, 90)
+            #expect(bare[0] == bare[1] && bare[1] == bare[2])
+            #expect(bgra(partial, x, 90) == indigo)
+        }
+
+        let marker = try await render("pdf-ink-marker")
+        #expect(bgra(marker, 95, 90) == yellow)   // white paper underneath
+        #expect(bgra(marker, 84, 90) == yellow)   // gray bar underneath
+        #expect(bgra(marker, 144, 90) == yellow)  // two strokes cross on gray
+        #expect(bgra(marker, 84, 120) == gray)
+
+        let rotated = try await render("pdf-ink-rotated", rotated: true)
+        #expect(bgra(rotated, 156, 95) == indigo && bgra(rotated, 144, 237) == indigo)
+        #expect(bgra(rotated, 120, 84) == gray)
+    }
+
     @Test func opensEncryptedBytesOnlyWithTheFullPassword() async throws {
         let bytes = try fixture("encrypted-user-pass")
         for password: String? in [nil, "", "wrong", "vellum\0suffix"] {
