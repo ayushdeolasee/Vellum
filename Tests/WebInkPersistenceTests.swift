@@ -353,7 +353,7 @@ final class WebInkPersistenceTests: XCTestCase {
 
         // Pretty (iCloud-shaped) layout: sidecar follows the records dir.
         let root = tempDir.appendingPathComponent("cloud-root", isDirectory: true)
-        WebLibrary.layoutOverride = .pretty(root: root, recordsInRoot: true, localStoreDir: tempDir)
+        WebLibrary.layoutOverride = .iCloud(root: root)
         defer { WebLibrary.layoutOverride = nil }
         let expected = root
             .appendingPathComponent(".vellum", isDirectory: true)

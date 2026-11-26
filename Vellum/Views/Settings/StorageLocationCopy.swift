@@ -21,7 +21,7 @@ enum StorageLocationCopy {
             return "iCloud sync isn't available in this build or for this iCloud account. Choose local storage for now; Vellum will keep everything private on \(thisDevice) and won't write to iCloud."
         case .custom:
             return "Offline copies live in the folder you choose. Highlights, AI conversations, reading positions, and live scratchpad notes stay in Vellum's private storage on \(thisDevice) and don't sync."
-        case .local:
+        case .local, .syncedFolder:
             return "Everything stays in Vellum's private app folder on \(thisDevice). Nothing syncs."
         }
     }
@@ -38,7 +38,7 @@ enum StorageLocationCopy {
                 return "iCloud sync isn't available in this build or for this iCloud account. Vellum is using private local storage on \(thisDevice); nothing is syncing or being written to iCloud."
             case .custom:
                 return "The chosen folder can't be found. Vellum is using private local storage on \(thisDevice) until you choose a folder again."
-            case .local:
+            case .local, .syncedFolder:
                 return "Everything stays in Vellum's private app folder on \(thisDevice). Nothing syncs."
             }
         }

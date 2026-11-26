@@ -7,7 +7,7 @@ struct ReaderWindow {
     GtkWidget *title, *page, *previous, *next, *message, *picture, *stack, *status;
     ReaderCallback callback;
     void *context;
-    gboolean closing;
+    gboolean closing, drained;
 };
 
 static void notify(ReaderWindow *r, ReaderEvent event, int row) {
@@ -24,12 +24,21 @@ static void clicked(GtkButton *button, ReaderWindow *r) {
         notify(r, GTK_WIDGET(button) == r->previous ? READER_PREVIOUS : READER_NEXT, -1);
 }
 
+// close-request, window removal and application shutdown can arrive in any
+// order. Invalidate the Swift generation synchronously, exactly once.
+static void begin_close(ReaderWindow *r) {
+    if (!r->window || r->closing) return;
+    r->closing = TRUE;
+    notify(r, READER_CLOSE, -1);
+}
+
+static void window_removed(GtkApplication *app, GtkWindow *window, ReaderWindow *r) {
+    if (window == r->window) begin_close(r);
+}
+
 static gboolean close_requested(GtkWindow *window, ReaderWindow *r) {
-    if (!r->closing) {
-        r->closing = TRUE;
-        gtk_widget_set_sensitive(GTK_WIDGET(window), FALSE);
-        notify(r, READER_CLOSE, -1);
-    }
+    gtk_widget_set_sensitive(GTK_WIDGET(window), FALSE);
+    begin_close(r);
     return TRUE;
 }
 
@@ -41,7 +50,7 @@ GtkStack *reader_content_stack(ReaderWindow *r) {
 void reader_finish_close(ReaderWindow *r) {
     g_assert(shell_on_gtk_thread() && r->closing);
     gtk_window_destroy(r->window);
-    r->window = NULL;
+    r->drained = TRUE;
 }
 
 void reader_add_row(ReaderWindow *r, const char *name) {
@@ -63,24 +72,39 @@ static void set_title(ReaderWindow *r, const char *title) {
     gtk_label_set_text(GTK_LABEL(r->title), title);
 }
 
-void reader_set_message(ReaderWindow *r, const char *title, const char *message) {
+void reader_set_position(ReaderWindow *r, int number, int count) {
+    g_assert(shell_on_gtk_thread());
+    g_autofree char *position = count ? g_strdup_printf("Page %d of %d", number, count) : NULL;
+    gtk_label_set_text(GTK_LABEL(r->page), position ? position : "");
+    gboolean previous = count > 0 && number > 1, next = number < count;
+    GtkWidget *focus = gtk_window_get_focus(r->window);
+    if (previous) gtk_widget_set_sensitive(r->previous, TRUE);
+    if (next) gtk_widget_set_sensitive(r->next, TRUE);
+    if (focus == r->previous && !previous && next) gtk_widget_grab_focus(r->next);
+    if (focus == r->next && !next && previous) gtk_widget_grab_focus(r->previous);
+    if (!previous) gtk_widget_set_sensitive(r->previous, FALSE);
+    if (!next) gtk_widget_set_sensitive(r->next, FALSE);
+}
+
+void reader_page_message(ReaderWindow *r, const char *title, const char *message, int number, int count) {
     g_assert(shell_on_gtk_thread());
     set_title(r, title);
     gtk_picture_set_paintable(GTK_PICTURE(r->picture), NULL);
     gtk_label_set_text(GTK_LABEL(r->message), message);
     gtk_stack_set_visible_child(reader_content_stack(r), r->message);
-    gtk_widget_set_sensitive(r->previous, FALSE);
-    gtk_widget_set_sensitive(r->next, FALSE);
-    gtk_label_set_text(GTK_LABEL(r->page), "");
+    reader_set_position(r, number, count);
     gtk_label_set_text(GTK_LABEL(r->status), "Read-only library");
 }
 
-void reader_set_position(ReaderWindow *r, int number, int count) {
+void reader_web_ready(ReaderWindow *r, const char *title, const char *position) {
     g_assert(shell_on_gtk_thread());
-    g_autofree char *position = g_strdup_printf("Page %d of %d", number, count);
+    set_title(r, title);
     gtk_label_set_text(GTK_LABEL(r->page), position);
-    gtk_widget_set_sensitive(r->previous, number > 1);
-    gtk_widget_set_sensitive(r->next, number < count);
+    gtk_label_set_text(GTK_LABEL(r->status), "Offline archive · Read only");
+}
+
+void reader_set_message(ReaderWindow *r, const char *title, const char *message) {
+    reader_page_message(r, title, message, 0, 0);
 }
 
 void reader_set_page(ReaderWindow *r, const char *title, int number, int count,
@@ -107,11 +131,15 @@ static GtkWidget *page_button(const char *icon, const char *name, ReaderWindow *
 }
 
 static void activated(GtkApplication *app, ReaderWindow *r) {
+    if (r->closing) return;
     if (r->window) {
         gtk_window_present(r->window);
         return;
     }
     r->window = GTK_WINDOW(gtk_application_window_new(app));
+    // GTK drops its toplevel reference on programmatic destroy. Keep the
+    // window and its child hierarchy alive until the controller has drained.
+    g_object_ref(r->window);
     gtk_window_set_default_size(r->window, 960, 640);
     g_signal_connect(r->window, "close-request", G_CALLBACK(close_requested), r);
 
@@ -168,5 +196,22 @@ int reader_run(ReaderCallback callback, void *context) {
     ReaderWindow reader = { .callback = callback, .context = context };
     g_autoptr(GtkApplication) app = gtk_application_new("org.vellum.Reader", G_APPLICATION_NON_UNIQUE);
     g_signal_connect(app, "activate", G_CALLBACK(activated), &reader);
-    return g_application_run(G_APPLICATION(app), 0, NULL);
+    g_signal_connect(app, "window-removed", G_CALLBACK(window_removed), &reader);
+    g_signal_connect_swapped(app, "shutdown", G_CALLBACK(begin_close), &reader);
+    int status = g_application_run(G_APPLICATION(app), 0, NULL);
+    // g_application_quit() exits even when a window or a worker is pending.
+    // Keep the GLib/Swift pump, callback context and window alive until CLOSE
+    // has joined outstanding requests and shut down PDFium.
+    begin_close(&reader);
+    while (reader.closing && !reader.drained)
+        g_main_context_iteration(NULL, TRUE);
+    g_signal_handlers_disconnect_by_data(app, &reader);
+    if (reader.window) {
+        g_signal_handlers_disconnect_by_data(reader.window, &reader);
+        g_signal_handlers_disconnect_by_data(reader.list, &reader);
+        g_signal_handlers_disconnect_by_data(reader.previous, &reader);
+        g_signal_handlers_disconnect_by_data(reader.next, &reader);
+        g_clear_object(&reader.window);
+    }
+    return status;
 }

@@ -293,6 +293,9 @@ public enum ArchiveCodec {
             throw ArchiveCodecError.invalidDocument(
                 "This archive uses format version \(manifest.version) — please update Vellum")
         }
+        guard manifest.assets.count <= maxAssets else {
+            throw ArchiveCodecError.invalidDocument("Archive lists too many assets")
+        }
         return manifest
     }
 
@@ -353,6 +356,9 @@ public enum ArchiveCodec {
             if let safe = safeAssetName(rest) {
                 assetNames.append(safe)
             }
+        }
+        guard assetNames.count <= maxAssets else {
+            throw ArchiveCodecError.invalidDocument("Archive contains too many assets")
         }
         var assets: [(String, Data)] = []
         var totalAssetBytes = 0

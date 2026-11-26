@@ -7,7 +7,8 @@ let package = Package(
     dependencies: [.package(path: "../Packages/VellumCore")],
     targets: [
         .systemLibrary(name: "CGtk", pkgConfig: "gtk4", providers: [.apt(["libgtk-4-dev"])]),
-        .target(name: "CShell", dependencies: ["CGtk"], linkerSettings: [.linkedLibrary("dl")]),
+        .systemLibrary(name: "CWebKit", pkgConfig: "webkitgtk-6.0", providers: [.apt(["libwebkitgtk-6.0-dev"])]),
+        .target(name: "CShell", dependencies: ["CGtk", "CWebKit"], linkerSettings: [.linkedLibrary("dl")]),
         .systemLibrary(name: "CPdfium", pkgConfig: "pdfium"),
         .target(name: "CPdfiumJob", dependencies: ["CPdfium"], linkerSettings: [.linkedLibrary("m")]),
         .target(name: "LinuxReader",
