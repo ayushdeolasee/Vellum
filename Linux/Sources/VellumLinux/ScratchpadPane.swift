@@ -99,6 +99,12 @@ final class ScratchpadPane {
         switch event {
         case SCRATCHPAD_CHANGE:
             guard let text else { return }
+            guard text.utf8.count <= 4 * 1024 * 1024 else {
+                scratchpad_panel_set_note(panel, draft.text)
+                drafts[key]?.message = "The scratchpad exceeds the editor’s size limit."
+                updateState()
+                return
+            }
             draft.text = text
             draft.message = nil
             drafts[key] = draft
@@ -127,6 +133,16 @@ final class ScratchpadPane {
             await prior?.value
             guard isCurrent(token) else { return }
             do {
+                if let draft = try await storage.recovered(key) {
+                    let previews = await Preview.decode(draft.staged)
+                    guard isCurrent(token) else { return }
+                    drafts[key] = Draft(text: draft.text, baseline: draft.baseline,
+                                        savedText: String(decoding: draft.baseline ?? Data(), as: UTF8.self),
+                                        previews: previews, hasUnavailableImages: false, staged: draft.staged,
+                                        message: "Recovered local draft. The shared note has been preserved.")
+                    showDraft()
+                    return
+                }
                 let note = try await storage.load(key)
                 let previews = await Preview.decode(note.images)
                 guard isCurrent(token) else { return }
@@ -167,6 +183,10 @@ final class ScratchpadPane {
                 let preview = await Preview.decode([image]).first
                 guard isCurrent(token), var draft = drafts[key], key != savingKey else { return }
                 guard let preview else { throw ScratchpadStorage.Failure.unsupportedImage }
+                guard draft.staged.count < 16,
+                      draft.staged.reduce(image.data.count, { $0 + $1.data.count }) <= 24 * 1024 * 1024 else {
+                    throw ScratchpadStorage.Failure.unavailableImage
+                }
                 if !draft.text.isEmpty { draft.text += "\n\n" }
                 draft.text += image.markdown
                 draft.staged.append(image)
@@ -194,6 +214,7 @@ final class ScratchpadPane {
             let referenced = await ScratchpadStorage.referencedImageIDs(in: draft.text)
             draft.baseline = try await storage.save(key, text: draft.text,
                                                    baseline: draft.baseline, staged: draft.staged.filter { referenced.contains($0.id) })
+            try await storage.removeRecovery(key)
             if key == self.key {
                 draft.savedText = draft.text
                 draft.staged = []
@@ -233,8 +254,20 @@ final class ScratchpadPane {
         return true
     }
 
-    func discardUnsavedDrafts() {
-        drafts = drafts.filter { !$0.value.dirty }
+    func recoverPending() async -> Bool {
+        var recovered = true
+        for (key, draft) in drafts where draft.dirty {
+            do { try await storage.recover(key, text: draft.text, baseline: draft.baseline, staged: draft.staged) }
+            catch { recovered = false }
+        }
+        return recovered
+    }
+
+    func releaseDrafts(discard: Bool) async throws {
+        for key in drafts.keys.sorted() where drafts[key]?.dirty == true {
+            if discard { try await storage.removeRecovery(key) }
+            drafts[key] = nil
+        }
     }
 
     func shutdown() async {

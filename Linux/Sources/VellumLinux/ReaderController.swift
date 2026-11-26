@@ -156,8 +156,10 @@ final class ReaderController {
                     do { try await self.chat.keepForNextLaunch() }
                     catch { FileHandle.standardError.write(Data("Could not preserve chat recovery during reader shutdown.\n".utf8)) }
                 }
-                try? await self.flushPosition()
-                _ = await self.scratchpad?.flush()
+                await self.flushPosition()
+                if await self.scratchpad?.flush() == false, await self.scratchpad?.recoverPending() == false {
+                    FileHandle.standardError.write(Data("Could not recover scratchpad drafts in local device state.\n".utf8))
+                }
                 self.webPage = nil
                 await self.writeContext?.retire()
                 await search?.value
@@ -171,10 +173,10 @@ final class ReaderController {
         }
     }
 
-    private func flushPosition() async throws {
+    private func flushPosition() async {
         guard let session = positionSession else { return }
         if let point = await webPage?.location() { session.moved(point) }
-        try await session.flush()
+        await session.flush()
     }
 
     private func confirmLeaving(_ window: OpaquePointer, _ kind: ReaderLeaveKind) async -> Bool {
@@ -186,6 +188,18 @@ final class ReaderController {
         return await withCheckedContinuation { continuation in
             reader_confirm_leave(window, kind, { owner, discard in
                 Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: discard)
+            }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
+        }
+    }
+
+    private func recoveredDraftChoice(_ window: OpaquePointer) async -> Int32 {
+        final class Reply {
+            let continuation: CheckedContinuation<Int32, Never>
+            init(_ continuation: CheckedContinuation<Int32, Never>) { self.continuation = continuation }
+        }
+        return await withCheckedContinuation { continuation in
+            reader_confirm_recovered(window, { owner, choice in
+                Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: choice)
             }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
         }
     }
@@ -205,13 +219,19 @@ final class ReaderController {
                 await scratchpad?.pendingSave?.value
                 await pendingChat?.value
                 guard !closing else { return }
-                do { try await flushPosition() }
-                catch {
-                    guard await confirmLeaving(window, LEAVE_POSITION) else { throw error }
-                }
-                if flushDrafts, await scratchpad?.flush() == false {
-                    guard await confirmLeaving(window, LEAVE_SCRATCHPAD) else { throw LibraryFileError.retryable }
-                    scratchpad?.discardUnsavedDrafts()
+                await flushPosition()
+                if flushDrafts, let scratchpad, await scratchpad.flush() == false {
+                    let recovered = await scratchpad.recoverPending()
+                    let discard: Bool
+                    if recovered {
+                        let choice = await recoveredDraftChoice(window)
+                        guard choice == 1 || choice == 2 else { throw LibraryFileError.retryable }
+                        discard = choice == 2
+                    } else {
+                        guard await confirmLeaving(window, LEAVE_SCRATCHPAD) else { throw LibraryFileError.retryable }
+                        discard = true
+                    }
+                    try await scratchpad.releaseDrafts(discard: discard)
                 }
                 if quitting, !closing {
                     do { try await chat.keepForNextLaunch() }
@@ -260,12 +280,17 @@ final class ReaderController {
                 }
             }
             do {
-                let next = enabling ? try await SharedLibraryWriteContext.activate(root: store.root) : nil
                 var message = enabling ? "Shared editing enabled for this folder." : "This folder is read only."
                 do { try await preferences.saveEditing(enabling, for: store.root) }
                 catch {
                     if enabling { throw error }
                     message = "Read only for this session. Could not save the setting for next launch."
+                }
+                let next: SharedLibraryWriteContext?
+                do { next = enabling ? try await SharedLibraryWriteContext.activate(root: store.root) : nil }
+                catch {
+                    try await preferences.saveEditing(false, for: store.root)
+                    throw error
                 }
                 await scratchpad?.shutdown()
                 await writeContext?.retire()
@@ -276,7 +301,7 @@ final class ReaderController {
                 guard !closing else { return }
                 scratchpad = ScratchpadPane(panel: reader_scratchpad_panel(window), storage: storage)
                 scratchpad?.select(documentStorageKey)
-                positionSession = ReaderPositionSession(context: next, key: documentKey, restored: nil)
+                positionSession = positionWriter(key: documentKey, restored: nil, window: window)
                 webPage?.session = positionSession
                 if let point = await webPage?.location() ?? displayedPosition { positionSession?.moved(point) }
                 reader_set_editing(window, enabling, true)
@@ -290,10 +315,17 @@ final class ReaderController {
 
     private var documentStorageKey: String?
 
-    private func bindPosition(key: DocumentKey?, storageKey: String?, restored: ReadingPosition?) {
+    private func positionWriter(key: DocumentKey?, restored: ReadingPosition?, window: OpaquePointer) -> ReaderPositionSession? {
+        let name = selection?.lastPathComponent ?? "this document"
+        return ReaderPositionSession(context: writeContext, key: key, restored: restored) {
+            reader_notice(window, "Could not save the reading position for \(name). Its previous position was kept.")
+        }
+    }
+
+    private func bindPosition(key: DocumentKey?, storageKey: String?, restored: ReadingPosition?, window: OpaquePointer) {
         documentKey = key
         documentStorageKey = storageKey
-        positionSession = ReaderPositionSession(context: writeContext, key: key, restored: restored)
+        positionSession = positionWriter(key: key, restored: restored, window: window)
         scratchpad?.select(storageKey)
     }
 
@@ -437,9 +469,12 @@ final class ReaderController {
                 let (resources, metadata) = try await ArchiveResourceMap.load(from: store, file: file, catalog: metadataCatalog)
                 guard self.isCurrent(token) else { return }
                 self.bindPosition(key: metadata.storageKey.flatMap { DocumentKey(rawValue: "web:" + $0) },
-                                  storageKey: metadata.storageKey, restored: metadata.position)
+                                  storageKey: metadata.storageKey, restored: metadata.position, window: window)
                 self.webPage = WebPageHost(stack: reader_content_stack(window), resources: resources,
-                                           probe: self.webProbe, restoring: metadata.position, session: self.positionSession) { [weak self] visibleText in
+                                           probe: self.webProbe, restoring: metadata.position, session: self.positionSession,
+                                           onLocation: { point in
+                    reader_article_location(window, Int32(point.page), Int32(((point.scrollFraction ?? 0) * 100).rounded()))
+                }) { [weak self] visibleText in
                     guard let self, self.isCurrent(token) else { return }
                     self.chat.bind(.article(resources.hashes, key: metadata.storageKey, title: metadata.displayTitle,
                                             file: file, store: store, visibleText: visibleText),
@@ -492,7 +527,7 @@ final class ReaderController {
                     }
                     guard self.isCurrent(token) else { return }
                     self.bindPosition(key: storageKey.map { .pdf(stableIdentifier: $0) },
-                                      storageKey: storageKey, restored: restored)
+                                      storageKey: storageKey, restored: restored, window: window)
                     self.pageCount = opening.pageCount
                     self.pdfTitle = title
                     self.pageIndex = index

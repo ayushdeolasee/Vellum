@@ -129,6 +129,47 @@ struct ReadOnlyLibraryFileStoreTests {
         }
     }
 
+    @Test func retiringJoinsContendedWritesAndOlderSamplesCannotReplaceNewerPositions() async throws {
+        try await withLibrary { url, files in
+            let device = DeviceIdentity(id: DeviceID(UUID().uuidString.lowercased()), name: "Fixture", platform: "linux")
+            let writer = try await SharedLibraryWriteContext.prepare(root: files.root, device: device)
+            let key = DocumentKey.web(normalizedURL: "https://example.invalid/fixture")
+            let instant = Date.now
+            let positions = url.appendingPathComponent(".vellum/positions", isDirectory: true)
+            let record = try PositionLayout.fileURL(in: positions, for: device.id)
+            try await writer.savePosition(.init(page: 4), for: key, at: instant)
+            let before = try await files.read(record)
+            try await writer.savePosition(.init(page: 1), for: key, at: instant.addingTimeInterval(-2))
+            #expect(try await files.read(record) == before)
+
+            let lock = open(positions.path, O_DIRECTORY | O_RDONLY | O_CLOEXEC)
+            try #require(lock >= 0)
+            defer { _ = close(lock) }
+            try #require(flock(lock, LOCK_EX) == 0)
+            let write = Task { try await writer.replace(record, with: Data(), ifCurrent: before) }
+            // The fresh parent fd proves the replacement is admitted and waiting
+            // on our lock before retire closes admission.
+            let deadline = ContinuousClock.now + .seconds(2)
+            func openDescriptions() throws -> Int {
+                try fm.contentsOfDirectory(atPath: "/proc/self/fd").filter {
+                    (try? fm.destinationOfSymbolicLink(atPath: "/proc/self/fd/" + $0)) == positions.path
+                }.count
+            }
+            while try openDescriptions() < 2 && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            try #require(try openDescriptions() >= 2)
+            await writer.retire()
+            await #expect(throws: LibraryFileError.retryable) { try await write.value }
+            #expect(ContinuousClock.now < deadline)
+            _ = flock(lock, LOCK_UN)
+            await #expect(throws: ReaderFileError.readOnly) {
+                try await writer.replace(record, with: Data(), ifCurrent: before)
+            }
+            #expect(try await files.read(record) == before)
+        }
+    }
+
     @Test func enforcesSizeBeforeAndDuringRead() async throws {
         try await withLibrary { url, store in
             // Sparse oversized fixtures exercise each policy without storing the payloads.
