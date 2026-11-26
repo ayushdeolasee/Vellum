@@ -27,11 +27,30 @@ struct PdfiumTests {
         let opened = try await PdfiumDocument.openingInfo(in: stamped)
         #expect(opened.pageCount == 4 && opened.stableIdentifier == id)
 
+        // Bookmark increments can update several noncontiguous objects while
+        // carrying forward the Info reference to a previous revision.
+        let bookmarked = try PdfOutlineIncrement.createBookmarkIncrement(
+            normalizedData: stamped, pageNumber: 2, id: "note", now: "2026-11-26T12:00:00Z")
+        let renamed = try #require(try PdfOutlineIncrement.updateBookmarkIncrement(
+            normalizedData: bookmarked, id: "note", content: "Marked", defaultTitle: "Page 2", now: "t1"))
+        let retitled = try PdfInfoIncrement.setMetadataIncrement(normalizedData: renamed, key: "title", value: "Notes")
+        for bytes in [bookmarked, renamed, retitled] {
+            #expect(try await PdfiumDocument.openingInfo(in: bytes).stableIdentifier == id)
+        }
+
         // Keep the xref offsets intact. PDFium returns the same metadata text for
         // this PDF Name, but Apple requires a String.
         var name = stamped
         let literal = try #require(stamped.range(of: Data("(\(id))".utf8)))
         name.replaceSubrange(literal, with: Data("/\(id) ".utf8))
+        // The same object number now holds a Name. A later bookmark must
+        // stop at this replacement instead of reviving the original String.
+        let stampedFile = try ClassicPdfFile(data: stamped)
+        var replacement = PdfIncrement(file: stampedFile)
+        let infoNumber = try #require(stampedFile.infoNumber)
+        replacement.setObject(infoNumber, source: Array("<< /VellumDocId /\(id) >>".utf8))
+        let replaced = try PdfOutlineIncrement.createBookmarkIncrement(
+            normalizedData: replacement.appended(), pageNumber: 2, id: "note", now: "t2")
         let invalid = try PdfInfoIncrement.setMetadataIncrement(
             normalizedData: original, key: "doc_id", value: id.uppercased())
         let classic = try ClassicPdfFile(data: original)
@@ -45,7 +64,7 @@ struct PdfiumTests {
         let escaped = withInfo("/Vellum#44ocId <\(hex)>")
         #expect(try await PdfiumDocument.openingInfo(in: escaped).stableIdentifier == id)
         let ambiguous = withInfo("/VellumDocId (\(id)) /Vellum#44ocId /\(id)")
-        for bytes in [original, name, invalid, ambiguous] {
+        for bytes in [original, name, replaced, invalid, ambiguous] {
             let opened = try await PdfiumDocument.openingInfo(in: bytes)
             #expect(opened.pageCount == 4 && opened.stableIdentifier == nil)
         }
