@@ -41,8 +41,12 @@ final class SharedPDFMigrationTests: XCTestCase {
         let manifest = journals.appendingPathComponent(DocumentIdentity.sha256Hex(root.path) + "/migration.json")
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])
         XCTAssertNotNil(json.removeValue(forKey: "createdDirectories"))
+        var pdfs = try XCTUnwrap(json["pdfs"] as? [[String: Any]])
+        XCTAssertNotNil(pdfs[0].removeValue(forKey: "paths"))
+        json["pdfs"] = pdfs
         try JSONSerialization.data(withJSONObject: json).write(to: manifest, options: .atomic)
         try await migration.migrate([], readID: id)
+        try await migration.migrate([source], readID: id)
         let pdf = root.appendingPathComponent("PDFs/Paper.pdf")
         XCTAssertEqual(try Data(contentsOf: pdf), original)
         try await migration.rollback()
