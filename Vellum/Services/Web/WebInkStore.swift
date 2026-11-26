@@ -1,5 +1,6 @@
 import Foundation
 import PencilKit
+import VellumCore
 
 // Durable storage for Apple Pencil ink on web pages (WEB-INK-PLAN decisions 5
 // and 6): a separate `<key>.ink.json` sidecar next to the page record — NOT a
@@ -655,6 +656,7 @@ enum WebInkStore {
         }
         var out = Set<String>()
         for name in names {
+            guard !SyncArtifact.matches(name) else { continue }
             if name.hasSuffix(".ink.json") {
                 out.insert(name)
             } else if name.hasPrefix("."), name.hasSuffix(".ink.json.icloud") {

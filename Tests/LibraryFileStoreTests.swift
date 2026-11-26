@@ -23,6 +23,37 @@ struct LibraryFileStoreTests {
         #expect(try await store.read(target) == nil)
     }
 
+    @Test("Direct, record, and ink listings preserve sync artifacts on disk")
+    func normalListingsOmitSyncArtifacts() async throws {
+        let root = PositionFixtures.scratchDirectory("sync-artifact-listing")
+        defer { PositionFixtures.remove(root) }
+        let ordinary = ["guide.pdf", "page.json", "page.ink.json", "page.tmp-notes.json"]
+        let artifacts = [
+            "guide.sync-conflict-20261126-174000-ABCDEFG.pdf",
+            "page.sync-conflict-20261126-174000-ABCDEFG.json",
+            "page.sync-conflict-20261126-174000-ABCDEFG.ink.json",
+            ".evicted.sync-conflict-20261126-174000-ABCDEFG.json.icloud",
+            ".evicted.sync-conflict-20261126-174000-ABCDEFG.ink.json.icloud",
+            ".syncthing.page.json.tmp",
+            ".page.ink.json.tmp-123-abc",
+            ".guide.pdf.vellum-abc.tmp",
+            "page.json.tmp",
+        ]
+        let names = ordinary + artifacts + [".evicted.json.icloud", ".evicted.ink.json.icloud"]
+        let bytes = Data("fixture".utf8)
+        for name in names {
+            try bytes.write(to: root.appendingPathComponent(name))
+        }
+
+        let store = DirectLibraryFileStore()
+        #expect(try await store.list(root, suffix: nil).map(\.name) == ordinary.sorted())
+        #expect(WebLibrary.recordFileNames(inDir: root) == ["evicted.json", "page.json", "page.tmp-notes.json"])
+        #expect(WebInkStore.inkFileNames(inDir: root) == ["evicted.ink.json", "page.ink.json"])
+        for name in names {
+            #expect(try Data(contentsOf: root.appendingPathComponent(name)) == bytes)
+        }
+    }
+
     @Test("Rooted direct storage rejects symlinks and paths outside its root")
     func rootedDirectStorageStaysInsideRoot() async throws {
         let root = PositionFixtures.scratchDirectory("rooted-file-store")
@@ -55,6 +86,9 @@ struct LibraryFileStoreTests {
         let logical = root.appendingPathComponent("evicted.json").standardizedFileURL
         let placeholder = WebICloud.placeholderURL(for: logical)
         try Data("placeholder".utf8).write(to: placeholder)
+        let conflictPlaceholder = WebICloud.placeholderURL(
+            for: root.appendingPathComponent("evicted.sync-conflict-20261126-174000-ABCDEFG.json"))
+        try Data("recovery".utf8).write(to: conflictPlaceholder)
         try Data("hidden".utf8).write(to: root.appendingPathComponent(".unrelated.json"))
         try Data("other".utf8).write(
             to: WebICloud.placeholderURL(
@@ -76,6 +110,7 @@ struct LibraryFileStoreTests {
         }
         #expect(requests.urls == [logical, logical])
         #expect(FileManager.default.fileExists(atPath: placeholder.path))
+        #expect(try Data(contentsOf: conflictPlaceholder) == Data("recovery".utf8))
 
         let bytes = Data("current".utf8)
         try bytes.write(to: logical)
