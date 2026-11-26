@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
+from contextlib import contextmanager
 import ssl
 import subprocess
 import threading
@@ -19,6 +21,7 @@ home = Path(os.environ["VELLUM_TEST_KEYRING"])
 assert Path.home() == home and os.environ["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={home}/run/bus"
 os.environ.update(WAYLAND_DISPLAY="chat", GDK_BACKEND="wayland", GSK_RENDERER="cairo", GTK_A11Y="atspi")
 runtime = Path(os.environ["XDG_RUNTIME_DIR"])
+os.environ["XDG_STATE_HOME"] = str(home / "state")
 desktop = pyatspi.Registry.getDesktop(0)
 schema = Secret.Schema.new("com.vellum.Credential", Secret.SchemaFlags.NONE,
                            {"service": Secret.SchemaAttributeType.STRING, "account": Secret.SchemaAttributeType.STRING})
@@ -179,6 +182,11 @@ def transcript():
     return text.getText(0, text.characterCount)
 
 
+def draft_text():
+    value = get("Question").queryText()
+    return value.getText(0, value.characterCount)
+
+
 def send(question):
     started.clear()
     finished.clear()
@@ -226,6 +234,106 @@ def capture(name):
     subprocess.run(["weston-screenshooter"], cwd=home, check=True, timeout=5)
     shot, = home.glob("*.png")
     shot.rename(Path("/tmp") / name)
+
+
+@contextmanager
+def recovery_reader(**env):
+    app = subprocess.Popen(["/runtime/vellum-linux", "--library", str(root)], env={**os.environ, **env})
+    try:
+        wait(lambda: has_status("PDF open"), "recovery reader opens PDF")
+        click("Chat")
+        wait(lambda: get("Send").getState().contains(pyatspi.STATE_SENSITIVE), "recovery composer")
+        yield app
+        assert app.wait(timeout=8) == 0
+    finally:
+        if app.poll() is None:
+            app.kill()
+            app.wait()
+
+
+def exercise_recovery():
+    conversation = root / ".vellum/documents/4850abcd/conversations.json"
+    original = conversation.read_bytes()
+    draft = "Question kept for later"
+    folder = conversation.parent
+    forced = home / "force-chat-quit.so"
+    flags = subprocess.check_output(["pkg-config", "--cflags", "--libs", "gio-unix-2.0"]).decode().split()
+    subprocess.run(["cc", "-shared", "-fPIC", "/runtime/force-chat-quit.c", *flags, "-ldl", "-o", forced], check=True)
+
+    def fail_save(question):
+        send(question)
+        first_delta(question)
+        release.set()
+        wait(lambda: finished.is_set() and has_status("Chat has unsaved messages"), "shared save failed")
+        assert question in transcript()
+
+    folder.chmod(0o555)
+    try:
+        with recovery_reader():
+            fail_save("Recover this?")
+            assert get("Question").queryEditableText().setTextContents(draft)
+            select("harbor.vellumweb")
+            wait(lambda: "Apple history" in transcript(), "leave after failed PDF save")
+            select("classic-two-column.pdf")
+            wait(lambda: "Recover this?" in transcript(), "return to pending PDF")
+            assert draft_text() == draft, repr(draft_text())
+            click("Retry Save")
+            click("Settings")
+            click("Choose Folder…")
+            select("Second library", role="table row")
+            click("Choose")
+            wait(lambda: has_status(str(second_root)), "leave failing library")
+            click("Done")
+            wait(lambda: has_status("New messages stay in this session.") and not transcript(), "other library clean")
+            assert draft_text() == ""
+            click("Close")
+
+        with recovery_reader(LD_PRELOAD=str(forced)) as app:
+            wait(lambda: "Recover this?" in transcript(), "close kept pending turns in their original library")
+            assert draft_text() == draft, repr(draft_text())
+            fail_save("Force quit recovery?")
+            assert get("Question").queryEditableText().setTextContents("Forced exit draft")
+            app.send_signal(signal.SIGUSR1)
+        assert conversation.read_bytes() == original
+    finally:
+        folder.chmod(0o755)
+
+    # Reopening an oversized conversation must still allow retry after repair.
+    conversation.write_bytes(original + b" " * (32 * 1024 * 1024))
+    with recovery_reader():
+        wait(lambda: has_status("Saved history could not be read.") and "Force quit recovery?" in transcript(),
+             "forced exit retained turns during persistent failure")
+        assert draft_text() == "Forced exit draft"
+        peer = original[:-1] + b',{"id":"recovery-peer", "role":"assistant", "createdAt":"peer", "content":"Peer", "opaque":1.2300}'
+        conversation.write_bytes(peer + b"]")
+        click("Retry Save")
+        wait(lambda: has_status("New messages save to this library.") and "Force quit recovery?" in transcript(),
+             "retry succeeds against peer bytes")
+        assert conversation.read_bytes().startswith(peer + b",")
+        turns = json.loads(conversation.read_bytes())
+        assert [m["content"] for m in turns[-4:]] == ["Recover this?", "First café done", "Force quit recovery?", "First café done"]
+        assert len({m["id"] for m in turns}) == len(turns)
+        assert get("Question").queryEditableText().setTextContents("")
+        click("Close")
+
+    # Both destinations fail. The normal close dialog permits staying to copy
+    # the draft, and lets the reader explicitly abandon it on a second close.
+    blocked = home / "blocked-state"
+    blocked.touch()
+    saved = conversation.read_bytes()
+    folder.chmod(0o555)
+    try:
+        with recovery_reader(XDG_STATE_HOME=str(blocked)):
+            fail_save("Explicit discard?")
+            click("Close")
+            click("Stay Here")
+            wait(lambda: "Explicit discard?" in transcript(), "stay keeps unsaved chat")
+            click("Close")
+            click("Close Without Recovery")
+        assert conversation.read_bytes() == saved
+    finally:
+        folder.chmod(0o755)
+    print("Persistent failure: document and library switches, normal and forced quit, draft restore, peer-safe retry, explicit close passed", flush=True)
 
 
 def exercise():
@@ -331,6 +439,8 @@ def exercise():
                     assert saved_file.read_bytes() == original_history
                 broken_key = hashlib.sha256(b"https://fixture.test/safari").hexdigest()
                 assert (root / ".vellum/documents" / broken_key / "conversations.json").read_bytes() == b'{"cut":'
+            if provider == "opencode" and writable:
+                exercise_recovery()
             print(provider, "passed", flush=True)
         finally:
             if app.poll() is None:

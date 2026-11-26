@@ -1,7 +1,7 @@
 #include "reader_chat_private.h"
 
 struct ReaderChatPanel {
-    GtkWidget *box, *toggle, *entry, *send, *stop, *status;
+    GtkWidget *box, *toggle, *entry, *send, *stop, *retry, *status;
     GtkTextView *transcript;
     ReaderWindow *window;
     ChatNotify notify;
@@ -20,6 +20,18 @@ static void send_chat(GtkWidget *widget, ReaderChatPanel *p) {
 
 static void stop_chat(GtkButton *button, ReaderChatPanel *p) {
     p->notify(p->window, READER_CHAT_STOP);
+}
+
+static void retry_save(GtkButton *button, ReaderChatPanel *p) {
+    p->notify(p->window, READER_CHAT_RETRY);
+}
+
+static void draft_changed(GtkEditable *entry, ReaderChatPanel *p) {
+    p->notify(p->window, READER_CHAT_DRAFT);
+}
+
+void reader_chat_retry_visible(ReaderChatPanel *p, bool visible) {
+    gtk_widget_set_visible(p->retry, visible);
 }
 
 ReaderChatPanel *reader_chat_install(GtkHeaderBar *header, GtkBox *body, ReaderWindow *window, ChatNotify notify) {
@@ -52,14 +64,19 @@ ReaderChatPanel *reader_chat_install(GtkHeaderBar *header, GtkBox *body, ReaderW
     gtk_widget_set_hexpand(p->entry, TRUE);
     p->send = gtk_button_new_with_label("Send");
     p->stop = gtk_button_new_with_label("Stop");
+    p->retry = gtk_button_new_with_label("Retry Save");
+    reader_chat_retry_visible(p, false);
     gtk_box_append(GTK_BOX(row), p->entry);
     gtk_box_append(GTK_BOX(row), p->send);
     gtk_box_append(GTK_BOX(row), p->stop);
+    gtk_box_append(GTK_BOX(row), p->retry);
     gtk_box_append(GTK_BOX(p->box), row);
     p->status = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(p->status), 0);
     gtk_label_set_wrap(GTK_LABEL(p->status), TRUE);
     gtk_box_append(GTK_BOX(p->box), p->status);
+    g_signal_connect(p->entry, "changed", G_CALLBACK(draft_changed), p);
+    g_signal_connect(p->retry, "clicked", G_CALLBACK(retry_save), p);
     g_signal_connect(p->entry, "activate", G_CALLBACK(send_chat), p);
     g_signal_connect(p->send, "clicked", G_CALLBACK(send_chat), p);
     g_signal_connect(p->stop, "clicked", G_CALLBACK(stop_chat), p);
@@ -85,6 +102,7 @@ void reader_chat_append(ReaderChatPanel *p, const char *text) {
 }
 
 void reader_chat_state(ReaderChatPanel *p, const char *message, bool ready, bool streaming) {
+    if (!ready) reader_chat_retry_visible(p, false);
     gtk_label_set_text(GTK_LABEL(p->status), message);
     gtk_widget_set_sensitive(p->entry, ready);
     gtk_widget_set_sensitive(p->send, ready);

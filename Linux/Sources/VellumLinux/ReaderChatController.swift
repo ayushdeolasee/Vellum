@@ -8,27 +8,30 @@ final class ReaderChatController {
     private var document: ReaderChatDocument?
     private var store: ReadOnlyLibraryFileStore?
     private var writer: SharedLibraryWriteContext?
-    private var historyReadable = false
-    private var canSave: Bool { historyReadable && document?.key != nil && writer != nil }
+    private var historyAllowsSave = false
+    private var canSave: Bool { historyAllowsSave && document?.key != nil && writer != nil }
     private var persistence: Task<Void, Never>?
     private var historyNotice = ""
     private var work: Task<Void, Never>?
-    private struct SessionKey: Hashable {
+    private struct ChatSessionKey: Hashable {
         let library: URL
         let rootIdentity: String
         let document: String
     }
+    private var recovery: [ChatSessionKey: ChatRecovery] = [:]
+    private var closing = false
+    private var saveFailed = false
 
-    private var sessionKey: SessionKey? {
+    private var sessionKey: ChatSessionKey? {
         guard let store, let id = document?.sessionKey else { return nil }
-        return SessionKey(library: store.root.url, rootIdentity: store.root.identity, document: id)
+        return ChatSessionKey(library: store.root.url, rootIdentity: store.root.identity, document: id)
     }
 
     private var saved: [ConversationText] = []
-    private var session: [SessionKey: [ConversationText]] = [:]
+    private var session: [ChatSessionKey: [ConversationText]] = [:]
     // Only turns entered while editing was enabled can be published.
-    private var pending: [SessionKey: [ConversationText]] = [:]
-    private var drafts: [SessionKey: String] = [:]
+    private var pending: [ChatSessionKey: [ConversationText]] = [:]
+    private var drafts: [ChatSessionKey: String] = [:]
     private var partial = ""
     private var selectedProvider = ReaderPreferences.defaultProvider
     private var loaded = false
@@ -44,22 +47,34 @@ final class ReaderChatController {
         save(panel: panel)
     }
 
-    func drain(_ panel: OpaquePointer) -> Task<Bool, Never>? {
+    func drain(_ panel: OpaquePointer, closing: Bool = false) -> Task<Void, Never>? {
+        self.closing = closing
         guard work != nil || persistence != nil else { return nil }
         cancel(panel)
-        let request = work, writes = persistence, key = sessionKey
+        let request = work, writes = persistence
         return Task {
             await request?.value
             await writes?.value
-            if let key, canSave, pending[key]?.isEmpty == false { return false }
-            return true
         }
+    }
+
+    func draftChanged(_ panel: OpaquePointer) {
+        if loaded, let key = sessionKey { drafts[key] = String(cString: reader_chat_draft(panel)) }
+    }
+
+    func keepForNextLaunch() async throws {
+        var failure: Error?
+        for (key, versions) in recovery {
+            do { try await versions.keep(.init(draft: drafts[key] ?? "", turns: pending[key] ?? [])) }
+            catch { failure = error }
+        }
+        if let failure { throw failure }
     }
 
     func reset(_ panel: OpaquePointer) {
         work?.cancel()
-        if let key = sessionKey { drafts[key] = String(cString: reader_chat_draft(panel)) }
-        historyReadable = false
+        saveFailed = false
+        historyAllowsSave = false
         document = nil
         writer = nil
         historyNotice = ""
@@ -93,26 +108,39 @@ final class ReaderChatController {
             return
         }
         reader_chat_state(panel, "Opening conversation…", false, false)
-        reader_chat_set_draft(panel, drafts[key] ?? "")
         start {
             await self.persistence?.value
             guard !Task.isCancelled else { return }
+            if self.recovery[key] == nil {
+                let versions = ChatRecovery(root: store.root, document: key.document)
+                self.recovery[key] = versions
+                do {
+                    let kept = try await versions.restore(root: store.root)
+                    self.drafts[key] = kept.draft
+                    self.pending[key] = kept.turns
+                    self.session[key] = kept.turns
+                } catch {
+                    self.historyNotice = "A local recovery copy could not be read."
+                }
+            }
+            guard !Task.isCancelled else { return }
+            reader_chat_set_draft(panel, self.drafts[key] ?? "")
             if let stableKey = self.document?.key {
                 do {
                     let conversation = try await ReaderConversation.load(key: stableKey, from: store)
                     try Task.checkCancellation()
                     self.saved = conversation.messages
-                    self.historyReadable = true
+                    self.historyAllowsSave = true
                 } catch {
                     guard !Task.isCancelled else { return }
                     self.historyNotice = "Saved history could not be read."
-                    self.historyReadable = false
+                    self.historyAllowsSave = !(error is DecodingError)
                 }
             }
+            self.saveFailed = self.pending[key]?.isEmpty == false
             self.loaded = true
             self.render(key: key, panel: panel)
             self.ready(panel: panel)
-            self.save(panel: panel)
         }
     }
 
@@ -133,7 +161,16 @@ final class ReaderChatController {
 
     private func ready(panel: OpaquePointer, notice: String = "") {
         let disclosure = "Send shares document text and recent chat with \(selectedProvider.title)."
-        let destination = canSave ? "New messages save to this library." : "New messages stay in this session."
+        let destination: String
+        if saveFailed {
+            destination = writer == nil ? "Unsaved chat is kept on this device. Enable shared editing to retry."
+                : "Chat has unsaved messages. You can switch documents and retry here later."
+        } else if canSave && !historyNotice.isEmpty {
+            destination = "If a shared save fails, chat keeps your new messages for retry."
+        } else {
+            destination = canSave ? "New messages save to this library." : "New messages stay in this session."
+        }
+        reader_chat_retry_visible(panel, saveFailed && writer != nil && !busy)
         let status = [notice, historyNotice, disclosure, destination].filter { !$0.isEmpty }.joined(separator: " ")
         reader_chat_state(panel, status, loaded && !busy, busy)
     }
@@ -148,18 +185,18 @@ final class ReaderChatController {
         if loaded && !busy { ready(panel: panel) }
     }
 
-    private func history(_ key: SessionKey) -> ArraySlice<ConversationText> {
+    private func history(_ key: ChatSessionKey) -> ArraySlice<ConversationText> {
         let local = session[key] ?? []
         let localIDs = Set(local.map(\.id))
         return (saved.filter { !localIDs.contains($0.id) } + local).suffix(ConversationText.messageLimit)
     }
 
-    private func render(key: SessionKey, panel: OpaquePointer) {
+    private func render(key: ChatSessionKey, panel: OpaquePointer) {
         let transcript = history(key).map { ($0.role == .user ? "You" : "Assistant") + "\n" + $0.content }
         reader_chat_set_transcript(panel, transcript.joined(separator: "\n\n"))
     }
 
-    private func append(_ role: ConversationText.Role, _ content: String, key: SessionKey) {
+    private func append(_ role: ConversationText.Role, _ content: String, key: ChatSessionKey) {
         let timestamp = Date().ISO8601Format(.iso8601.time(includingFractionalSeconds: true)
             .year().month().day().timeZone(separator: .omitted))
         let message = ConversationText(id: UUID().uuidString.lowercased(), role: role,
@@ -171,32 +208,34 @@ final class ReaderChatController {
 
     /// Serialize append-only saves and keep the old document's owner alive
     /// across selection/close. A failed CAS leaves the turns in memory for retry.
-    private func save(panel: OpaquePointer) {
-        guard canSave, let key = sessionKey, let store, let writer, pending[key]?.isEmpty == false else { return }
+    func save(panel: OpaquePointer) {
+        guard let key = sessionKey, document?.key != nil, let store, let writer, pending[key]?.isEmpty == false else { return }
         let prior = persistence
         persistence = Task {
             await prior?.value
             guard let turns = pending[key], !turns.isEmpty else { return }
             let previousNotice = historyNotice
+            let previouslyFailed = saveFailed
             do {
                 let latest = try await ReaderConversation.load(key: key.document, from: store)
-                let ids = Set(latest.messages.map(\.id))
-                let additions = turns.filter { !ids.contains($0.id) }
+                let additions = turns.filter { !latest.messageIDs.contains($0.id) }
                 let exchanged = try await latest.save(appending: additions) { url, bytes, expected in
                     try await writer.replace(url, with: bytes, ifCurrent: expected)
                 }
                 guard exchanged else { throw LibraryFileError.retryable }
                 let committed = Set(turns.map(\.id))
                 pending[key]?.removeAll { committed.contains($0.id) }
-                guard sessionKey == key, loaded else { return }
+                guard !closing, sessionKey == key, loaded else { return }
                 saved = Array((latest.messages + additions).suffix(ConversationText.messageLimit))
                 if !busy { render(key: key, panel: panel) }
+                historyAllowsSave = true
+                saveFailed = false
                 historyNotice = ""
             } catch {
-                guard sessionKey == key, loaded else { return }
-                historyNotice = "Saving failed. New messages remain in this session."
+                guard !closing, sessionKey == key, loaded else { return }
+                saveFailed = true
             }
-            if !busy && previousNotice != historyNotice { ready(panel: panel) }
+            if !busy && (previousNotice != historyNotice || previouslyFailed != saveFailed) { ready(panel: panel) }
         }
     }
 

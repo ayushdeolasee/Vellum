@@ -104,14 +104,28 @@ static void leave_answered(GObject *source, GAsyncResult *result, gpointer data)
     request->reply(request->context, answer == 1);
 }
 
-void reader_confirm_leave(ReaderWindow *r, bool scratchpad, ReaderLeaveReply reply, void *context) {
+void reader_confirm_leave(ReaderWindow *r, ReaderLeaveKind kind, ReaderLeaveReply reply, void *context) {
     if (r->closing || r->leave_dialog) { reply(context, false); return; }
-    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("%s", scratchpad
-        ? "Some scratchpad changes could not be saved." : "Your reading position could not be saved.");
-    gtk_alert_dialog_set_detail(dialog, scratchpad
-        ? "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk."
-        : "You can stay and retry, or continue with the last saved position.");
-    const char *buttons[] = {"Stay Here", scratchpad ? "Discard Unsaved Drafts" : "Continue Without Saving Position", NULL};
+    const char *title, *detail, *action;
+    switch (kind) {
+    case LEAVE_CHAT:
+        title = "Could not keep a local copy of your chat.";
+        detail = "Stay to copy or retry unsaved chat. Closing may lose drafts and messages from this session.";
+        action = "Close Without Recovery";
+        break;
+    case LEAVE_SCRATCHPAD:
+        title = "Some scratchpad changes could not be saved.";
+        detail = "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk.";
+        action = "Discard Unsaved Drafts";
+        break;
+    default:
+        title = "Your reading position could not be saved.";
+        detail = "You can stay and retry, or continue with the last saved position.";
+        action = "Continue Without Saving Position";
+    }
+    g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("%s", title);
+    gtk_alert_dialog_set_detail(dialog, detail);
+    const char *buttons[] = {"Stay Here", action, NULL};
     gtk_alert_dialog_set_buttons(dialog, buttons);
     gtk_alert_dialog_set_cancel_button(dialog, 0);
     gtk_alert_dialog_set_default_button(dialog, 0);

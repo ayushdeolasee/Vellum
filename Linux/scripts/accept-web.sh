@@ -95,7 +95,7 @@ if [[ $mode == chat || $mode == chat-write ]]; then
   if [[ $mode == chat-write ]]; then args+=(-e VELLUM_EXPECT_CHAT_SAVE=1); fi
   # Only this container trusts the one-day fixture certificate. All provider
   # names resolve to loopback and the production binary has no endpoint override.
-  cp "$here"/{chat-acceptance.py,with-test-keyring.sh} "$stage/runtime/"
+  cp "$here"/{chat-acceptance.py,with-test-keyring.sh} "$here/../Tests/GTKReader/force-chat-quit.c" "$stage/runtime/"
   hosts=(generativelanguage.googleapis.com api.openai.com openrouter.ai opencode.ai)
   for host in "${hosts[@]}"; do args+=(--add-host "$host:127.0.0.1"); done
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=chat-fixture \

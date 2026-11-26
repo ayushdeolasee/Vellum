@@ -9,7 +9,7 @@ typedef struct ReaderWindow ReaderWindow;
 typedef struct ReaderSettings ReaderSettings;
 typedef enum {
     READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE, READER_SEARCH,
-    READER_CHAT_TOGGLE, READER_CHAT_SEND, READER_CHAT_STOP,
+    READER_CHAT_TOGGLE, READER_CHAT_SEND, READER_CHAT_STOP, READER_CHAT_RETRY, READER_CHAT_DRAFT,
     READER_SETTINGS_DONE, READER_CHOOSE_LIBRARY, READER_REOPEN_LIBRARY,
     READER_CHANGE_PROVIDER, READER_CHECK_KEY, READER_SAVE_KEY, READER_REMOVE_KEY, READER_CLOSE_REQUEST, READER_TOGGLE_EDITING
 } ReaderEvent;
@@ -28,7 +28,8 @@ typedef struct ScratchpadPanel ScratchpadPanel;
 ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *reader);
 void reader_set_close_pending(ReaderWindow *reader, bool pending);
 typedef void (*ReaderLeaveReply)(void *context, bool discard);
-void reader_confirm_leave(ReaderWindow *reader, bool scratchpad, ReaderLeaveReply reply, void *context);
+typedef enum { LEAVE_POSITION, LEAVE_SCRATCHPAD, LEAVE_CHAT } ReaderLeaveKind;
+void reader_confirm_leave(ReaderWindow *reader, ReaderLeaveKind kind, ReaderLeaveReply reply, void *context);
 void reader_commit_close(ReaderWindow *reader);
 void reader_finish_close(ReaderWindow *reader);
 void reader_enable_search(ReaderWindow *reader);

@@ -12,6 +12,7 @@ public struct ReaderConversation: Sendable {
     private let url: URL
     private let original: Data?
     private let hasElements: Bool
+    public let messageIDs: Set<String>
     public let messages: [ConversationText]
 
     @concurrent
@@ -21,7 +22,8 @@ public struct ReaderConversation: Sendable {
         let data = try await store.read(url)
         let envelopes = try data.map { try JSONDecoder().decode([DisplayMessage].self, from: $0) } ?? []
         let messages = envelopes.compactMap(\.text).suffix(ConversationText.messageLimit)
-        return Self(url: url, original: data, hasElements: !envelopes.isEmpty, messages: messages.map { message in
+        return Self(url: url, original: data, hasElements: !envelopes.isEmpty,
+                    messageIDs: Set(envelopes.compactMap { $0.text?.id }), messages: messages.map { message in
             ConversationText(id: message.id, role: message.role, content: ConversationText.limitedContent(message.content),
                              createdAt: message.createdAt)
         })

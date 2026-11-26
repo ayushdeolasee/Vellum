@@ -10,3 +10,4 @@ void reader_chat_set_draft(ReaderChatPanel *panel, const char *text);
 void reader_chat_set_transcript(ReaderChatPanel *panel, const char *text);
 void reader_chat_append(ReaderChatPanel *panel, const char *text);
 void reader_chat_state(ReaderChatPanel *panel, const char *message, bool ready, bool streaming);
+void reader_chat_retry_visible(ReaderChatPanel *panel, bool visible);

@@ -18,6 +18,7 @@ final class ReaderController {
     private var transition: Task<Void, Never>?
     private var closing = false
     private var closeRequested = false
+    private var chatCloseHandled = false
     private var entries: [LibrarySearchEntry] = []
     private var selectedEntry: Int?
     private var searchWork: Task<Void, Never>?
@@ -106,6 +107,10 @@ final class ReaderController {
             chat.show(provider: settings.provider, panel: reader_chat_panel(window))
         case READER_CHAT_SEND:
             chat.send(provider: settings.provider, panel: reader_chat_panel(window))
+        case READER_CHAT_DRAFT:
+            chat.draftChanged(reader_chat_panel(window))
+        case READER_CHAT_RETRY:
+            chat.save(panel: reader_chat_panel(window))
         case READER_CHAT_STOP:
             chat.stop(panel: reader_chat_panel(window))
         case READER_SELECT:
@@ -131,7 +136,8 @@ final class ReaderController {
             updateSearch(String(cString: reader_search_query(window)), window: window)
         case READER_CLOSE_REQUEST:
             if transition != nil { closeRequested = true; return }
-            leaveDocument(window, flushDrafts: true) {
+            leaveDocument(window, flushDrafts: true, quitting: true) {
+                self.chatCloseHandled = true
                 self.webPage?.session = nil
                 self.positionSession = nil
                 reader_commit_close(window)
@@ -141,11 +147,15 @@ final class ReaderController {
             let changing = transition
             let search = searchWork
             search?.cancel()
-            let pendingChat = chat.drain(reader_chat_panel(window))
+            let pendingChat = chatCloseHandled ? nil : chat.drain(reader_chat_panel(window), closing: true)
             let pendingSettings = settings.beginClose()
             replaceWork { _ in
                 await changing?.value
-                _ = await pendingChat?.value
+                await pendingChat?.value
+                if !self.chatCloseHandled {
+                    do { try await self.chat.keepForNextLaunch() }
+                    catch { FileHandle.standardError.write(Data("Could not preserve chat recovery during reader shutdown.\n".utf8)) }
+                }
                 try? await self.flushPosition()
                 _ = await self.scratchpad?.flush()
                 self.webPage = nil
@@ -167,20 +177,20 @@ final class ReaderController {
         try await session.flush()
     }
 
-    private func confirmLeaving(_ window: OpaquePointer, scratchpad: Bool) async -> Bool {
+    private func confirmLeaving(_ window: OpaquePointer, _ kind: ReaderLeaveKind) async -> Bool {
         // The dialog always replies once, including when GTK shuts down.
         final class Reply {
             let continuation: CheckedContinuation<Bool, Never>
             init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
         }
         return await withCheckedContinuation { continuation in
-            reader_confirm_leave(window, scratchpad, { owner, discard in
+            reader_confirm_leave(window, kind, { owner, discard in
                 Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: discard)
             }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
         }
     }
 
-    private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, then proceed: @escaping () -> Void) {
+    private func leaveDocument(_ window: OpaquePointer, flushDrafts: Bool, quitting: Bool = false, then proceed: @escaping () -> Void) {
         guard !closing, transition == nil else { return }
         let pendingChat = chat.drain(reader_chat_panel(window))
         if pendingChat == nil && positionSession == nil && scratchpad?.pendingSave == nil && (!flushDrafts || scratchpad == nil) {
@@ -193,19 +203,26 @@ final class ReaderController {
             await rendering?.value
             do {
                 await scratchpad?.pendingSave?.value
-                _ = await pendingChat?.value
+                await pendingChat?.value
+                guard !closing else { return }
                 do { try await flushPosition() }
                 catch {
-                    guard await confirmLeaving(window, scratchpad: false) else { throw error }
+                    guard await confirmLeaving(window, LEAVE_POSITION) else { throw error }
                 }
                 if flushDrafts, await scratchpad?.flush() == false {
-                    guard await confirmLeaving(window, scratchpad: true) else { throw LibraryFileError.retryable }
+                    guard await confirmLeaving(window, LEAVE_SCRATCHPAD) else { throw LibraryFileError.retryable }
                     scratchpad?.discardUnsavedDrafts()
+                }
+                if quitting, !closing {
+                    do { try await chat.keepForNextLaunch() }
+                    catch {
+                        guard await confirmLeaving(window, LEAVE_CHAT) else { throw error }
+                    }
                 }
                 guard !closing else { return }
                 transition = nil
                 reader_set_close_pending(window, false)
-                if closeRequested {
+                if closeRequested && !quitting {
                     closeRequested = false
                     handle(READER_CLOSE_REQUEST, entry: -1, text: nil, window: window)
                 } else {
