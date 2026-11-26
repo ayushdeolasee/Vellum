@@ -719,7 +719,7 @@ extension PdfDictSource {
 extension ClassicPdfFile {
     /// Verify the actual type behind PDFium's text-only metadata API. Traverse up
     /// to 64 classic revisions newest-first, with a 1 MiB window per table and
-    /// 8 MiB of total xref reads. Only the current Info object's row is relevant.
+    /// 8 MiB of total classic xref reads. Stream proofs use the bounded physical parser.
     public static func currentInfoText(forKey key: String, in data: Data) -> String? {
         guard data.starts(with: "%PDF-".utf8),
               let marker = data.suffix(1024).range(of: Data("startxref".utf8), options: .backwards)
@@ -769,9 +769,8 @@ extension ClassicPdfFile {
     private static func streamInfoText(forKey key: String, in data: Data) -> String? {
         // The physical proof visits the complete revision chain. Bound both the
         // source and total inflated bytes independently of the rendering limit.
-        let budget = 8 * 1024 * 1024
-        guard data.count <= budget else { return nil }
-        let structure = PdfClassicStructure(data, decodedLimit: budget)
+        guard data.count <= 128 * 1024 * 1024 else { return nil }
+        let structure = PdfClassicStructure(data)
         guard (try? structure.inspect(forEditing: false)) != nil, structure.usesXrefStreams,
               let info = structure.latestTrailer.reference(forKey: "Info"),
               case .dictionary(let dictionary) = structure.objects[info],

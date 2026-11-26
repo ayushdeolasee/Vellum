@@ -125,7 +125,8 @@ import VellumCore
     }
 }
 
-@Test func sharedReadOnlyPDFResumesOnlyFromItsBytesAndPortableLocator() async throws {
+@Test(arguments: ["digitally-signed", "resume-stream-string"])
+func sharedReadOnlyPDFResumesOnlyFromItsBytesAndPortableLocator(_ fixture: String) async throws {
     let fm = FileManager.default
     let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? fm.removeItem(at: tmp) }
@@ -135,14 +136,14 @@ import VellumCore
     let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let bytes = try Data(contentsOf: repo.appendingPathComponent(
-        "Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf/digitally-signed.pdf"))
+        "Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf/\(fixture).pdf"))
     func write(_ data: Data, _ url: URL) throws {
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url)
     }
     try write(bytes, file)
     let opening = try await PdfiumDocument.openingInfo(in: bytes)
-    #expect(opening.stableIdentifier == nil)
+    #expect((opening.stableIdentifier != nil) == (fixture == "resume-stream-string"))
     let key = DocumentIdentity.byteHash(bytes)
     let meta = root.appendingPathComponent(".vellum/documents/\(key)/meta.json")
     let record = PositionDeviceRecord(deviceID: DeviceID("mac"), deviceName: "Mac", devicePlatform: "macos",
