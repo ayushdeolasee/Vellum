@@ -100,11 +100,20 @@ struct ReadOnlyLibraryFileStoreTests {
     @Test func enforcesSizeBeforeAndDuringRead() async throws {
         try await withLibrary { url, store in
             // Sparse oversized fixtures exercise each policy without storing the payloads.
-            for (name, limitMiB) in [("a.JSON", 32), ("b.PDF", 250), ("c.vellumweb", 315)] {
+            for (name, limit) in [("a.JSON", 32 << 20), ("b.PDF", PdfiumDocument.maxInputBytes), ("c.vellumweb", 315 << 20)] {
                 let file = url.appendingPathComponent(name)
                 try Data().write(to: file)
-                #expect(truncate(file.path, (limitMiB << 20) + 1) == 0)
+                #expect(truncate(file.path, limit + 1) == 0)
                 await #expect(throws: ReaderFileError.fileTooLarge) { try await store.read(file) }
+            }
+            let archive = url.appendingPathComponent("small.vellumweb")
+            let archiveStore = ReadOnlyLibraryFileStore(root: store.root, maxArchiveBytes: 2)
+            try Data([1, 2]).write(to: archive)
+            #expect(try await archiveStore.read(archive) == Data([1, 2]))
+            try Data([1, 2, 3]).write(to: archive)
+            await #expect(throws: ReaderFileError.fileTooLarge) { try await archiveStore.read(archive) }
+            #expect(throws: LibraryFileError.io(POSIXError(.EBADF).localizedDescription)) {
+                try RootDirectory.readBytes(from: -1, byteLimit: 16)
             }
             let file = url.appendingPathComponent("changes")
             let bytes = Data(repeating: 42, count: 128 * 1024)
@@ -118,6 +127,78 @@ struct ReadOnlyLibraryFileStoreTests {
             #expect(throws: ReaderFileError.fileTooLarge) {
                 try RootDirectory.readBytes(from: handle.fileDescriptor, byteLimit: bytes.count)
             }
+        }
+    }
+
+    @Test func listsDirectChildrenThroughAliasedAncestor() async throws {
+        try await withLibrary { url, _ in
+            let parent = url.deletingLastPathComponent()
+            let alias = parent.appendingPathComponent("home", isDirectory: true)
+            try fm.createSymbolicLink(at: alias, withDestinationURL: parent)
+            let selected = alias.appendingPathComponent("library", isDirectory: true)
+            let pdfs = selected.appendingPathComponent("PDFs", isDirectory: true)
+            let nested = pdfs.appendingPathComponent("2026", isDirectory: true)
+            let web = selected.appendingPathComponent("Web Pages", isDirectory: true)
+            let records = selected.appendingPathComponent(".vellum/records", isDirectory: true)
+            for dir in [nested, web, records] {
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+            let pdf = nested.appendingPathComponent("notes.pdf", isDirectory: false)
+            try Data([42]).write(to: pdf)
+            try Data().write(to: web.appendingPathComponent("article.vellumweb"))
+            try Data().write(to: records.appendingPathComponent("item.json"))
+
+            let root = try await RootDirectory.open(selected)
+            let store = ReadOnlyLibraryFileStore(root: root)
+            let top = try await store.list(selected, suffix: nil)
+            #expect(top.map(\.url) == [pdfs, web])
+            #expect(top.allSatisfy { $0.url.hasDirectoryPath })
+            #expect(try await store.list(pdfs, suffix: nil).map(\.url) == [nested])
+            #expect(try await store.list(pdfs, suffix: ".pdf").isEmpty)
+            #expect(try await store.list(nested, suffix: ".pdf").map(\.url) == [pdf])
+            #expect(try await store.read(pdf) == Data([42]))
+            #expect(try await store.list(records, suffix: ".json").map(\.name) == ["item.json"])
+            #expect(try await store.list(web, suffix: ".vellumweb").map(\.name) == ["article.vellumweb"])
+        }
+    }
+
+    @Test func slowWorkerAllowsIndependentReadsAndQueuedCancellation() async throws {
+        try await withLibrary { url, store in
+            let file = url.appendingPathComponent("record.json")
+            try Data([42]).write(to: file)
+            let (started, signal) = AsyncStream<Void>.makeStream()
+            var starts = started.makeAsyncIterator()
+            let release = DispatchSemaphore(value: 0)
+            func occupyWorker() -> Task<Void, Error> {
+                Task {
+                    try await LibraryIO.run { checkCancellation in
+                        #expect(OperationQueue.current === LibraryIO.queue)
+                        signal.yield(())
+                        // The deadline also prevents a scheduler regression from hanging the suite.
+                        #expect(release.wait(timeout: .now() + 5) == .success)
+                        try checkCancellation()
+                    }
+                }
+            }
+            let first = occupyWorker()
+            _ = await starts.next()
+            #expect(try await store.read(file) == Data([42]))
+            let second = occupyWorker()
+            _ = await starts.next()
+            let queued = Task { try await store.read(file) }
+            let deadline = ContinuousClock.now + .seconds(2)
+            while LibraryIO.queue.operationCount < 3 && ContinuousClock.now < deadline {
+                await Task.yield()
+            }
+            #expect(LibraryIO.queue.operationCount >= 3)
+            queued.cancel()
+            await #expect(throws: CancellationError.self) { try await queued.value }
+            first.cancel()
+            release.signal()
+            release.signal()
+            await #expect(throws: CancellationError.self) { try await first.value }
+            try await second.value
+            #expect(try await store.read(file) == Data([42]))
         }
     }
 }

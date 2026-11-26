@@ -10,20 +10,22 @@ public struct ReadOnlyLibraryFileStore: LibraryFileStore {
     public let isCoordinated = false
     public let root: RootDirectory
 
-    public init(root: RootDirectory) {
+    private let maxArchiveBytes: Int
+
+    // On the integrated C4 branch the caller supplies ArchiveCodec.maxArchiveBytes.
+    public init(root: RootDirectory, maxArchiveBytes: Int = 315 * 1024 * 1024) {
         self.root = root
+        self.maxArchiveBytes = maxArchiveBytes
     }
 
     public func read(_ url: URL) async throws -> Data? {
-        // Whole-file budgets. The archive budget matches the Apple WebArchive
-        // input cap, and the PDF budget matches the offline PDF downloader.
-        let limitMiB: Int
+        let byteLimit: Int
         switch url.pathExtension.lowercased() {
-        case "vellumweb": limitMiB = 315
-        case "pdf": limitMiB = 250
-        default: limitMiB = 32
+        case "vellumweb": byteLimit = maxArchiveBytes
+        case "pdf": byteLimit = PdfiumDocument.maxInputBytes
+        default: byteLimit = 32 * 1024 * 1024
         }
-        return try await root.readRegularFile(url, byteLimit: limitMiB * 1024 * 1024)
+        return try await root.readRegularFile(url, byteLimit: byteLimit)
     }
 
     public func list(_ directory: URL, suffix: String?) async throws -> [LibraryFileEntry] {
