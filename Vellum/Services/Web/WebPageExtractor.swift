@@ -35,8 +35,8 @@ enum WebFetchedPage {
 }
 
 enum WebFetch {
-    static let maxResponseBytes = 25 * 1024 * 1024
-    static let maxAssetBytes = 8 * 1024 * 1024
+    static let maxResponseBytes = ArchiveCodec.maxSnapshotBytes
+    static let maxAssetBytes = ArchiveCodec.maxAssetBytes
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15 Vellum/0.1"
 
