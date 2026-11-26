@@ -4,7 +4,7 @@ import Foundation
 // objects in order so an xref offset can only name an actual object boundary.
 // Streams are opaque and skipped by length, never searched for object markers.
 enum PdfStructuralValue {
-    case dictionary([String: Self]), array([Self]), name(String), string(Range<Int>)
+    case dictionary([String: Self]), array([Self]), name(String), string(ArraySlice<UInt8>)
     case integer(Int), real(Double), reference(Int), null, boolean, stream
 
     var dictionary: [String: Self]? {
@@ -33,13 +33,13 @@ final class PdfClassicStructure {
     typealias Value = PdfStructuralValue
     typealias Reason = PdfReadOnlyReason
 
-    let bytes: [UInt8]
+    private var bytes: [UInt8]
     private var i = 0
     private var remaining = 500_000
     private var remainingComparisonBytes = 64 * 1024 * 1024
     private var portableSyntax = true
     private let objectLimit = 100_000
-    private var offsets: [Int: Int] = [:]
+    private(set) var offsets: [Int: Int] = [:]
     private var free: [Int: (next: Int, generation: Int)] = [:]
     private(set) var objects: [Int: Value] = [:]
     private var streams: [Int: Value] = [:] // Keep stream dictionaries for security checks.
@@ -48,14 +48,32 @@ final class PdfClassicStructure {
     private var hadInfo = false
     private var hadID = false
 
-    init(_ data: Data) { bytes = Array(data) }
+    private var decoder = PdfStreamDecoder()
+    private var objectStreams: [Int: [(number: Int, value: Value, source: ArraySlice<UInt8>)]] = [:]
+    private var compressed: [Int: (stream: Int, index: Int)] = [:]
+    private(set) var compressedSources: [Int: ArraySlice<UInt8>] = [:]
+    private(set) var latestTrailer = PdfDictSource([])
+    private(set) var usesXrefStreams = false
+
+    init(_ data: Data, decodedLimit: Int = 64 * 1024 * 1024) {
+        bytes = Array(data)
+        decoder.remaining = decodedLimit
+    }
 
     func charge(_ count: Int = 1) throws {
         guard count <= remaining else { throw Reason.malformed }
         remaining -= count
     }
 
-    func inspect() throws {
+    private struct XrefStream {
+        let number: Int
+        let offset: Int
+        let dict: [String: Value]
+        let source: PdfDictSource
+        let payload: Range<Int>
+    }
+
+    func inspect(forEditing: Bool = true) throws {
         guard consume("%PDF-"), i + 3 < bytes.count,
               bytes[i + 1] == 46, [10, 13].contains(bytes[i + 3]),
               (bytes[i] == 49 && (48...55).contains(bytes[i + 2])) || (bytes[i] == 50 && bytes[i + 2] == 48)
@@ -66,8 +84,9 @@ final class PdfClassicStructure {
             revisions += 1
             guard revisions <= 64 else { throw Reason.malformed }
             var newObjects = Set<Int>()
+            var xrefStream: XrefStream?
             skipOuterTrivia()
-            while !starts("xref") {
+            while !starts("xref") && !starts("startxref") {
                 try charge()
                 let offset = i
                 let number = try unsigned()
@@ -81,47 +100,85 @@ final class PdfClassicStructure {
                 let body = try value()
                 let bodyEnd = i
                 skipSpace()
+                streams.removeValue(forKey: number)
+                objectStreams.removeValue(forKey: number)
                 if consumeWord("stream") {
                     guard let dict = body.dictionary else { throw Reason.malformed }
-                    if dict["Type"]?.name == "XRef" || dict["Type"]?.name == "ObjStm" {
-                        throw Reason.unsupportedXref
-                    }
                     guard let length = dict["Length"]?.integer, length >= 0,
                           consume("\r\n") || consume("\n"), length <= bytes.count - i
                     else { throw Reason.malformed }
+                    let payload = i..<(i + length)
                     i += length
                     try keyword("endstream")
-                    streams[number] = body
                     objects[number] = .stream
-                } else {
-                    // rawObjectValue uses the first endobj marker. Its range
-                    // must agree even when that word occurs inside a string.
-                    if bytes[bodyStart..<bodyEnd].contains(101),
-                       bytes[bodyStart..<bodyEnd].firstRange(of: "endobj".utf8) != nil {
-                        portableSyntax = false
+                    switch dict["Type"]?.name {
+                    case "XRef":
+                        if dict["Encrypt"] != nil { throw Reason.encrypted }
+                        guard xrefStream == nil else { throw Reason.malformed }
+                        xrefStream = XrefStream(number: number, offset: offset, dict: dict,
+                            source: PdfDictSource(Array(bytes[bodyStart..<bodyEnd])), payload: payload)
+                    case "ObjStm":
+                        objectStreams[number] = try unpack(bytes[payload], dict: dict)
+                        streams[number] = body
+                    default:
+                        streams[number] = body
                     }
-                    streams.removeValue(forKey: number)
+                } else {
+                    if bytes[bodyStart..<bodyEnd].firstRange(of: "endobj".utf8) != nil { portableSyntax = false }
                     objects[number] = body
                 }
                 try keyword("endobj")
                 offsets[number] = offset
                 skipOuterTrivia()
             }
-            try revision(newObjects: newObjects)
+            try revision(newObjects: newObjects, stream: xrefStream, forEditing: forEditing)
             skipSpace()
         } while i < bytes.count
-        guard portableSyntax else { throw Reason.malformed }
+        guard !forEditing || portableSyntax else { throw Reason.malformed }
     }
 
-    private func revision(newObjects: Set<Int>) throws {
-        let xref = i
+    /// Parse every member against its header bounds with the same grammar and
+    /// work counters as physical objects. A type-2 row must match both fields.
+    private func unpack(_ input: ArraySlice<UInt8>, dict: [String: Value]) throws
+        -> [(number: Int, value: Value, source: ArraySlice<UInt8>)] {
+        guard let count = dict["N"]?.integer, (1..<objectLimit).contains(count),
+              let first = dict["First"]?.integer, first >= 0, dict["Extends"] == nil else { throw Reason.malformed }
+        try charge(count)
+        let decoded = try decoder.decode(input, dictionary: dict)
+        guard first < decoded.count else { throw Reason.malformed }
+        let original = bytes, cursor = i
+        bytes = decoded
+        i = 0
+        defer { bytes = original; i = cursor }
+        var seen = Set<Int>()
+        var headers: [(number: Int, offset: Int)] = []
+        for _ in 0..<count {
+            let number = try unsigned(), offset = try unsigned()
+            guard (1..<objectLimit).contains(number), seen.insert(number).inserted,
+                  offset < decoded.count - first, offset > (headers.last?.offset ?? -1),
+                  i <= first else { throw Reason.malformed }
+            headers.append((number, offset))
+        }
+        skipSpace()
+        guard headers[0].offset == 0, i == first else { throw Reason.malformed }
+        return try headers.enumerated().map { index, header in
+            let start = first + header.offset
+            let end = index + 1 < count ? first + headers[index + 1].offset : decoded.count
+            guard i == start else { throw Reason.malformed }
+            let body = try value()
+            let source = bytes[start..<i]
+            skipSpace()
+            guard i == end else { throw Reason.malformed }
+            return (header.number, body, source)
+        }
+    }
+
+    private func classicRows() throws -> [Int: PdfXrefRow] {
         try keyword("xref")
-        var listed = Set<Int>()
-        var pending = newObjects
+        var rows: [Int: PdfXrefRow] = [:]
         skipSpace()
         while i < bytes.count, PdfBytes.isDigit(bytes[i]) {
             let first = try unsigned()
-            // ClassicPdfFile consumes spaces between subsection start and count.
             guard i < bytes.count, bytes[i] == 32 else { throw Reason.malformed }
             while i < bytes.count, bytes[i] == 32 { i += 1 }
             guard i < bytes.count, PdfBytes.isDigit(bytes[i]) else { throw Reason.malformed }
@@ -130,39 +187,65 @@ final class PdfClassicStructure {
             try charge(count)
             skipSpace()
             for number in first..<(first + count) {
-                guard listed.insert(number).inserted, bytes.count - i >= 20,
+                guard rows[number] == nil, bytes.count - i >= 20,
                       bytes[i + 10] == 32, bytes[i + 16] == 32 else { throw Reason.malformed }
                 let offset = try digits(i..<(i + 10))
                 let generation = try digits((i + 11)..<(i + 16))
                 let flag = bytes[i + 17]
                 i += 18
                 guard consume(" \n") || consume(" \r") || consume("\r\n") else { throw Reason.malformed }
-                if flag == 110 { // n
-                    guard generation == 0 else { throw Reason.nonzeroGeneration }
-                    guard number > 0, offsets[number] == offset else { throw Reason.malformed }
-                    if let entry = free.removeValue(forKey: number), entry.generation != 0 { throw Reason.malformed }
-                    pending.remove(number)
-                } else {
-                    guard flag == 102, generation <= 65535, offset < objectLimit,
-                          number != 0 || generation == 65535, !pending.contains(number)
-                    else { throw Reason.malformed }
-                    guard generation >= (free[number]?.generation ?? 0),
-                          objects[number] == nil || generation > 0 else { throw Reason.malformed }
-                    free[number] = (offset, generation)
-                    objects.removeValue(forKey: number)
-                    streams.removeValue(forKey: number)
-                    offsets.removeValue(forKey: number)
+                switch flag {
+                case 110: rows[number] = .direct(offset: offset, generation: generation)
+                case 102: rows[number] = .free(next: offset, generation: generation)
+                default: throw Reason.malformed
                 }
             }
             skipSpace()
         }
-        try keyword("trailer")
-        guard let trailer = try value().dictionary else { throw Reason.malformed }
-        if trailer["Encrypt"] != nil { throw Reason.encrypted }
-        if trailer["XRefStm"] != nil { throw Reason.unsupportedXref }
-        guard !listed.isEmpty, pending.isEmpty, previousXref != nil || listed.contains(0),
+        return rows
+    }
+
+    private func revision(newObjects: Set<Int>, stream: XrefStream?, forEditing: Bool) throws {
+        var xref = i
+        var rows: [Int: PdfXrefRow] = [:]
+        let table = starts("xref")
+        let trailer: [String: Value]
+        if table {
+            rows = try classicRows()
+            try keyword("trailer")
+            skipSpace()
+            let start = i
+            guard let dictionary = try value().dictionary else { throw Reason.malformed }
+            trailer = dictionary
+            latestTrailer = PdfDictSource(Array(bytes[start..<i]))
+            if trailer["Encrypt"] != nil { throw Reason.encrypted }
+            if trailer["XRefStm"] != nil || stream != nil {
+                guard let stream, trailer["XRefStm"]?.integer == stream.offset else { throw Reason.unsupportedXref }
+                for key in ["Root", "Info", "ID", "Size"] where stream.dict[key] != nil {
+                    guard latestTrailer.rawValue(forKey: key) == stream.source.rawValue(forKey: key)
+                    else { throw Reason.malformed }
+                }
+            }
+        } else {
+            guard let stream, newObjects.allSatisfy({ (offsets[$0] ?? Int.max) <= stream.offset }) else { throw Reason.malformed }
+            xref = stream.offset
+            trailer = stream.dict
+            latestTrailer = stream.source
+            guard trailer["XRefStm"] == nil else { throw Reason.malformed }
+        }
+        if let stream {
+            usesXrefStreams = true
+            let decoded = try decoder.decode(bytes[stream.payload], dictionary: stream.dict)
+            let supplement = try PdfStreamDecoder.rows(decoded, dictionary: stream.dict, limit: objectLimit)
+            try charge(supplement.count)
+            // ISO 32000 hybrid precedence: the supplementary stream overrides
+            // the table of this revision (including its free placeholders).
+            rows.merge(supplement) { _, streamRow in streamRow }
+            guard case .direct(stream.offset, 0) = rows[stream.number] else { throw Reason.malformed }
+        }
+        guard !rows.isEmpty, previousXref != nil || rows[0] != nil,
               let size = trailer["Size"]?.integer, size >= previousSize, size <= objectLimit,
-              size == max(previousSize, (listed.max() ?? -1) + 1),
+              size == max(previousSize, (rows.keys.max() ?? -1) + 1),
               !hadInfo || trailer["Info"] != nil, !hadID || trailer["ID"] != nil,
               trailer["Prev"] == nil || trailer["Prev"]?.integer != nil,
               trailer["Prev"]?.integer == previousXref else { throw Reason.malformed }
@@ -176,8 +259,45 @@ final class PdfClassicStructure {
         previousSize = size
         hadInfo = trailer["Info"] != nil
         hadID = trailer["ID"] != nil
-        // A linked free list may terminate at object zero. Entries marked
-        // permanently free can also stand alone. Reject dangling links/cycles.
+        for number in newObjects {
+            guard case .direct = rows[number] else { throw Reason.malformed }
+        }
+        for (number, row) in rows {
+            switch row {
+            case .direct(let offset, let generation):
+                guard generation == 0 else { throw Reason.nonzeroGeneration }
+                guard number > 0, offsets[number] == offset else { throw Reason.malformed }
+                if let old = free.removeValue(forKey: number), old.generation != 0 { throw Reason.malformed }
+                compressed.removeValue(forKey: number)
+            case .free(let next, let generation):
+                guard generation <= 65535, next < objectLimit,
+                      number != 0 || generation == 65535 || (stream != nil && generation == 0),
+                      generation >= (free[number]?.generation ?? 0),
+                      objects[number] == nil || generation > 0 else { throw Reason.malformed }
+                free[number] = (next, generation)
+                offsets.removeValue(forKey: number)
+                objects.removeValue(forKey: number)
+                streams.removeValue(forKey: number)
+                objectStreams.removeValue(forKey: number)
+                compressed.removeValue(forKey: number)
+            case .compressed(let container, let index):
+                guard number > 0, container != number else { throw Reason.malformed }
+                if let old = free.removeValue(forKey: number), old.generation != 0 { throw Reason.malformed }
+                offsets.removeValue(forKey: number)
+                streams.removeValue(forKey: number)
+                objectStreams.removeValue(forKey: number)
+                compressed[number] = (container, index)
+            }
+        }
+        compressedSources.removeAll(keepingCapacity: true)
+        try charge(compressed.count)
+        for (number, entry) in compressed {
+            guard let members = objectStreams[entry.stream], members.indices.contains(entry.index),
+                  members[entry.index].number == number else { throw Reason.malformed }
+            let member = members[entry.index]
+            compressedSources[number] = member.source
+            objects[number] = member.value
+        }
         var visitedFree = Set<Int>()
         for start in free.keys where !visitedFree.contains(start) {
             var n = start
@@ -189,7 +309,15 @@ final class PdfClassicStructure {
             } while n != 0 && !visitedFree.contains(n)
             visitedFree.formUnion(chain)
         }
-        try validate(trailer: trailer, streamDictionaries: streams.values)
+        guard forEditing else { return }
+        if table, let stream {
+            // Historical xref dictionaries are trailers, not ordinary inbound
+            // references to today's page tree or Info dictionary.
+            var inbound: [Int: Int] = [:]
+            try inspect(.dictionary(stream.dict), inbound: &inbound, structuralStream: true)
+        }
+        guard usesXrefStreams || objectStreams.isEmpty else { throw Reason.unsupportedXref }
+        try validate(trailer: trailer, streamDictionaries: streams.values, streamTrailer: !table)
     }
 
     private func budgetComparison(length: Int, passes: Int) throws {
@@ -333,7 +461,7 @@ final class PdfClassicStructure {
                 case 41: nesting -= 1
                 default: break
                 }
-                if nesting == 0 { return .string(start..<i) }
+                if nesting == 0 { return .string(bytes[start..<i]) }
             }
             throw Reason.malformed
         }
@@ -345,7 +473,7 @@ final class PdfClassicStructure {
                 i += 1
             }
             guard consume(">") else { throw Reason.malformed }
-            return .string(start..<i)
+            return .string(bytes[start..<i])
         }
 
         let raw = try token()
