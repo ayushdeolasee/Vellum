@@ -1,11 +1,12 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct _GtkStack GtkStack;
 typedef struct ReaderWindow ReaderWindow;
-typedef enum { READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE, READER_SEARCH } ReaderEvent;
+typedef enum { READER_OPEN, READER_SELECT, READER_PREVIOUS, READER_NEXT, READER_CLOSE, READER_SEARCH, READER_CLOSE_REQUEST } ReaderEvent;
 typedef void (*ReaderCallback)(ReaderWindow *, ReaderEvent, int entry, void *context);
 
 // All calls and callbacks run on GTK's startup pthread. The window is borrowed
@@ -15,6 +16,10 @@ int reader_run(ReaderCallback callback, void *context);
 // Borrowed stack on the GTK thread. Native content widgets installed here
 // share the same sidebar and window; the stack owns each added child.
 GtkStack *reader_content_stack(ReaderWindow *reader);
+typedef struct ScratchpadPanel ScratchpadPanel;
+ScratchpadPanel *reader_scratchpad_panel(ReaderWindow *reader);
+void reader_set_close_pending(ReaderWindow *reader, bool pending);
+void reader_commit_close(ReaderWindow *reader);
 void reader_finish_close(ReaderWindow *reader);
 void reader_enable_search(ReaderWindow *reader);
 const char *reader_search_query(ReaderWindow *reader);
