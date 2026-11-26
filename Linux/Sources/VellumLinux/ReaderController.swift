@@ -153,7 +153,7 @@ final class ReaderController {
                 await changing?.value
                 await pendingChat?.value
                 if !self.chatCloseHandled {
-                    do { try await self.chat.keepForNextLaunch() }
+                    do { try await self.chat.keepForNextLaunch(allDocuments: true) }
                     catch { FileHandle.standardError.write(Data("Could not preserve chat recovery during reader shutdown.\n".utf8)) }
                 }
                 await self.flushPosition()
@@ -179,16 +179,19 @@ final class ReaderController {
         await session.flush()
     }
 
-    private func confirmLeaving(_ window: OpaquePointer, _ kind: ReaderLeaveKind) async -> Bool {
+    private func confirmLeaving(_ window: OpaquePointer, chat: Bool = false) async -> Bool {
         // The dialog always replies once, including when GTK shuts down.
         final class Reply {
             let continuation: CheckedContinuation<Bool, Never>
             init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
         }
         return await withCheckedContinuation { continuation in
-            reader_confirm_leave(window, kind, { owner, discard in
+            let answer: ReaderLeaveReply = { owner, discard in
                 Unmanaged<Reply>.fromOpaque(owner!).takeRetainedValue().continuation.resume(returning: discard)
-            }, Unmanaged.passRetained(Reply(continuation)).toOpaque())
+            }
+            let owner = Unmanaged.passRetained(Reply(continuation)).toOpaque()
+            if chat { reader_confirm_chat_close(window, answer, owner) }
+            else { reader_confirm_leave(window, true, answer, owner) }
         }
     }
 
@@ -228,15 +231,19 @@ final class ReaderController {
                         guard choice == 1 || choice == 2 else { throw LibraryFileError.retryable }
                         discard = choice == 2
                     } else {
-                        guard await confirmLeaving(window, LEAVE_SCRATCHPAD) else { throw LibraryFileError.retryable }
+                        guard await confirmLeaving(window) else { throw LibraryFileError.retryable }
                         discard = true
                     }
                     try await scratchpad.releaseDrafts(discard: discard)
                 }
-                if quitting, !closing {
-                    do { try await chat.keepForNextLaunch() }
-                    catch {
-                        guard await confirmLeaving(window, LEAVE_CHAT) else { throw error }
+                guard !closing else { return }
+                do { try await chat.keepForNextLaunch(allDocuments: quitting) }
+                catch {
+                    guard !closing else { return }
+                    if quitting {
+                        guard await confirmLeaving(window, chat: true) else { throw error }
+                    } else {
+                        reader_notice(window, "Could not keep a local copy of this chat. Its unsaved changes remain in this reader.")
                     }
                 }
                 guard !closing else { return }

@@ -106,21 +106,9 @@ static void leave_answered(GObject *source, GAsyncResult *result, gpointer data)
     else request->reply(request->context, answer == 1);
 }
 
-void reader_confirm_leave(ReaderWindow *r, ReaderLeaveKind kind, ReaderLeaveReply reply, void *context) {
+static void confirm_leave(ReaderWindow *r, const char *title, const char *detail, const char *action,
+                          ReaderLeaveReply reply, void *context) {
     if (r->closing || r->leave_dialog) { reply(context, false); return; }
-    const char *title, *detail, *action;
-    switch (kind) {
-    case LEAVE_CHAT:
-        title = "Could not keep a local copy of your chat.";
-        detail = "Stay to copy or retry unsaved chat. Closing may lose drafts and messages from this session.";
-        action = "Close Without Recovery";
-        break;
-    case LEAVE_SCRATCHPAD:
-        title = "Some scratchpad changes could not be saved.";
-        detail = "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk.";
-        action = "Discard Unsaved Drafts";
-        break;
-    }
     g_autoptr(GtkAlertDialog) dialog = gtk_alert_dialog_new("%s", title);
     gtk_alert_dialog_set_detail(dialog, detail);
     const char *buttons[] = {"Stay Here", action, NULL};
@@ -131,6 +119,19 @@ void reader_confirm_leave(ReaderWindow *r, ReaderLeaveKind kind, ReaderLeaveRepl
     *request = (LeaveRequest){r, reply, context};
     r->leave_dialog = g_cancellable_new();
     gtk_alert_dialog_choose(dialog, r->window, r->leave_dialog, leave_answered, request);
+}
+
+void reader_confirm_leave(ReaderWindow *r, bool scratchpad, ReaderLeaveReply reply, void *context) {
+    confirm_leave(r, scratchpad ? "Some scratchpad changes could not be saved." : "Your reading position could not be saved.",
+        scratchpad ? "Keep editing to copy or retry your drafts. Discarding them keeps the versions already on disk."
+                   : "You can stay and retry, or continue with the last saved position.",
+        scratchpad ? "Discard Unsaved Drafts" : "Continue Without Saving Position", reply, context);
+}
+
+void reader_confirm_chat_close(ReaderWindow *r, ReaderLeaveReply reply, void *context) {
+    confirm_leave(r, "Could not keep a local copy of your chat.",
+        "Stay to copy or retry unsaved chat. Closing may lose drafts and messages from this session.",
+        "Close Without Recovery", reply, context);
 }
 
 void reader_confirm_recovered(ReaderWindow *r, ReaderRecoveryReply reply, void *context) {

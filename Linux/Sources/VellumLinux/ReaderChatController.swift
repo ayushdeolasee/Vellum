@@ -62,9 +62,9 @@ final class ReaderChatController {
         if loaded, let key = sessionKey { drafts[key] = String(cString: reader_chat_draft(panel)) }
     }
 
-    func keepForNextLaunch() async throws {
+    func keepForNextLaunch(allDocuments: Bool) async throws {
         var failure: Error?
-        for (key, versions) in recovery {
+        for (key, versions) in recovery where allDocuments || key == sessionKey {
             do { try await versions.keep(.init(draft: drafts[key] ?? "", turns: pending[key] ?? [])) }
             catch { failure = error }
         }

@@ -140,7 +140,14 @@ def wait(check, description):
             pass
         if errors:
             raise RuntimeError(errors)
-        result = check()
+        try:
+            result = check()
+        except GLib.Error as error:
+            # GTK removes old accessible objects while changing documents or
+            # dismissing a dialog. Requery the desktop on the next iteration.
+            if error.domain != "atspi_error":
+                raise
+            result = None
         if result:
             return result
         time.sleep(.05)
@@ -322,7 +329,8 @@ def exercise_recovery():
     # Both destinations fail. The normal close dialog permits staying to copy
     # the draft, and lets the reader explicitly abandon it on a second close.
     blocked = home / "blocked-state"
-    blocked.touch()
+    (blocked / "vellum").mkdir(parents=True)
+    (blocked / "vellum/recovery").touch()
     saved = conversation.read_bytes()
     folder.chmod(0o555)
     try:
