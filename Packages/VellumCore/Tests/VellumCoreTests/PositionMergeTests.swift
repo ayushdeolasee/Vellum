@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import Vellum
+import VellumCore
 
 // The merge is the whole cross-device story: every device writes only its own
 // file and the "one true answer" is computed at read time. These tests pin the
@@ -123,13 +123,16 @@ struct PositionMergeTests {
         let t0 = PositionFixtures.date("2026-08-02T09:00:00.000000+00:00")
         try await storage.write(
             PositionFixtures.record(.mac, writtenAt: t0, documents: [key: .init(openedAt: t0)]))
-        try Data("{ not json at all".utf8).write(
-            to: root.appendingPathComponent(PositionLayout.fileName(for: PositionFixtures.phone.id)))
+        let name = PositionLayout.fileName(for: PositionFixtures.phone.id)
+        let corrupt = Data("{ not json at all".utf8)
+        try corrupt.write(to: root.appendingPathComponent(name))
 
         let records = await storage.loadAll()
         let merged = PositionMerge.merge(records)
 
         #expect(records.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
+        #expect(try Data(contentsOf: storage.quarantineDir.appendingPathComponent(name)) == corrupt)
         #expect(merged[key]?.openedAt?.device == PositionFixtures.mac.stub)
     }
 
@@ -182,6 +185,54 @@ struct PositionMergeTests {
             FileManager.default.fileExists(
                 atPath: storage.quarantineDir.appendingPathComponent(name).path))
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
+    }
+
+    @Test("Position bytes merge only when the filename and body versions agree")
+    func readOnlyPeerDisplay() throws {
+        let date = PositionFixtures.date("2026-08-02T09:00:00Z")
+        let record = PositionFixtures.record(.mac, writtenAt: date, documents: [key: .init(openedAt: date)])
+        let bytes = try PositionCoding.encoder.encode(record)
+        let mismatch = PositionFixtures.record(.pad, writtenAt: date, documents: [other: .init(openedAt: date)])
+        let fixtures = [
+            "peer.v1.json": bytes,
+            "other.v2.json": try PositionCoding.encoder.encode(mismatch),
+            "broken.v1.json": Data([0xff]),
+        ]
+        let records = fixtures.compactMap { name, data in
+            try? PositionLayout.parseFileName(name)?.decode(data)
+        }
+        #expect(records.compactMap(\.fileNameVersion).sorted() == [1, 2])
+        let merged = PositionMerge.merge(records)
+        #expect(merged.count == 1)
+        #expect(merged[key]?.openedAt?.device == PositionFixtures.mac.stub)
+    }
+
+    @Test("Unreadable future-format files survive writable enumeration")
+    func futureBytesStayInPlace() async throws {
+        let root = PositionFixtures.scratchDirectory("future-position")
+        defer { PositionFixtures.remove(root) }
+        let future = root.appendingPathComponent("peer.v2.json")
+        let bytes = Data([0xff])
+        try bytes.write(to: future)
+        #expect(await FilePositionStorage(root: root).loadAll().isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["peer.v2.json"])
+        #expect(try Data(contentsOf: future) == bytes)
+    }
+
+    @Test("An invalid device ID fails before creating a directory or writing a record")
+    func unsafeDeviceIDsAreRejected() async throws {
+        let root = PositionFixtures.scratchDirectory("unsafe-position")
+        defer { PositionFixtures.remove(root) }
+        let storage = FilePositionStorage(root: root.appendingPathComponent("positions"))
+        for id in ["", "../peer", "sub/peer", "peer\0suffix", ".hidden"] {
+            var record = PositionFixtures.record(.mac, writtenAt: .now, documents: [:])
+            record.deviceID = DeviceID(id)
+            await #expect(throws: PositionStorageError.self) { try await storage.write(record) }
+        }
+        #expect(throws: PositionStorageError.self) {
+            try PositionLayout.fileURL(in: storage.root, for: PositionFixtures.mac.id, version: 0)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
 
     @Test("Recents order comes from the merged newest opened_at, never one device's file")

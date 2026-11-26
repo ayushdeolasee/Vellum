@@ -171,6 +171,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
+      - path: Packages/VellumCore/Tests/VellumCoreTests/PositionTestSupport.swift
       - path: Tests
         excludes:
           # Bundled below as a folder reference instead of being compiled:

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import struct VellumCore.DocumentKey
 
 @testable import Vellum
 
