@@ -10,7 +10,7 @@ public enum PdfAnnotationPureReader {
               let dictionary = file.objectSource(number) else { throw PdfCoreError.invalidDocument("Page does not exist") }
         let geometry = try PageGeometry(pageNumber: pageNumber, in: file)
         let page = try PdfAnnotationPage(index: pageNumber, number: number, dictionary: dictionary, file: file)
-        return page.spans.indices.compactMap { index in
+        return try page.spans.indices.compactMap { index in
             guard let dict = page.slot(index, file: file)?.dictionary else { return nil }
             func raw(_ key: String) -> [UInt8]? { file.resolvedValue(forKey: key, in: dict) }
             func string(_ key: String) -> String? { raw(key).flatMap(PdfDictSource.decodeTextString) }
@@ -56,7 +56,7 @@ public enum PdfAnnotationPureReader {
             let position = PositionData(rects: rects, pageWidth: geometry.displayWidth, pageHeight: geometry.displayHeight,
                                         selectedText: string("VellumSelectedText"))
             let content = string("Contents")
-            return Annotation(id: page.id(dict, at: index), type: type, pageNumber: pageNumber, color: color,
+            return Annotation(id: try page.id(dict, at: index), type: type, pageNumber: pageNumber, color: color,
                               content: type == .bookmark && content == "Bookmark" ? nil : content, positionData: position,
                               createdAt: string("VellumCreatedAt") ?? now, updatedAt: string("VellumUpdatedAt") ?? now,
                               isPinned: raw("VellumPinned").flatMap { Int(String(decoding: $0, as: UTF8.self)) } == 1 ? true : nil)

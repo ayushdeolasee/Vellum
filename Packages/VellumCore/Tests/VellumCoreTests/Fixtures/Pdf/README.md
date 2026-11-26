@@ -54,3 +54,9 @@ the file. This writer never compacts, rewrites, or securely erases that history.
 The classic inspection limit is 64 revisions including the original. A
 one-revision source can accept up to 63 increments within the other proof
 limits. Further edits report the inspection limit and preserve the last save.
+
+The portable display decoder recognizes PDFDocEncoding and the PDF 2.0 UTF-8
+BOM. macOS CGPDF decoded the raw string `<EFBBBF616263>` as “ï»¿abc”
+while the portable display decoder reads “abc”. A BOM-prefixed UTF-8 string
+therefore cannot identify an annotation or witness a shared document ID.
+An existing ambiguous stamp is preserved, and the shared file uses its byte hash.
