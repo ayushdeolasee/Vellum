@@ -225,8 +225,7 @@ extension PdfClassicStructure {
                 // The writer reads a direct PDF text string. Bound decoding
                 // and reject IDs outside the unambiguous portable subset.
                 guard case .string(let range) = nm, range.count <= 1024,
-                      let string = PdfDictSource.decodeTextString(Array(bytes[range])),
-                      !string.isEmpty, string.utf8.allSatisfy({ (32...126).contains($0) })
+                      let string = PdfDictSource.annotationIdentity(Array(bytes[range]))
                 else { throw Reason.ambiguousAnnotation }
                 id = string
             } else {
