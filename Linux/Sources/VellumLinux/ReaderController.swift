@@ -24,7 +24,7 @@ final class ReaderController {
     private var selection: URL?
     private var bytes: Data?
     private var pdfTitle: String?
-    private var pdfIdentityChecked = false
+    private var annotationIdentity: PdfAnnotationIdentity = .unverified
     private var pageIndex = 0
     private var pageCount = 0
     private var generation = 0
@@ -384,7 +384,7 @@ final class ReaderController {
         selection = nil
         bytes = nil
         pdfTitle = nil
-        pdfIdentityChecked = false
+        annotationIdentity = .unverified
         pageCount = 0
         pageIndex = 0
         webPage = nil
@@ -500,11 +500,11 @@ final class ReaderController {
                     guard self.isCurrent(token) else { return }
                     var restored: ReadingPosition?
                     var storageKey = opening.stableIdentifier
-                    self.pdfIdentityChecked = storageKey != nil
+                    var identity = PdfAnnotationIdentity.unverified
                     if let catalog = try? await self.catalog(in: store, token: token),
                        let saved = try? await catalog.sharedPDF(bytes: loaded, file: file,
                                                                stamp: opening.stableIdentifier, fallbackTitle: title) {
-                        self.pdfIdentityChecked = true
+                        identity = saved.storageKey == opening.stableIdentifier ? .ready : .requiresAbsentStamp
                         restored = saved.position
                         storageKey = saved.storageKey
                         title = saved.displayTitle
@@ -513,6 +513,7 @@ final class ReaderController {
                         }
                     }
                     guard self.isCurrent(token) else { return }
+                    self.annotationIdentity = identity
                     index = min(index, opening.pageCount - 1)
                     self.bindPosition(key: storageKey.map { .pdf(stableIdentifier: $0) },
                                       storageKey: storageKey, restored: restored, window: window)
@@ -541,13 +542,15 @@ final class ReaderController {
                 }
                 await self.annotations.bind(window: window, bytes: data, index: index, info: info,
                                             replace: self.pdfReplacement(for: file), storageKey: self.documentStorageKey,
-                                            identityChecked: self.pdfIdentityChecked,
+                                            identity: self.annotationIdentity,
                                             recoveredComment: recoveredComment, reload: { draft in
                     self.bytes = nil
                     self.showPage(index, window: window, recoveredComment: draft)
                 }, publish: { edited, visible in
                     guard self.selection == file else { return }
                     self.bytes = edited
+                    // The writer and PDFium verified the selected key on the published bytes.
+                    self.annotationIdentity = .ready
                     if visible { self.showPage(index, window: window) }
                 })
             } catch {

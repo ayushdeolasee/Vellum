@@ -64,18 +64,25 @@ def run(binary, tmp):
     original = source
     for _ in range(62):
         original = revision(original, 4, page, b"/Size 12 /Root 1 0 R")
-    ambiguous = revision(source, 12, b"<< /VellumDocId /NotAString >>", b"/Size 13 /Root 1 0 R /Info 12 0 R")
+    equal_key = "11111111-2222-4333-8444-555555555555"
+    def stamped(value):
+        return revision(source, 12, f"<< /VellumDocId {value} >>".encode(), b"/Size 13 /Root 1 0 R /Info 12 0 R")
+    ambiguous = stamped("/NotAString")
+    conflicting = stamped("(aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee)")
+    equal = stamped(f"({equal_key})")
     library = tmp / "library"
     pdfs = library / "PDFs"
     pdfs.mkdir(parents=True)
-    for filename, title, data in [("A.pdf", "My shared book", original), ("B.pdf", "Ambiguous ID", ambiguous)]:
+    for filename, title, data in [("A.pdf", "My shared book", original), ("B.pdf", "Ambiguous ID", ambiguous),
+                                  ("C.pdf", "Legacy hash title", conflicting), ("D.pdf", "Verified stamp", equal)]:
         (pdfs / filename).write_bytes(data)
-        key = hashlib.sha256(data).hexdigest()
+        key = equal_key if filename == "D.pdf" else hashlib.sha256(data).hexdigest()
         sidecar = library / ".vellum/documents" / key
         sidecar.mkdir(parents=True)
         (sidecar / "meta.json").write_text(json.dumps(dict(kind="pdf", title=title, last_known_path="PDFs/" + filename)))
         (sidecar / "scratchpad.md").write_text("My existing notes")
 
+    conflict_reason = "Read only · Vellum could not match this PDF’s embedded ID to its library record. Use Scratchpad for notes."
     comment = "Final endobj comment"
     restriction = "Read only · Vellum reached its PDF inspection limit. You can keep reading this document, but further edits cannot be saved safely."
     for first in [True, False]:
@@ -109,16 +116,24 @@ def run(binary, tmp):
                 activate("Scratchpad", "toggle button")
                 wait(lambda: text("Scratchpad Markdown") == "My existing notes", "original scratchpad")
                 activate("Scratchpad", "toggle button")
-                select("B.pdf")
-                widget("frame", "Ambiguous ID")
-                wait(lambda: widget("push button", "Add note").getState().contains(at.STATE_SENSITIVE), "page B")
-                assert widget("text", "Annotation comment").queryEditableText().setTextContents("Leave original intact")
+                for name, title, data in [("B.pdf", "Ambiguous ID", ambiguous), ("C.pdf", "Legacy hash title", conflicting)]:
+                    select(name)
+                    widget("frame", title)
+                    widget("label", conflict_reason)
+                    for action in ["Add note", "Add highlight", "Save comment", "Delete"]:
+                        assert not widget("push button", action).getState().contains(at.STATE_SENSITIVE)
+                    activate("Scratchpad", "toggle button")
+                    wait(lambda: text("Scratchpad Markdown") == "My existing notes", "hash-keyed scratchpad")
+                    activate("Scratchpad", "toggle button")
+                    assert (pdfs / name).read_bytes() == data
+
+                select("D.pdf")
+                widget("frame", "Verified stamp")
                 activate("Add note")
-                widget("label", "Could not save the annotation. PDF already has /VellumDocId")
-                assert (pdfs / "B.pdf").read_bytes() == ambiguous
-                assert text("Annotation comment") == "Leave original intact"
-                activate("Close")
-                activate("Discard comment changes")
+                wait(lambda: (pdfs / "D.pdf").read_bytes() != equal, "edit with matching stamp")
+                updated = (pdfs / "D.pdf").read_bytes()
+                assert updated.startswith(equal) and updated[len(equal):].count(b"startxref") == 1
+                assert b"/VellumDocId" not in updated[len(equal):]
             activate("Close")
             assert process.wait(timeout=10) == 0
         finally:

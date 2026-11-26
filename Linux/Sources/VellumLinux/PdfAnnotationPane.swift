@@ -6,15 +6,19 @@ import VellumCore
 /// Captures the selected document's conditional write capability at page bind time.
 typealias PdfConditionalReplace = @Sendable (_ original: Data, _ edited: Data) async throws -> Bool
 
+enum PdfAnnotationIdentity {
+    case unverified, ready, requiresAbsentStamp
+}
+
 private struct AnnotationPage: Sendable {
     let text: ExtractedPageText?
     let records: [Annotation]
     let restriction: String?
 
     @concurrent
-    static func load(_ data: Data, index: Int) async -> Self {
+    static func load(_ data: Data, index: Int, requiringAbsentDocumentID: Bool) async -> Self {
         async let text = try? PdfiumDocument.readText(in: data, at: index)
-        let eligibility = PdfEditEligibility.classify(data)
+        let eligibility = PdfEditEligibility.classify(data, requiringAbsentDocumentID: requiringAbsentDocumentID)
         var restriction: String?
         var records: [Annotation] = []
         do {
@@ -22,8 +26,11 @@ private struct AnnotationPage: Sendable {
             case .editable: break
             case .readOnly(let reason):
                 restriction = reason.localizedDescription
-                guard reason == .inspectionLimit else { throw reason }
-                try PdfEditEligibility.validateForReading(data)
+                switch reason {
+                case .inspectionLimit: try PdfEditEligibility.validateForReading(data)
+                case .conflictingDocumentID: break // The current revision passed structural inspection.
+                default: throw reason
+                }
             }
             records = try PdfAnnotationPureReader.annotations(on: index + 1, in: data, now: "")
                 .filter { $0.type != .bookmark }
@@ -74,18 +81,19 @@ final class PdfAnnotationPane {
     }
 
     func bind(window: OpaquePointer, bytes: Data, index: Int, info: PdfiumPageInfo,
-              replace: PdfConditionalReplace?, storageKey: String?, identityChecked: Bool, recoveredComment: String?, reload: @escaping (String) -> Void,
+              replace: PdfConditionalReplace?, storageKey: String?, identity: PdfAnnotationIdentity, recoveredComment: String?, reload: @escaping (String) -> Void,
               publish: @escaping (Data, Bool) -> Void) async {
         let panel = reader_pdf_annotations(window)!
         pdf_annotations_reset(panel)
-        let page = await AnnotationPage.load(bytes, index: index)
+        let page = await AnnotationPage.load(bytes, index: index,
+                                             requiringAbsentDocumentID: replace != nil && identity == .requiresAbsentStamp)
         guard !Task.isCancelled else { return }
         self.panel = panel
         self.page = page
         width = info.widthPt
         height = info.heightPt
         number = index + 1
-        admissionError = replace != nil && !identityChecked ? "Could not verify the shared PDF identity. Reopen the folder to edit." : nil
+        admissionError = replace != nil && identity == .unverified ? "Could not verify the shared PDF identity. Reopen the folder to edit." : nil
         carryComment = recoveredComment?.isEmpty == false
         saving = false
         if let replace, page.restriction == nil, admissionError == nil {

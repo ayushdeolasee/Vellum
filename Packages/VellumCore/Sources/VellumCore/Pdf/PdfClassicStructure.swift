@@ -48,6 +48,7 @@ final class PdfClassicStructure {
     private var previousSize = 0
     private var hadInfo = false
     private var hadID = false
+    var hasDocumentID = false
 
     init(_ data: Data) { bytes = Array(data) }
 

@@ -3,10 +3,12 @@ import Foundation
 public enum PdfReadOnlyReason: LocalizedError, Equatable, Sendable {
     case unsupportedXref, encrypted, signed, nonzeroGeneration
     case malformed, ambiguousAnnotation, unsupportedGeometry, inspectionLimit
+    case conflictingDocumentID
 
     public var errorDescription: String? {
         switch self {
         case .inspectionLimit: "Vellum reached its PDF inspection limit. You can keep reading this document, but further edits cannot be saved safely."
+        case .conflictingDocumentID: "Vellum could not match this PDF’s embedded ID to its library record. Use Scratchpad for notes."
         case .unsupportedXref: "This PDF uses an unsupported cross-reference format."
         case .encrypted: "Editing encrypted PDFs is unavailable."
         case .signed: "This PDF contains signature information. Vellum keeps it read-only."
@@ -25,8 +27,14 @@ public enum PdfEditEligibility: Equatable, Sendable {
     /// Classify the byte snapshot obtained by the reader, before normalization.
     /// Unknown syntax or an exhausted work budget leaves the reader read-only.
     public static func classify(_ original: Data) -> Self {
+        classify(original, requiringAbsentDocumentID: false)
+    }
+
+    /// A legacy hash-keyed sidecar can follow an edit only if the first edit can
+    /// stamp that key, or the reader already verified the same embedded ID.
+    public static func classify(_ original: Data, requiringAbsentDocumentID: Bool) -> Self {
         do {
-            try inspect(original, reservingRevision: true)
+            try inspect(original, reservingRevision: true, requiringAbsentDocumentID: requiringAbsentDocumentID)
             return .editable
         } catch let reason as PdfReadOnlyReason {
             return .readOnly(reason)
@@ -43,9 +51,11 @@ public enum PdfEditEligibility: Equatable, Sendable {
 
     // The last provable revision can be saved and read. Classifying it for
     // another edit must report the limit before starting a new increment.
-    static func inspect(_ data: Data, reservingRevision: Bool) throws {
+    static func inspect(_ data: Data, reservingRevision: Bool, requiringAbsentDocumentID: Bool = false) throws {
         guard data.count <= 128 * 1024 * 1024 else { throw PdfReadOnlyReason.inspectionLimit }
-        try PdfClassicStructure(data).inspect(reservingRevision: reservingRevision)
+        let structure = PdfClassicStructure(data)
+        try structure.inspect(reservingRevision: reservingRevision)
+        if requiringAbsentDocumentID && structure.hasDocumentID { throw PdfReadOnlyReason.conflictingDocumentID }
     }
 }
 
@@ -96,6 +106,9 @@ extension PdfClassicStructure {
               trailer["Info"] == nil || resolved(trailer["Info"])?.dictionary != nil
         else { throw Reason.malformed }
 
+        // Use the live Info dictionary from this revision, including inline or
+        // indirect Info and every value type. A failed text lookup is not absence.
+        hasDocumentID = resolved(trailer["Info"])?.dictionary?["VellumDocId"] != nil
         if let info = trailer["Info"]?.reference, inbound[info] != 1 { throw Reason.malformed }
 
         if let form = catalog["AcroForm"] {
