@@ -818,7 +818,13 @@ enum WebInkStore {
             edited.id = wire.id
             edited.unknownFields = wire.unknownFields
             for p in edited.points.indices { edited.points[p].unknownFields = wire.points[p].unknownFields }
-            edited.mask?.unknownFields = wire.mask?.unknownFields ?? [:]
+            // Translation or recoloring leaves the local mask intact. Keep its
+            // original wire commands across AppKit/UIKit path normalization.
+            if try wire.matchesMask(of: localStroke) {
+                edited.mask = wire.mask
+            } else {
+                edited.mask?.unknownFields = wire.mask?.unknownFields ?? [:]
+            }
             return edited
         }
         if original.cluster.drawing == nil { cluster.drawing = nil }

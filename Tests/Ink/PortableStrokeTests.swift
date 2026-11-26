@@ -243,7 +243,7 @@ final class PortableInkReaderTests: XCTestCase {
             let persisted = try XCTUnwrap(reopened.clusters.first?.strokes?.first)
             XCTAssertEqual(persisted.id, wire.id)
             XCTAssertEqual(persisted.points[0].unknownFields, wire.points[0].unknownFields)
-            XCTAssertEqual(persisted.mask?.unknownFields, wire.mask?.unknownFields)
+            XCTAssertEqual(persisted.mask, wire.mask, "Moving a stroke preserves its original wire mask and unknown fields")
             XCTAssertNil(reopened.clusters.first?.drawing)
         }
     }

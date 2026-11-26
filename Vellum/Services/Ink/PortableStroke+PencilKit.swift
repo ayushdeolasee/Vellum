@@ -29,13 +29,17 @@ extension PortableStroke {
     func describes(_ stroke: PKStroke) throws -> Bool {
         let m = stroke.transform
         let ranges = stroke.maskedPathRanges.map { [Double($0.lowerBound), Double($0.upperBound)] }
-        let expectedMask = try mask?.rebuild()
         return try ink == stroke.ink.inkType.rawValue && randomSeed == stroke.randomSeed
             && close(color, rgba(stroke.ink.color.cgColor))
             && close(transform, [m.a, m.b, m.c, m.d, m.tx, m.ty])
             && points.count == stroke.path.count && zip(points, stroke.path).allSatisfy { $0.matches($1) }
             && ranges.count == visibleRanges.count && zip(visibleRanges, ranges).allSatisfy(close)
-            && stroke.mask?.cgPath == expectedMask?.cgPath && stroke.mask?.inkEvenOdd == mask?.evenOdd
+            && matchesMask(of: stroke)
+    }
+
+    func matchesMask(of stroke: PKStroke) throws -> Bool {
+        let expected = try mask?.rebuild()
+        return stroke.mask?.cgPath == expected?.cgPath && stroke.mask?.inkEvenOdd == expected?.inkEvenOdd
     }
 
     init(_ stroke: PKStroke) throws {
