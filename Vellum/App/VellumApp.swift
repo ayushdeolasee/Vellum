@@ -110,7 +110,8 @@ struct VellumApp: App {
         KeychainStore.prewarm()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
-        let storageCoordinator = StorageCoordinator()
+        let storageCoordinator = StorageCoordinator(
+            inkCapabilityBuild: StorageCoordinator.liveInkCapabilityBuild)
         let webLibraryStorage = WebLibraryStorage(coordinator: storageCoordinator)
         let integrations = IntegrationsStore(
             engine: IntegrationsSyncEngine(),

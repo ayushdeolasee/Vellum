@@ -47,6 +47,7 @@ struct CoordinatedPositionStorage: PositionStorage {
                     in: layout.positionsDir, for: record.deviceID, version: record.schemaVersion)
                 let bytes = try PositionCoding.encoder.encode(record)
                 try await container.replace(url, with: bytes)
+                await coordinator.advertiseInkCapability(in: context, for: record.deviceID)
             }
         }
     }

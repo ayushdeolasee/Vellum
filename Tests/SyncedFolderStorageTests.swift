@@ -2,6 +2,7 @@
 import Darwin
 import Foundation
 import Testing
+import VellumCore
 
 @testable import Vellum
 
@@ -134,6 +135,59 @@ struct SyncedFolderStorageTests {
             } catch { await coordinator.stop(); throw error }
             await coordinator.stop()
         }
+    }
+
+    @Test("Only eligible shared storage advertises the actual build and new position bytes",
+          arguments: [false, true])
+    func advertisesHandwritingCapability(eligible: Bool) async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let shared = root.appendingPathComponent("shared", isDirectory: true)
+        let local = root.appendingPathComponent("local/web", isDirectory: true)
+        try fm.createDirectory(at: shared, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let id = DeviceIdentity.current().id
+        let layout = WebStorageLayout.syncedFolder(root: shared)
+        let directory = InkCapabilityStore.directory(in: shared)
+        let advertisement = directory.appendingPathComponent(id.rawValue + ".json")
+        let build = "macOS/0.1.1 (fixture)"
+        let sharedCoordinator = StorageCoordinator(
+            storeDir: local, modeProvider: { .syncedFolder }, syncedFolderRootResolver: { shared },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }),
+            inkCapabilityBuild: eligible ? build : nil)
+        let position = PositionDeviceRecord(deviceID: id, deviceName: "Fixture",
+                                            devicePlatform: "macos", writtenAt: .now)
+        await sharedCoordinator.start()
+        do {
+            #expect(fm.fileExists(atPath: advertisement.path) == eligible)
+            try await CoordinatedPositionStorage(coordinator: sharedCoordinator).write(position)
+            if eligible {
+                let url = try PositionLayout.fileURL(in: layout.positionsDir, for: id)
+                let bytes = try Data(contentsOf: url)
+                let fields = try JSONDecoder().decode([String: JSONValue].self, from: Data(contentsOf: advertisement))
+                #expect(fields["app_build"] == .string(build))
+                #expect(fields["device_id"] == .string(id.rawValue))
+                #expect(fields["position_sha256"] == .string(DocumentIdentity.byteHash(bytes)))
+            } else {
+                #expect(!fm.fileExists(atPath: directory.path))
+            }
+        } catch {
+            await sharedCoordinator.stop()
+            throw error
+        }
+        await sharedCoordinator.stop()
+
+        let localCoordinator = StorageCoordinator(storeDir: local, modeProvider: { .local },
+                                                  inkCapabilityBuild: build)
+        await localCoordinator.start()
+        do {
+            try await CoordinatedPositionStorage(coordinator: localCoordinator).write(position)
+        } catch {
+            await localCoordinator.stop()
+            throw error
+        }
+        await localCoordinator.stop()
+        #expect(!fm.fileExists(atPath: InkCapabilityStore.directory(in: local).path))
     }
 
     @Test("Shared-folder preparation precedes backend construction", arguments: [false, true])

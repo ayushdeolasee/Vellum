@@ -32,7 +32,8 @@ struct VellumApp_iOS: App {
         KeychainStore.prewarm()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
-        let storageCoordinator = StorageCoordinator()
+        let storageCoordinator = StorageCoordinator(
+            inkCapabilityBuild: StorageCoordinator.liveInkCapabilityBuild)
         let webLibraryStorage = WebLibraryStorage(coordinator: storageCoordinator)
         let captureIngestion = (!TestEnvironment.isHostedTestProcess && RuntimeProfile.current.syncEnabled ? CaptureInboxLayout.resolve() : nil).map {
             CaptureIngestion(layout: $0, storage: webLibraryStorage)
