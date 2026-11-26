@@ -8,7 +8,7 @@ let package = Package(
         .systemLibrary(name: "CGtk", pkgConfig: "gtk4", providers: [.apt(["libgtk-4-dev"])]),
         .target(name: "CShell", dependencies: ["CGtk"], linkerSettings: [.linkedLibrary("dl")]),
         .systemLibrary(name: "CPdfium", pkgConfig: "pdfium"),
-        .target(name: "CPdfiumJob", dependencies: ["CPdfium"]),
+        .target(name: "CPdfiumJob", dependencies: ["CPdfium"], linkerSettings: [.linkedLibrary("m")]),
         .target(name: "LinuxReader", dependencies: ["CPdfiumJob"],
                 swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "LinuxReaderTests", dependencies: ["LinuxReader"]),

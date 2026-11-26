@@ -39,13 +39,22 @@ public actor PdfiumActor {
                     continuation.resume(returning: .failure(PdfiumError.closed))
                     return
                 }
-                guard pending.count < 64, byteCount <= 2 * PdfiumDocument.maxInputBytes - admittedBytes else {
+                // Keep a waiting slot and one maximum-sized document available
+                // to an interactive caller even when background work is saturated.
+                let slotLimit = priority == .background ? 63 : 64
+                let byteLimit = priority == .background ? PdfiumDocument.maxInputBytes : 2 * PdfiumDocument.maxInputBytes
+                guard pending.count < slotLimit, byteCount <= byteLimit - admittedBytes else {
                     continuation.resume(returning: .failure(PdfiumError.queueFull))
                     return
                 }
                 admittedBytes += byteCount
                 pending.append(Job(id: id, priority: priority, byteCount: byteCount, execute: {
-                    continuation.resume(returning: Result { try work() })
+                    let result = Result { try work() }
+                    Task {
+                        await self.finished(byteCount: byteCount) {
+                            continuation.resume(returning: result)
+                        }
+                    }
                 }, cancel: {
                     continuation.resume(returning: .failure(CancellationError()))
                 }))
@@ -81,15 +90,13 @@ public actor PdfiumActor {
         let index = pending.firstIndex { $0.priority == .onDemand } ?? 0
         let job = pending.remove(at: index)
         running = true
-        worker.async {
-            job.execute()
-            Task { await self.finished(byteCount: job.byteCount) }
-        }
+        worker.async(execute: job.execute)
     }
 
-    private func finished(byteCount: Int) {
+    private func finished(byteCount: Int, resume: @Sendable () -> Void) {
         admittedBytes -= byteCount
         running = false
+        resume()
         startNext()
     }
 

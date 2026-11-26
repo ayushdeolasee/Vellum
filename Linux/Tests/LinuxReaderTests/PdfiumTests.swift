@@ -56,6 +56,16 @@ struct PdfiumTests {
             let info = try await PdfiumDocument.pageInfo(in: bytes, at: index)
             #expect(info.pageCount == 4 && info.rotation == 90 * index)
             #expect(info.widthPt == Double(width) && info.heightPt == Double(height))
+            #expect(info.visibleLeft == 24 && info.visibleBottom == 36)
+            // PDFKit's characterBounds(at: 0) for "R" on each page is
+            // [73.2305,700,82.0408,710.042] before display rotation.
+            let text = try await PdfiumDocument.extractText(in: bytes, at: index)
+            let r = try #require(text.chars.first)
+            #expect(r.codeUnit == 82)
+            #expect(abs((r.left - info.visibleLeft) - 49.2305) < 1)
+            #expect(abs((r.bottom - info.visibleBottom) - 664) < 1)
+            #expect(abs((r.right - info.visibleLeft) - 58.0408) < 1)
+            #expect(abs((r.top - info.visibleBottom) - 674.042) < 1)
             let bitmap = try await PdfiumDocument.render(in: bytes, at: index, scale: 1)
             try #require(bitmap.width == width && bitmap.height == height)
             for mark in marks {
@@ -209,6 +219,56 @@ struct PdfiumTests {
         try await interactive.value
         try await background.value
         #expect(order.withLock { $0 } == [0, 3, 1])
+    }
+
+    @Test func backgroundFloodLeavesAnInteractiveSlotAndReleasesBytesBeforeReturning() async throws {
+        let worker = PdfiumActor.shared
+        let maxBytes = PdfiumDocument.maxInputBytes
+        let activeStarted = Mutex(false)
+        let releaseActive = DispatchSemaphore(value: 0)
+        let releaseInteractive = DispatchSemaphore(value: 0)
+        let interactiveStarted = Mutex(false)
+        defer {
+            releaseActive.signal()
+            releaseInteractive.signal()
+        }
+        // The byte counts model maximum-size inputs without allocating the documents.
+        let consecutive = Task {
+            try await worker.run(priority: .background, byteCount: maxBytes) {
+                activeStarted.withLock { $0 = true }
+                #expect(releaseActive.wait(timeout: .now() + 10) == .success)
+            }
+            // At return, the first job's bytes must be available even though
+            // the other maximum-size job remains admitted and cannot finish.
+            try await worker.run(priority: .onDemand, byteCount: maxBytes) {}
+        }
+        try await waitUntil { activeStarted.withLock { $0 } }
+        await #expect(throws: PdfiumError.queueFull) {
+            try await worker.run(priority: .background, byteCount: 1) {}
+        }
+        let backlog = (0..<63).map { _ in
+            Task { try await worker.run(priority: .background, byteCount: 0) {} }
+        }
+        try await waitUntil { await worker.pendingCount == backlog.count }
+        await #expect(throws: PdfiumError.queueFull) {
+            try await worker.run(priority: .background, byteCount: 0) {}
+        }
+
+        let interactive = Task {
+            try await worker.run(priority: .onDemand, byteCount: maxBytes) {
+                interactiveStarted.withLock { $0 = true }
+                #expect(releaseInteractive.wait(timeout: .now() + 10) == .success)
+            }
+        }
+        try await waitUntil { await worker.pendingCount == 64 }
+        releaseActive.signal()
+        // Wait for the blocked interactive to take its slot AND the consecutive
+        // caller to refill the queue. The count alone also equals 64 before dequeue.
+        try await waitUntil { await worker.pendingCount == 64 && interactiveStarted.withLock { $0 } }
+        releaseInteractive.signal()
+        try await consecutive.value
+        try await interactive.value
+        for job in backlog { try await job.value }
     }
 
     private func waitUntil(_ ready: () async -> Bool) async throws {

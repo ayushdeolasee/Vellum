@@ -10,6 +10,8 @@ public struct PdfiumPageInfo: Sendable {
     public let pageCount: Int
     /// Cropped display size in points, including intrinsic rotation.
     public let widthPt, heightPt: Double
+    /// Lower-left origin of the visible media/crop intersection in unrotated PDF user space.
+    public let visibleLeft, visibleBottom: Double
     public let rotation: Int
 }
 
@@ -41,7 +43,8 @@ public enum PdfiumDocument {
                                 priority: PdfiumActor.Priority = .onDemand) async throws -> PdfiumPageInfo {
         try await job(PDF_INFO, bytes, index, password, priority) { out in
             PdfiumPageInfo(pageCount: Int(out.pages), widthPt: out.width_pt,
-                           heightPt: out.height_pt, rotation: Int(out.rotation))
+                           heightPt: out.height_pt, visibleLeft: out.visible_left,
+                           visibleBottom: out.visible_bottom, rotation: Int(out.rotation))
         }
     }
 

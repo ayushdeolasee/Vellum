@@ -102,13 +102,19 @@ PdfStatus pdf_run_job(PdfOperation op, const void *bytes, size_t length,
         switch (FPDF_GetLastError()) {
         case FPDF_ERR_PASSWORD: return PDF_PASSWORD_REQUIRED;
         case FPDF_ERR_SECURITY: return PDF_SECURITY_ERROR;
+        case FPDF_ERR_FILE:
         case FPDF_ERR_FORMAT: return PDF_BAD_DOCUMENT;
+        case FPDF_ERR_PAGE: return PDF_BAD_PAGE;
         default: return PDF_ENGINE_ERROR;
         }
     }
     PdfStatus status = PDF_BAD_PAGE;
     FPDF_PAGE page = NULL;
     out->pages = FPDF_GetPageCount(doc);
+    if (out->pages <= 0) {
+        status = PDF_BAD_DOCUMENT;
+        goto close;
+    }
     if (out->pages > 100000) {
         status = PDF_LIMIT;
         goto close;
@@ -121,11 +127,18 @@ PdfStatus pdf_run_job(PdfOperation op, const void *bytes, size_t length,
     out->width_pt = FPDF_GetPageWidthF(page);
     out->height_pt = FPDF_GetPageHeightF(page);
     int turns = FPDFPage_GetRotation(page);
-    if (!isfinite(out->width_pt) || !isfinite(out->height_pt) ||
+    FS_RECTF visible;
+    if (!FPDF_GetPageBoundingBox(page, &visible) ||
+        !isfinite(visible.left) || !isfinite(visible.bottom) ||
+        !isfinite(visible.right) || !isfinite(visible.top) ||
+        visible.left >= visible.right || visible.bottom >= visible.top ||
+        !isfinite(out->width_pt) || !isfinite(out->height_pt) ||
         out->width_pt <= 0 || out->height_pt <= 0 || turns < 0 || turns > 3) {
         status = PDF_BAD_DIMENSIONS;
         goto close;
     }
+    out->visible_left = visible.left;
+    out->visible_bottom = visible.bottom;
     out->rotation = turns * 90;
     switch (op) {
     case PDF_INFO: status = PDF_OK; break;
