@@ -112,13 +112,48 @@ holds the extraction constraints (module access, typealiases, which Apple tests 
 
 | ID | Item | Size | Depends on |
 |---|---|---|---|
-| P7 | Fixture set (7 small committed PDFs + a pure-Swift `PdfFixtureBuilder`) | S | C1 |
+| P7 | One shared fixture corpus (7 PDFs incl. iPad ink + `PdfFixtureBuilder`), wired into SwiftPM and Apple test bundles | M | C1 |
 | P1 | Read-only PDFium spike: module map, serial `PdfiumActor`, render to bitmap, text with char boxes | M | C1, P7 |
-| P2 | Reading-order sorting to match `PdfTextLocator` + golden comparison vs PDFKit | M | P1, P4, P7 |
-| P4 (= C6) | Split the pure-Swift byte primitives, `/Info` and outline increments from CGPDF/Darwin/`SessionServiceError` | M–L | C2, after C5b |
+| P2 | Reading-order sorting to match `PdfTextLocator` + PDFKit goldens generated on Mac | M | P1, P4 (= C6), P7 |
+| P4 (= C6) | Split byte primitives, `/Info` + outline increments **and numeric `PageGeometry`** from CGPDF/Darwin/`SessionServiceError` | L | C2, after C5b |
 | P3 (= C7a) | `PdfWriteEligibility`: decide from original bytes whether Linux may edit | S–M | P4, P7 |
 | P5 (= C7b) | Pure-Swift annotation writer (create/update/delete highlight + note) | L (+M qualification) | P3, P4, P7 |
 | P6 | Xref-stream + object-stream reading, and xref-stream increments | L | P5, after P2 |
+
+### Round 4: one authoritative design per item
+
+Both reviewers found that the paired items still described two different designs. The rule from now on: **the
+design named here is the one to build.** Where a sketch further down disagrees, this section wins.
+
+- **P1 (PDFium read-only).** The input is **validated bytes** from the read-only store (C5b's `RootDirectory`), not
+  a path. Each operation (page info, render, text) is **one serial C job** that loads, works and closes, and returns
+  owned results. There is no persistent `FPDF_DOCUMENT`, no `@unchecked Sendable` document class and no deferred
+  cleanup. Page info is a Linux-local `PdfiumPageInfo { widthPt, heightPt, rotation }`; P4's `PageGeometry` is not
+  needed yet. `PdfiumActor` is just the serial, prioritised queue that runs those jobs.
+- **P2 (text order).** PDFKit golden JSON is generated **on the Mac** and checked in; Linux consumes it. Needs P4's
+  numeric geometry.
+- **P3 = C7a (eligibility).** Build **C7a's API**: `PdfEditEligibility { editable | readOnly(PdfReadOnlyReason) }`
+  in `Core/Pdf/PdfEditEligibility.swift`, with reasons `unsupportedXref, encrypted, signed, nonzeroGeneration,
+  malformed, ambiguousAnnotation, unsupportedGeometry`. The decision is **structural** (every revision, hybrid
+  `/XRefStm`, inherited `/Encrypt`, signature fields and `/Perms`). A raw `/ByteRange` scan may only add
+  `readOnly(.signed)`, never grant editing. Use P3's test list.
+- **P4 = C6 (primitives).** Build **C6's file split**: `PdfBytes.swift`, `PdfAtomicFile.swift`,
+  `PdfInfoIncrement.swift`, `PdfOutlineIncrement.swift`, **plus P4's numeric `PageGeometry`** (moved here from C7b,
+  because P2 needs it). `PdfCoreError` is `invalidDocument | io` only, with no dependency on eligibility reasons.
+  Stamping (`stampDocumentId`) stays an Apple entry point. Language mode is Swift 5 (`.swiftLanguageMode(.v5)`), per C0.
+- **P5 = C7b (annotation writer).** The API is **C7b's**: `PdfAnnotationIncrement.applying(_ edit: PdfAnnotationEdit,
+  to original: Data, now: String)`. The dictionary contract, the three `/Annots` cases and the ink invariants come
+  from P5's design below. Two corrections from Astra:
+  - `/QuadPoints`: map each **UI** corner TL, TR, BL, BR independently through `uiToPdf`, giving absolute PDF
+    coordinates. Subtracting the bounds origin is specific to PDFKit's setter; don't copy it.
+  - Foreign annotations: derive `pdf-direct-{page}-{index}` from the raw slot index (counting nulls and direct
+    dictionaries), stamp `/NM` on first update, and before rewriting an indirect `/Annots` array or annotation in
+    place, check that no other page references it.
+  - `/Ink` emission belongs to I10, not P5.
+- **P7 (fixtures).** There is **one corpus**, in `Packages/VellumCore/Tests/VellumCoreTests/Fixtures/Pdf/`, declared
+  as a `.copy("Fixtures")` resource. The Apple test bundles reference the same directory through `project.yml`;
+  the Linux tests stage a copy. The iPad ink PDFs from layer 5's I0 live here too, with full and partial erasure
+  recorded separately. Sized M (seven fixtures, a builder, and wiring into three test hosts).
 
 ### How the two agents' designs were reconciled
 
