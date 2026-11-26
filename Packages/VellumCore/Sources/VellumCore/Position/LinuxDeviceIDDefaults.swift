@@ -35,14 +35,37 @@ public struct LinuxDeviceIDDefaults: DeviceIDDefaults {
             if errno != EINTR { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         }
         let url = directory.appendingPathComponent("device-id")
+        let stored: String
         do {
-            let id = try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard UUID(uuidString: id) != nil else { throw CocoaError(.fileReadCorruptFile) }
-            return id
+            stored = try String(contentsOf: url, encoding: .utf8)
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             let id = UUID().uuidString.lowercased()
-            try Data(id.utf8).write(to: url, options: .atomic)
+            try writePrivateID(id, to: url)
             return id
+        }
+
+        guard let uuid = UUID(uuidString: stored.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let id = uuid.uuidString.lowercased()
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        if stored != id || mode?.intValue != 0o600 {
+            try writePrivateID(id, to: url)
+        }
+        return id
+    }
+
+    private func writePrivateID(_ id: String, to url: URL) throws {
+        // Set permissions at creation, before publishing any bytes, even with a permissive umask.
+        let temporary = directory.appendingPathComponent(".device-id-\(UUID().uuidString)")
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { _ = unlink(temporary.path) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        try handle.write(contentsOf: Data(id.utf8))
+        try handle.close()
+        guard rename(temporary.path, url.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 }

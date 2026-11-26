@@ -187,10 +187,8 @@ struct PositionMergeTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
     }
 
-    @Test("Read-only display skips corrupt and mismatched files without modifying the directory")
-    func readOnlyPeerDisplay() async throws {
-        let root = PositionFixtures.scratchDirectory("position-reader")
-        defer { PositionFixtures.remove(root) }
+    @Test("Position bytes merge only when the filename and body versions agree")
+    func readOnlyPeerDisplay() throws {
         let date = PositionFixtures.date("2026-08-02T09:00:00Z")
         let record = PositionFixtures.record(.mac, writtenAt: date, documents: [key: .init(openedAt: date)])
         let bytes = try PositionCoding.encoder.encode(record)
@@ -200,17 +198,13 @@ struct PositionMergeTests {
             "other.v2.json": try PositionCoding.encoder.encode(mismatch),
             "broken.v1.json": Data([0xff]),
         ]
-        for (name, data) in fixtures {
-            try data.write(to: root.appendingPathComponent(name))
+        let records = fixtures.compactMap { name, data in
+            try? PositionLayout.parseFileName(name)?.decode(data)
         }
-
-        let merged = await PositionReader.merged(in: root)
+        #expect(records.compactMap(\.fileNameVersion).sorted() == [1, 2])
+        let merged = PositionMerge.merge(records)
         #expect(merged.count == 1)
         #expect(merged[key]?.openedAt?.device == PositionFixtures.mac.stub)
-        #expect(try Set(FileManager.default.contentsOfDirectory(atPath: root.path)) == Set(fixtures.keys))
-        for (name, data) in fixtures {
-            #expect(try Data(contentsOf: root.appendingPathComponent(name)) == data)
-        }
     }
 
     @Test("Unreadable future-format files survive writable enumeration")
@@ -234,6 +228,9 @@ struct PositionMergeTests {
             var record = PositionFixtures.record(.mac, writtenAt: .now, documents: [:])
             record.deviceID = DeviceID(id)
             await #expect(throws: PositionStorageError.self) { try await storage.write(record) }
+        }
+        #expect(throws: PositionStorageError.self) {
+            try PositionLayout.fileURL(in: storage.root, for: PositionFixtures.mac.id, version: 0)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }

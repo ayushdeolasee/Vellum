@@ -17,10 +17,14 @@ public enum PositionTimestamp {
     public static func parse(_ value: String?) -> Date? {
         guard let value, !value.isEmpty else { return nil }
         if let date = rfc3339Formatter.date(from: value) { return date }
-        if let date = iso8601Fractional.date(from: value) { return date }
-        return iso8601Plain.date(from: value)
+        return iso8601Lock.withLock {
+            iso8601Fractional.date(from: value) ?? iso8601Plain.date(from: value)
+        }
     }
 
+    // swift-corelibs DateFormatter synchronizes its state. ISO8601DateFormatter
+    // lazily caches a CFDateFormatter without a lock, including on the first parse.
+    private static let iso8601Lock = NSLock()
     private static let iso8601Fractional: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

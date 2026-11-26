@@ -34,12 +34,23 @@ final class LinuxDeviceIdentityTests: XCTestCase {
             XCTAssertEqual(child.terminationStatus, 0)
             return try String(contentsOf: root.appendingPathComponent("result-\(index)"), encoding: .utf8)
         }
-        let stored = try String(contentsOf: state.appendingPathComponent("vellum/device-id"), encoding: .utf8)
+        let idFile = state.appendingPathComponent("vellum/device-id")
+        let stored = try String(contentsOf: idFile, encoding: .utf8)
+        let fm = FileManager.default
+        XCTAssertEqual(try fm.attributesOfItem(atPath: idFile.path)[.posixPermissions] as? NSNumber, 0o600)
         XCTAssertEqual(Set(ids), [stored])
         XCTAssertNotNil(UUID(uuidString: stored))
         let relaunched = try DeviceIdentityProvider.linux(name: "Desktop", environment: environment).current()
         XCTAssertEqual(relaunched.id.rawValue, stored)
         XCTAssertEqual(relaunched.name, "Desktop")
+
+        let existing = "B06FF418-FB3D-4D83-A58A-1F318EAEF833"
+        try Data((existing + "\n").utf8).write(to: idFile)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: idFile.path)
+        let normalized = try DeviceIdentityProvider.linux(environment: environment).current()
+        XCTAssertEqual(normalized.id.rawValue, existing.lowercased())
+        XCTAssertEqual(try String(contentsOf: idFile, encoding: .utf8), normalized.id.rawValue)
+        XCTAssertEqual(try fm.attributesOfItem(atPath: idFile.path)[.posixPermissions] as? NSNumber, 0o600)
 
         let fallback = DeviceIdentityProvider.linux(environment: ["XDG_STATE_HOME": "relative", "HOME": root.path])
         let other = try fallback.current()
