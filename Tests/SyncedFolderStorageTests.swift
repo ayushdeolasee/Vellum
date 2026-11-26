@@ -255,10 +255,12 @@ struct SyncedFolderStorageTests {
     @MainActor
     @Test("Storage settings actions recover an offline Scratchpad image after relaunch")
     func offlineScratchpadImage() async throws {
-        let (root, key, attachments) = try scratchpadFixture()
         let fm = FileManager.default
-        defer { try? fm.removeItem(at: root) }
-        let local = root.appendingPathComponent("local/web", isDirectory: true)
+        let temporary = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = temporary.appendingPathComponent("shared", isDirectory: true)
+        let local = temporary.appendingPathComponent("local/web", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: temporary) }
         let previousStore = WebLibrary.storeDirOverride
         let previousDocuments = DocumentDataStore.rootDirectoryOverride
         WebLibrary.storeDirOverride = local
@@ -267,6 +269,31 @@ struct SyncedFolderStorageTests {
             WebLibrary.storeDirOverride = previousStore
             DocumentDataStore.rootDirectoryOverride = previousDocuments
         }
+        // Import a real PDF the same way a shared-folder user opens a local
+        // file. The session's verified identity owns the scratchpad sidecars.
+        let source = temporary.appendingPathComponent("Fixture.pdf")
+        try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column")).write(to: source)
+        let resolver = DocumentAccessResolver(
+            store: DocumentAccessBookmarkStore(directory: temporary),
+            adapter: SystemDocumentAccessAdapter(),
+            libraryDirectory: { temporary.appendingPathComponent("managed") },
+            appOwnedRoots: { [] }
+        ).scoped(to: root)
+        let backend = PdfSessionBackend()
+        let document = try await resolver.openPickedPDF(url: source, sessionId: "scratchpad-fixture") { path, id in
+            try await backend.open(path: path, sessionId: id).info
+        }
+        let key = try #require(document.docId)
+        let title = try #require(document.title)
+        let imported = URL(fileURLWithPath: document.pdfPath)
+        let portablePath = "PDFs/Fixture.pdf"
+        let importedBytes = try Data(contentsOf: imported)
+        try #require(resolver.sharedPDFs?.relativePath(for: imported) == portablePath)
+        try #require(SharedPDFImport.readID(importedBytes) == key)
+        let attachments = WebStorageLayout.syncedFolder(root: root).documentsDir
+            .appendingPathComponent(key, isDirectory: true)
+            .appendingPathComponent("attachments", isDirectory: true)
+        try fm.createDirectory(at: attachments, withIntermediateDirectories: true)
         let coordinator = StorageCoordinator(
             storeDir: local, modeProvider: { .syncedFolder },
             syncedFolderRootResolver: { root },
@@ -282,10 +309,6 @@ struct SyncedFolderStorageTests {
         let collision = attachments.appendingPathComponent("ccc.png")
         try bytes.write(to: collision)
         try Data(offlineNote.utf8).write(to: note)
-        let document = DocumentInfo(
-            kind: .pdf, pdfPath: root.appendingPathComponent("fixture.pdf").path,
-            title: "Fixture", pageCount: 1, lastPage: 1, docId: key)
-
         let batchID: String
         await coordinator.start()
         do {
@@ -294,13 +317,16 @@ struct SyncedFolderStorageTests {
                 forKey: key, document: document, schemeText: "Local edit",
                 expectedBaseline: ScratchpadPersistence.relativeToScheme(offlineNote),
                 attachments: [], dirtyAttachmentNames: [], coordinator: coordinator)
-            #expect(committed == "Local edit")
+            try #require(committed == "Local edit")
             #expect(try Data(contentsOf: note) == Data("Local edit".utf8))
             #expect(try Data(contentsOf: file) == bytes)
+            let meta = try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)
+            #expect(meta?.lastKnownPath == portablePath)
 
             let inventory = try await ScratchpadAttachmentCleanup.inventory(coordinator: coordinator)
-            #expect(inventory.documents.first?.title == "Fixture")
-            #expect(inventory.documents.first?.hasAttachments == true)
+            let row = try #require(inventory.documents.first(where: { $0.id == key }))
+            #expect(row.title == title)
+            #expect(row.hasAttachments)
             let newer = attachments.appendingPathComponent("ddd.png")
             try bytes.write(to: newer)
             try fm.setAttributes([.modificationDate: Date().addingTimeInterval(30)], ofItemAtPath: newer.path)
