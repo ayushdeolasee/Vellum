@@ -508,23 +508,80 @@ final class WorkspaceStore {
     #endif
 
     #if os(macOS)
+    private func retainRetiringScratchpad(_ pane: PaneModel) {
+        let scratchpad = pane.scratchpad
+        tabTeardowns.registerReleaseFlush(document: pane.app.document) {
+            await scratchpad.flush().value
+            return !scratchpad.isLoadingDocument && !scratchpad.hasUncommittedChanges
+        }
+    }
+
+    private func requireClosedForStorageChange() throws {
+        guard recoveryDocumentIsClosed(nil) else {
+            throw SessionServiceError.io("Finish opening documents, close all document tabs, then retry the storage change.")
+        }
+    }
+
+    /// The workspace owns the drain so document opens, close teardowns and quit
+    /// all join it. Admission is checked again inside the storage coordinator's
+    /// exclusive operation, immediately before changing the preference or files.
+    private func withClosedSharedLibrary(
+        path: String, operation: @escaping @MainActor (@escaping @MainActor @Sendable () throws -> Void) async throws -> Void
+    ) async throws {
+        let id = "shared-library-" + UUID().uuidString
+        try await performStorageRecovery(key: nil, path: path, recoveryId: id) {
+            try self.requireClosedForStorageChange()
+            guard await self.tabTeardowns.awaitAll(excluding: id) else {
+                throw SessionServiceError.io("A document is still waiting to save. Restore storage access and retry.")
+            }
+            await AiPersistence.joinConversationLoads()
+            guard await self.flushScratchpadsForTermination(), await AiPersistence.awaitPendingFlush() else {
+                throw SessionServiceError.io("Notes or chat are still waiting to save. Restore storage access and retry.")
+            }
+            await self.awaitPendingPositionRecords()
+            let revision = self.scratchpadTerminationSnapshot
+            try await self.positions.store.withStorageChange { @MainActor in
+                try await operation {
+                    try self.requireClosedForStorageChange()
+                    guard !self.isTerminating else { throw ConflictRecoveryError.appClosing }
+                    guard self.scratchpadsAreSafeToTerminate(after: revision),
+                          !self.root.allLeaves().contains(where: { $0.scratchpad.isLoadingDocument }),
+                          !self.tabTeardowns.hasPendingWork(excluding: id),
+                          !AiPersistence.hasActiveConversationLoads, !self.recoveryHasPendingDrafts(nil) else {
+                        throw SessionServiceError.io("Document changes arrived while saving. Let them finish, then retry.")
+                    }
+                }
+            }
+        }
+    }
+
+    func changeSharedStorageLocation(path: String, select: @escaping @MainActor @Sendable () -> Void) async throws {
+        let coordinator = storageCoordinator
+        try await withClosedSharedLibrary(path: path) { admit in
+            let result: Result<Void, Error> = await coordinator.performExclusiveStorageOperation(
+                reconfigureAfter: true, committed: { if case .success = $0 { true } else { false } }
+            ) {
+                await MainActor.run {
+                    Result {
+                        try admit()
+                        AiPersistence.forgetConversations(for: coordinator)
+                        select()
+                    }
+                }
+            }
+            try result.get()
+        }
+    }
+
     func migrateSharedPDFs(_ sources: [URL], rollback: Bool) async throws {
         let coordinator = storageCoordinator
         let location = try await DocumentAccessResolver.live.configured(for: coordinator).sharedPDFs
         guard let location else { throw LibraryFileError.unavailable }
-        try await performStorageRecovery(key: nil, path: location.root.path) {
-            guard self.recoveryDocumentIsClosed(nil)
-            else { throw SessionServiceError.io("Close the open documents before migrating PDFs.") }
-            guard await self.flushScratchpadsForTermination(), await AiPersistence.awaitPendingFlush() else {
-                throw ConflictRecoveryError.pendingChanges
-            }
-            try await self.positions.store.prepareForExternalRekey()
-            guard self.recoveryDocumentIsClosed(nil), !self.recoveryHasPendingDrafts(nil) else {
-                throw ConflictRecoveryError.pendingChanges
-            }
+        try await withClosedSharedLibrary(path: location.root.path) { admit in
             let local = WebLibrary.storeDir.deletingLastPathComponent()
             let result = await coordinator.performExclusiveSharedPDFOperation(root: location.root) {
                 do {
+                    try await admit()
                     let migration = try SharedPDFMigration(root: location.root, localData: local,
                         journals: local.appendingPathComponent("PDF Migration Journals", isDirectory: true))
                     if rollback { try await migration.rollback() }
@@ -546,7 +603,7 @@ final class WorkspaceStore {
     /// drains. Capture earlier tasks before registering this task to avoid
     /// waiting on its own drain handle.
     private func performStorageRecovery<T: Sendable>(
-        key: String?, path: String,
+        key: String?, path: String, recoveryId: String = "conflict-recovery-" + UUID().uuidString,
         operation: @escaping @MainActor () async throws -> T
     ) async throws -> T {
         // Join startup before registering recovery: startup may itself open a
@@ -555,7 +612,6 @@ final class WorkspaceStore {
         guard !isTerminating else { throw ConflictRecoveryError.appClosing }
         guard conflictRecoveryTask == nil else { throw ConflictRecoveryError.alreadyRunning }
         let pending = tabTeardowns.pendingTasksSnapshot()
-        let recoveryId = "conflict-recovery-\(UUID().uuidString)"
         let task = Task { @MainActor [self] in
             defer { tabTeardowns.finish(tabId: recoveryId) }
             for previous in pending { await previous.value }
@@ -1038,6 +1094,9 @@ final class WorkspaceStore {
         // from here on, so its native state is released now rather than in half
         // an hour. (In the common case — a pane emptied by a tab drag — `tabs`
         // is already empty and only the pin matters.)
+        #if os(macOS)
+        retainRetiringScratchpad(closingPane)
+        #endif
         closingPane.app.discardAllTabsForPaneClosure()
         forgetPanePin(closingPane.app)
         if root.isLeaf {
@@ -1105,6 +1164,9 @@ final class WorkspaceStore {
             // with its `tabs`: the pin would then outlive the pane, and a stale
             // `ObjectIdentifier` key aliases whatever AppStore is allocated at
             // that address next.
+            #if os(macOS)
+            retainRetiringScratchpad(leaf)
+            #endif
             forgetPanePin(leaf.app)
         }
         if let keepActiveTabId {

@@ -2,6 +2,7 @@
 import Darwin
 import Foundation
 import Testing
+import VellumCore
 
 @testable import Vellum
 
@@ -51,6 +52,10 @@ struct SyncedFolderStorageTests {
                     try await DocumentDataStore.touch(document: doc, coordinator: coordinator)
                     let path = try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)?.lastKnownPath
                     #expect(path == "PDFs/" + source.lastPathComponent)
+                    let repeated = try await resolver.openPickedPDF(url: source, sessionId: "repeat") { path, id in
+                        try await backend.open(path: path, sessionId: id).info
+                    }
+                    #expect(repeated.pdfPath == doc.pdfPath && repeated.docId == key)
                     let reopened = try await resolver.openPickedPDF(url: destination, sessionId: "again") { path, id in
                         try await backend.open(path: path, sessionId: id).info
                     }
@@ -63,8 +68,181 @@ struct SyncedFolderStorageTests {
                     #expect(moved?.lastKnownPath == "PDFs/" + next.lastPathComponent)
                     #expect(!resolver.sourceExists(key: key, lastKnownPath: source.path))
                     #expect(!resolver.sourceExists(key: key, lastKnownPath: "PDFs/../../" + source.lastPathComponent))
+                    if shouldStamp {
+                        let manager = DocumentSessionManager()
+                        let info = try await resolver.openPickedPDF(url: next, sessionId: "edit", open: manager.openFile)
+                        let annotation = try await manager.createAnnotation(sessionId: "edit", input: .init(
+                            type: .highlight, pageNumber: 1, color: "#fef08a",
+                            positionData: .init(rects: [.init(x: 72, y: 100, width: 180, height: 16)],
+                                                pageWidth: 612, pageHeight: 792)))
+                        try await manager.closeFile(sessionId: "edit")
+                        let restored = try await resolver.restoreSavedPDF(info, sessionId: "restored",
+                            resolveExistingPath: { _ in nil }, open: manager.openFile)
+                        #expect(restored.docId == key)
+                        #expect(try await manager.getAnnotations(sessionId: "restored", pageNumber: 1).contains { $0.id == annotation.id })
+                        let saved = try Data(contentsOf: next)
+                        #expect(SharedPDFIdentity.stamp(in: saved, readerID: SharedPDFImport.readID(saved)) == key)
+                        let metaURL = shared.appendingPathComponent(".vellum/documents/" + key + "/meta.json")
+                        let savedMeta = try Data(contentsOf: metaURL)
+
+                        // The private Apple writer can serialize this large Info
+                        // dictionary with a CGPDF-readable ID outside the portable
+                        // proof window. The same edit in a shared session must fail.
+                        let title = String(repeating: "a", count: 70000)
+                        let privateCopy = tmp.appendingPathComponent("private-probe.pdf")
+                        try saved.write(to: privateCopy)
+                        _ = try await manager.openFile(path: privateCopy.path, sessionId: "private")
+                        try await manager.setDocumentMetadata(sessionId: "private", key: "title", value: title)
+                        let privateBytes = try Data(contentsOf: privateCopy)
+                        #expect(SharedPDFImport.readID(privateBytes) == key)
+                        #expect(SharedPDFIdentity.stamp(in: privateBytes, readerID: SharedPDFImport.readID(privateBytes)) == nil)
+                        await #expect(throws: SessionServiceError.self) {
+                            try await manager.setDocumentMetadata(sessionId: "restored", key: "title", value: title)
+                        }
+                        #expect(try Data(contentsOf: next) == saved)
+                        #expect(try Data(contentsOf: metaURL) == savedMeta)
+                        try await manager.closeFile(sessionId: "private")
+                        try await manager.closeFile(sessionId: "restored")
+                    }
                 }
                 #expect(!fm.fileExists(atPath: tmp.appendingPathComponent("managed").path))
+            } catch {
+                await coordinator.stop()
+                throw error
+            }
+            await coordinator.stop()
+        }
+    }
+
+    @Test("A shared save rejects a CGPDF-visible ID outside the bounded classic xref proof")
+    func boundedSharedCandidateIdentity() throws {
+        let key = UUID().uuidString.lowercased()
+        let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"
+        let objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                       page, "<< /VellumDocId (\(key)) >>"]
+        var classic = String(decoding: PdfFixtureBuilder.classicObjects(objects), as: UTF8.self)
+        // Free entries keep the fixture small while putting the trailer beyond
+        // the classic reader's 1 MiB limit. Offsets of live objects stay intact.
+        classic = classic.replacingOccurrences(of: "xref\n0 5\n", with: "xref\n0 53005\n")
+            .replacingOccurrences(of: "trailer\n<< /Size 5", with:
+                String(repeating: "0000000000 65535 f \n", count: 53000) + "trailer\n<< /Info 4 0 R /Size 53005")
+        let wide = Data(classic.utf8)
+        #expect(SharedPDFImport.readID(wide) == key)
+        #expect(SharedPDFIdentity.stamp(in: wide, readerID: key) == nil)
+        #expect(throws: SessionServiceError.self) { try PdfDocumentSession.verifiedSharedEdit(wide, expectedID: key) }
+
+        let original = try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column"))
+        let repaired = try PdfDocumentSession.verifiedSharedEdit(original, expectedID: key)
+        #expect(repaired.starts(with: original) && repaired.count > original.count)
+        #expect(SharedPDFIdentity.stamp(in: repaired, readerID: SharedPDFImport.readID(repaired)) == key)
+        #expect(throws: SessionServiceError.self) {
+            try PdfDocumentSession.verifiedSharedEdit(repaired, expectedID: UUID().uuidString.lowercased())
+        }
+    }
+
+    @Test("Changing or replacing a shared folder waits for closed documents and saves drafts in their original root")
+    @MainActor
+    func sharedFolderSwitchDrainsDocumentOwners() async throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let local = tmp.appendingPathComponent("private/web")
+        let first = tmp.appendingPathComponent("first")
+        let second = tmp.appendingPathComponent("second")
+        for root in [local, first, second] { try fm.createDirectory(at: root, withIntermediateDirectories: true) }
+        defer { try? fm.removeItem(at: tmp) }
+        let previousStore = WebLibrary.storeDirOverride
+        let previousDocuments = DocumentDataStore.rootDirectoryOverride
+        WebLibrary.storeDirOverride = local
+        DocumentDataStore.rootDirectoryOverride = nil
+        defer {
+            WebLibrary.storeDirOverride = previousStore
+            DocumentDataStore.rootDirectoryOverride = previousDocuments
+        }
+        let suite = "vellum.switch-test." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try await AppDefaults.withDefaults(defaults) {
+            WebStorageSettings.setMode(.local)
+            let coordinator = StorageCoordinator(storeDir: local, rootResolver: { nil }, containerFactory: { nil },
+                conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+            let workspace = WorkspaceStore(sessions: DocumentSessionManager(), storageCoordinator: coordinator)
+            let pane = workspace.focusedPane
+            let site = "https://example.invalid/" + UUID().uuidString
+            let key = DocumentIdentity.sha256Hex(site)
+            let doc = DocumentInfo(kind: .web, pdfPath: site, title: "Fixture", pageCount: nil, lastPage: nil, docId: key)
+            let tab = PdfTab(id: "source", document: doc, currentPage: 1, numPages: 1, zoom: 1,
+                             visiblePages: [], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view)
+            let message = AiPersistence.makeMessage(role: .user, content: "private transcript")
+            let privateDocs = WebStorageLayout.local(storeDir: local).documentsDir
+            func select(_ root: URL) async {
+                await WebStorageRelocator.selectSyncedFolder(.init(path: root.path, bookmarkData: Data()), workspace: workspace)
+            }
+            await coordinator.start()
+            defer { AiPersistence.invalidateCachedConversation(forKey: key) }
+            do {
+                pane.app.attachTab(tab)
+                await pane.scratchpad.loadForDocument(doc).value
+                pane.scratchpad.text = "private notes"
+                #expect(AiPersistence.saveConversation(for: doc, messages: [message], coordinator: coordinator))
+                await select(first)
+                #expect(WebStorageSettings.chosenMode == .local)
+                #expect(WebStorageRelocator.status.message.contains("close all document tabs"))
+                #expect(!fm.fileExists(atPath: first.appendingPathComponent(".vellum/documents/" + key).path))
+                await pane.app.closeTab(tab.id)
+                await select(first)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == first.path)
+                #expect(try String(contentsOf: privateDocs.appendingPathComponent(key + "/scratchpad.md"),
+                                   encoding: .utf8) == "private notes")
+                #expect(try JSONDecoder().decode([AiMessage].self, from: Data(contentsOf:
+                    privateDocs.appendingPathComponent(key + "/conversations.json"))) == [message])
+                #expect(await AiPersistence.loadConversation(for: doc, coordinator: coordinator).isEmpty)
+
+                pane.app.attachTab(tab)
+                await select(second)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == first.path)
+                await WebStorageRelocator.apply(mode: .local, workspace: workspace)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == first.path)
+                await pane.app.closeTab(tab.id)
+
+                // A failed close-release remains joinable by the next attempt.
+                let saved = tmp.appendingPathComponent("release-complete")
+                workspace.tabTeardowns.registerReleaseFlush(document: doc) { fm.fileExists(atPath: saved.path) }
+                await select(second)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == first.path)
+                try Data().write(to: saved)
+                await select(second)
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == second.path)
+                // Hold the old backend in use until the transition has closed
+                // coordinator admission. A document admitted during that await
+                // must veto the preference write at the final commit boundary.
+                let (entered, didEnter) = AsyncStream<Void>.makeStream()
+                let (release, finish) = AsyncStream<Void>.makeStream()
+                let reader = Task {
+                    try await coordinator.withStorageContext { _ in
+                        didEnter.finish()
+                        for await _ in release {}
+                    }
+                }
+                for await _ in entered {}
+                let switching = Task { await WebStorageRelocator.apply(mode: .local, workspace: workspace) }
+                let deadline = ContinuousClock.now + .seconds(3)
+                while await coordinator.currentStatus().lifecycle != .starting && ContinuousClock.now < deadline {
+                    await Task.yield()
+                }
+                #expect(await coordinator.currentStatus().lifecycle == .starting)
+                pane.app.attachTab(tab)
+                finish.finish()
+                try await reader.value
+                await switching.value
+                #expect(await coordinator.currentStatus().activeSharedFolderRoot?.path == second.path)
+                await pane.app.closeTab(tab.id)
+                await WebStorageRelocator.apply(mode: .local, workspace: workspace)
+                #expect(await coordinator.currentStatus().effectiveMode == .local)
+                #expect(await AiPersistence.loadConversation(for: doc, coordinator: coordinator) == [message])
+                for root in [first, second] {
+                    #expect(!fm.fileExists(atPath: root.appendingPathComponent(".vellum/documents/" + key + "/scratchpad.md").path))
+                    #expect(!fm.fileExists(atPath: root.appendingPathComponent(".vellum/documents/" + key + "/conversations.json").path))
+                }
             } catch {
                 await coordinator.stop()
                 throw error
@@ -251,10 +429,12 @@ struct SyncedFolderStorageTests {
     @MainActor
     @Test("Storage settings actions recover an offline Scratchpad image after relaunch")
     func offlineScratchpadImage() async throws {
-        let (root, key, attachments) = try scratchpadFixture()
         let fm = FileManager.default
-        defer { try? fm.removeItem(at: root) }
-        let local = root.appendingPathComponent("local/web", isDirectory: true)
+        let temporary = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = temporary.appendingPathComponent("shared", isDirectory: true)
+        let local = temporary.appendingPathComponent("local/web", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: temporary) }
         let previousStore = WebLibrary.storeDirOverride
         let previousDocuments = DocumentDataStore.rootDirectoryOverride
         WebLibrary.storeDirOverride = local
@@ -263,6 +443,31 @@ struct SyncedFolderStorageTests {
             WebLibrary.storeDirOverride = previousStore
             DocumentDataStore.rootDirectoryOverride = previousDocuments
         }
+        // Import a real PDF the same way a shared-folder user opens a local
+        // file. The session's verified identity owns the scratchpad sidecars.
+        let source = temporary.appendingPathComponent("Fixture.pdf")
+        try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column")).write(to: source)
+        let resolver = DocumentAccessResolver(
+            store: DocumentAccessBookmarkStore(directory: temporary),
+            adapter: SystemDocumentAccessAdapter(),
+            libraryDirectory: { temporary.appendingPathComponent("managed") },
+            appOwnedRoots: { [] }
+        ).scoped(to: root)
+        let backend = PdfSessionBackend()
+        let document = try await resolver.openPickedPDF(url: source, sessionId: "scratchpad-fixture") { path, id in
+            try await backend.open(path: path, sessionId: id).info
+        }
+        let key = try #require(document.docId)
+        let title = try #require(document.title)
+        let imported = URL(fileURLWithPath: document.pdfPath)
+        let portablePath = "PDFs/Fixture.pdf"
+        let importedBytes = try Data(contentsOf: imported)
+        try #require(resolver.sharedPDFs?.relativePath(for: imported) == portablePath)
+        try #require(SharedPDFImport.readID(importedBytes) == key)
+        let attachments = WebStorageLayout.syncedFolder(root: root).documentsDir
+            .appendingPathComponent(key, isDirectory: true)
+            .appendingPathComponent("attachments", isDirectory: true)
+        try fm.createDirectory(at: attachments, withIntermediateDirectories: true)
         let coordinator = StorageCoordinator(
             storeDir: local, modeProvider: { .syncedFolder },
             syncedFolderRootResolver: { root },
@@ -278,10 +483,6 @@ struct SyncedFolderStorageTests {
         let collision = attachments.appendingPathComponent("ccc.png")
         try bytes.write(to: collision)
         try Data(offlineNote.utf8).write(to: note)
-        let document = DocumentInfo(
-            kind: .pdf, pdfPath: root.appendingPathComponent("fixture.pdf").path,
-            title: "Fixture", pageCount: 1, lastPage: 1, docId: key)
-
         let batchID: String
         await coordinator.start()
         do {
@@ -290,13 +491,16 @@ struct SyncedFolderStorageTests {
                 forKey: key, document: document, schemeText: "Local edit",
                 expectedBaseline: ScratchpadPersistence.relativeToScheme(offlineNote),
                 attachments: [], dirtyAttachmentNames: [], coordinator: coordinator)
-            #expect(committed == "Local edit")
+            try #require(committed == "Local edit")
             #expect(try Data(contentsOf: note) == Data("Local edit".utf8))
             #expect(try Data(contentsOf: file) == bytes)
+            let meta = try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)
+            #expect(meta?.lastKnownPath == portablePath)
 
             let inventory = try await ScratchpadAttachmentCleanup.inventory(coordinator: coordinator)
-            #expect(inventory.documents.first?.title == "Fixture")
-            #expect(inventory.documents.first?.hasAttachments == true)
+            let row = try #require(inventory.documents.first(where: { $0.id == key }))
+            #expect(row.title == title)
+            #expect(row.hasAttachments)
             let newer = attachments.appendingPathComponent("ddd.png")
             try bytes.write(to: newer)
             try fm.setAttributes([.modificationDate: Date().addingTimeInterval(30)], ofItemAtPath: newer.path)
@@ -358,6 +562,69 @@ struct SyncedFolderStorageTests {
             throw error
         }
         await relaunched.stop()
+    }
+
+    @Test("An out-of-root shared PDF cannot update or clear Scratchpad bytes", arguments: [false, true])
+    func ineligibleSharedPDFDoesNotWriteScratchpad(clearing: Bool) async throws {
+        let (root, key, attachments) = try scratchpadFixture()
+        let fm = FileManager.default
+        defer { try? fm.removeItem(at: root) }
+        let local = root.appendingPathComponent("local/web", isDirectory: true)
+        let previousStore = WebLibrary.storeDirOverride
+        let previousDocuments = DocumentDataStore.rootDirectoryOverride
+        WebLibrary.storeDirOverride = local
+        DocumentDataStore.rootDirectoryOverride = nil
+        defer {
+            WebLibrary.storeDirOverride = previousStore
+            DocumentDataStore.rootDirectoryOverride = previousDocuments
+        }
+
+        let source = root.appendingPathComponent("Outside.pdf")
+        try Data(contentsOf: PdfFixtureBuilder.fixtureURL("classic-two-column")).write(to: source)
+        let document = DocumentInfo(
+            kind: .pdf, pdfPath: source.path, title: "Outside", pageCount: 1, lastPage: 1, docId: key)
+        let container = FakeSyncedContainer()
+        let coordinator = StorageCoordinator(
+            storeDir: local, modeProvider: { .syncedFolder },
+            syncedFolderRootResolver: { root }, folderContainerFactory: { _ in container },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        let directory = attachments.deletingLastPathComponent()
+        let noteURL = directory.appendingPathComponent("scratchpad.md")
+        let metadataURL = directory.appendingPathComponent("meta.json")
+        let existingImage = attachments.appendingPathComponent("abc.png")
+        let newImage = attachments.appendingPathComponent("def.png")
+        let note = "Saved draft ![image](attachments/abc.png)"
+        let metadata = Data(#"{"version":1,"kind":"pdf","title":"Saved title","last_known_path":"PDFs/Saved.pdf","last_opened":"2026-11-26T12:00:00Z"}"#.utf8)
+        let imageBytes = Data([1, 2, 3])
+        container.seed(noteURL, data: Data(note.utf8))
+        container.seed(metadataURL, data: metadata)
+        container.seed(existingImage, data: imageBytes)
+
+        await coordinator.start()
+        do {
+            try #require(await coordinator.currentStatus().effectiveMode == .syncedFolder)
+            let staged: [ScratchpadStagedAttachment] = clearing ? [] : [
+                .init(id: "abc", name: "abc.png", data: Data([4])),
+                .init(id: "def", name: "def.png", data: Data([5])),
+            ]
+            let result = await ScratchpadPersistence.save(
+                forKey: key, document: document,
+                schemeText: clearing ? "" : "New draft ![image](vellum-scratchpad://def)",
+                expectedBaseline: ScratchpadPersistence.relativeToScheme(note),
+                attachments: staged, dirtyAttachmentNames: Set(staged.map(\.name)),
+                coordinator: coordinator)
+            #expect(result == nil)
+            #expect(container.coordinatedWriteCount == 0)
+            #expect(container.coordinatedRemoveCount == 0)
+            #expect(container.peek(noteURL) == Data(note.utf8))
+            #expect(container.peek(metadataURL) == metadata)
+            #expect(container.peek(existingImage) == imageBytes)
+            #expect(container.peek(newImage) == nil)
+        } catch {
+            await coordinator.stop()
+            throw error
+        }
+        await coordinator.stop()
     }
 
     @Test("Legacy attachment collection respects the selected storage mode")

@@ -22,6 +22,12 @@ public enum PdfEditEligibility: Equatable, Sendable {
             return .readOnly(.malformed)
         }
     }
+
+    /// Prove the exact bytes about to be saved. A subsequent edit must still
+    /// classify the resulting document before starting another revision.
+    public static func validateOutput(_ candidate: Data) throws {
+        if case .readOnly(let reason) = classify(candidate) { throw reason }
+    }
 }
 
 extension PdfClassicStructure {

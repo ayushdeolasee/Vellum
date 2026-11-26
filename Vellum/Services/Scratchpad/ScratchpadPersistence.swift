@@ -166,7 +166,9 @@ enum ScratchpadPersistence {
         coordinator: StorageCoordinator
     ) async -> String? {
         return await ScratchpadWriteCoordinator.shared.enqueueCommit(forKey: key) {
-            do {
+            try? await DocumentDataStore.withScratchpadWriteAdmission(
+                forKey: key, document: document, coordinator: coordinator
+            ) { () async throws -> String? in
                 let durable = relativeToScheme(try await DocumentDataStore.loadScratchpad(
                     forKey: key, coordinator: coordinator))
                 let committed = mergeConcurrentEdit(
@@ -231,8 +233,6 @@ enum ScratchpadPersistence {
                         document: document, force: true, coordinator: coordinator)
                 }
                 return committed
-            } catch {
-                return nil
             }
         }
     }
@@ -308,7 +308,9 @@ enum ScratchpadPersistence {
             let fallback = (try? legacySnapshot(entry)) ?? LegacySnapshot(
                 key: entry.key, text: entry.text, attachments: [])
 
-            do {
+            return (try? await DocumentDataStore.withScratchpadWriteAdmission(
+                forKey: key, document: document, coordinator: coordinator
+            ) { () async throws -> MigrationResult in
                 let snapshot = try legacySnapshot(entry)
                 var migratedText = snapshot.text
                 var migratedAttachments: [ScratchpadStagedAttachment] = []
@@ -393,9 +395,7 @@ enum ScratchpadPersistence {
                     try? FileManager.default.removeItem(at: ScratchpadAttachmentStore.directory)
                 }
                 return .migrated
-            } catch {
-                return .retainedForRetry(fallback)
-            }
+            }) ?? .retainedForRetry(fallback)
         }
     }
 

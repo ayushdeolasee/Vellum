@@ -193,16 +193,21 @@ struct DocumentAccessResolver: Sendable {
         if let sharedPDFs {
             // Saved absolute paths and bookmarks belong to this machine. A peer's
             // metadata must resolve under the selected root, even when the old path exists.
-            let url = try await performFileOperation {
+            var destination = try await performFileOperation { () -> URL? in
                 if let url = sharedPDFs.resolve(savedDocument.pdfPath) { return url }
-                guard savedDocument.pdfPath.hasPrefix("/") else { throw DocumentAccessError.unavailable(savedDocument.pdfPath) }
+                guard savedDocument.pdfPath.hasPrefix("/") else { return nil }
                 let local = URL(fileURLWithPath: savedDocument.pdfPath)
-                guard sharedPDFs.relativePath(for: local) != nil else {
-                    throw DocumentAccessError.unavailable(savedDocument.pdfPath)
-                }
-                return local
+                return sharedPDFs.relativePath(for: local) != nil ? local : nil
             }
-            return try await openLocalPDF(url: url, localURL: url, expectedDocId: savedDocument.docId,
+            var expected = savedDocument.docId
+            if destination == nil, savedDocument.pdfPath.hasPrefix("/") {
+                let source = URL(fileURLWithPath: savedDocument.pdfPath)
+                destination = try await SharedPDFImport.migration(in: sharedPDFs).migratedURL(for: source, readID: SharedPDFImport.readID)
+                // The local journal has already proved this exact old-to-new identity.
+                if destination != nil { expected = nil }
+            }
+            guard let destination else { throw DocumentAccessError.unavailable(savedDocument.pdfPath) }
+            return try await openLocalPDF(url: destination, localURL: destination, expectedDocId: expected,
                                           priorKey: nil, sessionId: sessionId, open: open, close: close)
         }
 
@@ -491,25 +496,24 @@ struct DocumentAccessResolver: Sendable {
                 throw DocumentAccessError.unavailable(url.path)
             }
             let localData = WebLibrary.storeDir.deletingLastPathComponent()
-            let migration = try SharedPDFMigration(root: sharedPDFs.root, localData: localData,
-                journals: localData.appendingPathComponent("PDF Migration Journals", isDirectory: true))
+            let scoped = access == .external && adapter.startAccessing(url)
+            defer { if scoped { adapter.stopAccessing(url) } }
+            let migration = try SharedPDFImport.migration(in: sharedPDFs)
             if let migrated = try await migration.migratedURL(for: url, readID: SharedPDFImport.readID) {
                 return (migrated, false)
             }
             let bytes = try await performFileOperation {
-                try withSecurityScopeIfNeeded(to: url, access: access) {
-                    let result = try SharedPDFImport.prepare(url)
-                    let localDocuments = localData.appendingPathComponent("documents")
-                    let keys = [DocumentIdentity.sha256Hex(url.path), DocumentIdentity.sha256Hex(normalizedPath(url)), result.key,
-                                adapter.documentId(atPath: url.path)].compactMap { $0 }
-                    if keys.contains(where: { DocumentIdentity.isCanonicalKey($0) &&
-                        FileManager.default.fileExists(atPath: localDocuments.appendingPathComponent($0).path) }) {
-                        throw DocumentAccessError.storeUnavailable("This PDF has local reading data. Use Migrate Local PDFs in Settings > Storage.")
-                    }
-                    return result
+                let result = try SharedPDFImport.prepare(url)
+                let localDocuments = localData.appendingPathComponent("documents")
+                let keys = [DocumentIdentity.sha256Hex(url.path), DocumentIdentity.sha256Hex(normalizedPath(url)), result.key, DocumentIdentity.byteHash(result.original),
+                            adapter.documentId(atPath: url.path)].compactMap { $0 }
+                if keys.contains(where: { DocumentIdentity.isCanonicalKey($0) &&
+                    FileManager.default.fileExists(atPath: localDocuments.appendingPathComponent($0).path) }) {
+                    throw DocumentAccessError.storeUnavailable("This PDF has local reading data. Use Migrate Local PDFs in Settings > Storage.")
                 }
+                return result
             }
-            let destination = try await SharedPDFImport.copy(bytes.bytes, named: url.lastPathComponent, into: sharedPDFs)
+            let destination = try await SharedPDFImport.copy(bytes.bytes, original: bytes.original, named: url.lastPathComponent, into: sharedPDFs)
             // The PDF is now a published shared file. Ownership never passes
             // to the managed-copy cleanup on cancellation, relink or failed open.
             return (destination, false)
@@ -696,16 +700,24 @@ enum SharedPDFImport {
         return SharedPDFIdentity.storageKey(in: bytes, readerID: readID(bytes))
     }
 
-    static func prepare(_ url: URL) throws -> (bytes: Data, key: String) {
+    static func migration(in location: SharedPDFLocation) throws -> SharedPDFMigration {
+        let local = WebLibrary.storeDir.deletingLastPathComponent()
+        return try SharedPDFMigration(root: location.root, localData: local,
+                                      journals: local.appendingPathComponent("PDF Migration Journals", isDirectory: true))
+    }
+
+    static func prepare(_ url: URL) throws -> (bytes: Data, key: String, original: Data) {
         let original = try Data(contentsOf: url)
         guard PdfDocumentLoader.cgDocument(from: original) != nil else {
             throw DocumentAccessError.unavailable(url.path)
         }
-        return SharedPDFIdentity.prepare(original, writable: FileManager.default.isWritableFile(atPath: url.path),
+        let result = SharedPDFIdentity.prepare(original, writable: FileManager.default.isWritableFile(atPath: url.path),
                                          readID: readID)
+        return (result.bytes, result.key, original)
     }
 
-    static func availableDestination(named filename: String, into location: SharedPDFLocation) async throws -> URL {
+    static func availableDestination(named filename: String, into location: SharedPDFLocation,
+                                     matching: ((Data) -> Bool)? = nil) async throws -> URL {
         guard !filename.contains("/") else { throw DocumentAccessError.unavailable(filename) }
         let store = LocalFolderFileStore(root: location.root)
         let base = (filename as NSString).deletingPathExtension
@@ -714,14 +726,22 @@ enum SharedPDFImport {
             try Task.checkCancellation()
             let name = number == 1 ? filename : "\(base) \(number).pdf"
             guard let url = location.resolve("PDFs/" + name) else { throw DocumentAccessError.unavailable(name) }
-            if try await store.read(url) == nil { return url }
+            guard let existing = try await store.read(url) else { return url }
+            if matching?(existing) == true { return url }
             number += 1
         }
     }
 
-    static func copy(_ bytes: Data, named filename: String, into location: SharedPDFLocation) async throws -> URL {
+    static func copy(_ bytes: Data, original: Data? = nil, named filename: String, into location: SharedPDFLocation) async throws -> URL {
         let store = LocalFolderFileStore(root: location.root)
-        let url = try await availableDestination(named: filename, into: location)
+        func matches(_ existing: Data) -> Bool {
+            if existing == bytes { return true }
+            guard let original, bytes != original, existing.starts(with: original),
+                  let id = SharedPDFIdentity.stamp(in: existing, readerID: readID(existing)) else { return false }
+            return SharedPDFIdentity.prepare(original, preferredID: id, readID: readID).bytes == existing
+        }
+        let url = try await availableDestination(named: filename, into: location, matching: matches)
+        if let existing = try await store.read(url), matches(existing) { return url }
         guard try await store.replace(url, with: bytes, ifCurrent: nil) else { throw LibraryFileError.retryable }
         return url
     }

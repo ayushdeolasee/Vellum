@@ -85,6 +85,32 @@ struct PositionCoalescingTests {
         #expect(storage.writeCount == 1)
     }
 
+    @Test("A storage change drains the old device record and rehydrates the replacement")
+    func storageChangePreservesEachLibrary() async throws {
+        let date = PositionFixtures.date("2026-08-02T09:00:00.000000+00:00")
+        let storage = InMemoryPositionStorage()
+        let store = makeStore(clock: ManualPositionClock(date), timer: ManualPositionTimer(), storage: storage)
+        await store.record(.moved(ReadingPosition(page: 3)), for: key)
+        storage.failNextWrite(with: PositionStorageError.io("disk full"))
+        await #expect(throws: PositionStorageError.self) {
+            try await store.withStorageChange { Issue.record("Changed storage after a failed flush") }
+        }
+
+        let next = PositionFixtures.pdfKey("new-book")
+        let replacement = PositionFixtures.record(.phone, writtenAt: date, documents: [next: .init(openedAt: date)])
+        try await store.withStorageChange {
+            let previous = try #require(await storage.loadAll().first)
+            #expect(previous.documents[key]?.readingPosition?.value.page == 3)
+            storage.seed(replacement)
+        }
+        await store.record(.moved(ReadingPosition(page: 4)), for: next)
+        await store.flush()
+        let saved = try #require(await storage.loadAll().first)
+        #expect(saved.documents[key] == nil)
+        #expect(saved.documents[next]?.openedAt == date)
+        #expect(saved.documents[next]?.readingPosition?.value.page == 4)
+    }
+
     @Test("Nothing dirty means no write at all")
     func nothingDirtyMeansNoWrite() async {
         let clock = ManualPositionClock(PositionFixtures.date("2026-08-02T09:00:00.000000+00:00"))

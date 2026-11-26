@@ -773,9 +773,8 @@ final class PdfPersistenceTests: XCTestCase {
     }
 
     /// Packet 6 §5.3 risk 3, iPad-only: retitle and pin arriving in ONE
-    /// `UpdateAnnotationInput` rewrite the outline twice. The second increment
-    /// has to be built from bytes re-read off disk, not from the now-stale
-    /// document handle, or the file ends up truncated or double-/Prev-chained.
+    /// `UpdateAnnotationInput` rewrite the outline twice. The pin increment
+    /// must use the retitled bytes so both changes survive the final save.
     func testBookmarkRetitleAndPinInOneUpdate() async throws {
         let path = makeTestPdf(name: "retitle-and-pin")
         let session = try await openSession(path)
