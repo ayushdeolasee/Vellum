@@ -47,15 +47,16 @@ public actor SharedLibraryWriteContext {
     public func advertiseInkCapability() async {
         guard active, let inkCapabilityBuild, await isSelectedRoot(), active else { return }
         let directory = InkCapabilityStore.directory(in: root.url)
-        let devicePrefix = device.id.rawValue + "."
         do {
-            let entries = try await root.entryNames(in: directory)
-            let archives = try await root.entryNames(in: directory.appendingPathComponent("conflicts"))
-            guard !entries.contains(where: { $0.hasPrefix(devicePrefix + "sync-conflict-") }),
-                  !archives.contains(where: { $0.hasPrefix(devicePrefix) }) else { return }
             try await InkCapabilityStore.advertise(in: root.url, device: device.id,
                 appBuild: inkCapabilityBuild, read: { [root] url, limit in
                     try await root.readRegularFile(url, byteLimit: limit)
+                }, canPublish: { [root] in
+                    let liveNames = try await root.entryNames(in: directory)
+                    let recovery = try await root.entryNames(in: directory.appendingPathComponent("conflicts"))
+                    guard !InkCapabilityStore.hasPublicationConflict(
+                        liveNames: liveNames, hasRecovery: !recovery.isEmpty) else { return false }
+                    return await self.isSelectedRoot()
                 }, replace: { url, bytes, expected in
                     try await self.replace(url, with: bytes, ifCurrent: expected)
                 })

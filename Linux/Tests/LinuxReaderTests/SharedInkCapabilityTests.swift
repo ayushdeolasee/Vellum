@@ -116,6 +116,70 @@ struct SharedInkCapabilityTests {
         await context.retire()
     }
 
+    @Test func capabilityConflictsBlockPublicationAndInkEdits() async throws {
+        let fm = FileManager.default
+        let workspace = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let library = workspace.appendingPathComponent("shared", isDirectory: true)
+        try fm.createDirectory(at: library, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workspace) }
+
+        let identity: DeviceIdentityProvider<LinuxDeviceIDDefaults> = .linux(
+            environment: ["XDG_STATE_HOME": workspace.appendingPathComponent("state").path])
+        let context = try await SharedLibraryWriteContext.activate(
+            root: RootDirectory.open(library), inkCapabilityBuild: "linux/build", identity: identity)
+        let files = LocalFolderFileStore(root: library)
+        let directory = InkCapabilityStore.directory(in: library)
+        let id = try identity.current().id
+        let canonical = directory.appendingPathComponent(id.rawValue + ".json")
+        let sibling = directory.appendingPathComponent(id.rawValue + ".sync-conflict-20261126-120000-PEER.json")
+        let occupied = Data("preserve this conflict".utf8)
+        try await files.replace(sibling, with: occupied)
+        await context.advertiseInkCapability()
+        #expect(try await files.read(canonical) == nil)
+        #expect(try await files.read(sibling) == occupied)
+
+        try await files.remove(sibling)
+        await context.advertiseInkCapability()
+        let original = try #require(try await files.read(canonical))
+        try await InkCapabilityStore.advertise(in: library, device: DeviceID("mac"), appBuild: "macOS/4",
+            read: { url, _ in try await files.read(url) },
+            replace: { url, data, previous in try await files.replace(url, with: data, ifCurrent: previous) })
+        #expect(await context.permitsInkEditing())
+
+        let key = DocumentKey.pdf(stableIdentifier: "fixture")
+        try await files.replace(sibling, with: occupied)
+        try await context.savePosition(ReadingPosition(page: 2), for: key)
+        #expect(try await files.read(canonical) == original)
+        #expect(try await files.read(sibling) == occupied)
+        #expect(await !context.permitsInkEditing())
+
+        try await files.remove(sibling)
+        let uuidArchive = directory.appendingPathComponent("conflicts", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString + ".json")
+        let fallbackArchive = PreserveLosersConflictResolver.archiveURL(
+            for: canonical, version: ConflictVersion(id: String(repeating: "x", count: 256)))
+        #expect(!fallbackArchive.lastPathComponent.hasPrefix(id.rawValue + "."))
+        for (index, archive) in [uuidArchive, fallbackArchive].enumerated() {
+            await context.advertiseInkCapability()
+            let clean = try #require(try await files.read(canonical))
+            #expect(await context.permitsInkEditing())
+            try await files.replace(archive, with: occupied)
+            #expect(await !context.permitsInkEditing())
+            try await context.savePosition(ReadingPosition(page: index + 3), for: key)
+            #expect(try await files.read(canonical) == clean)
+            try await files.remove(canonical)
+            await context.advertiseInkCapability()
+            #expect(try await files.read(canonical) == nil)
+            #expect(try await files.read(archive) == occupied)
+            #expect(await !context.permitsInkEditing())
+            try await files.remove(archive)
+        }
+        await context.advertiseInkCapability()
+        #expect(try await files.read(canonical) != original)
+        #expect(await context.permitsInkEditing())
+        await context.retire()
+    }
+
     @Test func changingOrReplacingTheSelectedFolderDiscardsAGrant() async throws {
         let fm = FileManager.default
         let workspace = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
