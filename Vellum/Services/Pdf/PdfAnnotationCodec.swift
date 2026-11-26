@@ -1,4 +1,5 @@
 import Foundation
+import VellumCore
 import PDFKit
 #if os(macOS)
 import AppKit
