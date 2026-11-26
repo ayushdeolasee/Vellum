@@ -643,11 +643,14 @@ extension ArchiveManifest {
             // A live capture can rename an asset. Offline captures retain
             // its installed path, but do not have a source URL.
             let prior = previous.assets.first { old in
-                asset.url.isEmpty ? old.path == asset.path : old.url == asset.url
+                if asset.url.isEmpty { return old.path == asset.path }
+                if !old.url.isEmpty { return old.url == asset.url }
+                // An offline export has no source URL. A live capture can
+                // identify that same asset by its installed path and digest.
+                return old.path == asset.path && old.sha256 != nil && old.sha256 == asset.sha256
             }
             if let prior {
                 assets[index].unknownFields.fillMissing(from: prior.unknownFields)
-                if asset.url.isEmpty { assets[index].url = prior.url }
             }
         }
     }

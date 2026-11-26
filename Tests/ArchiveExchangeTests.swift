@@ -98,6 +98,7 @@ extension ArchiveExchangeTests {
         XCTAssertEqual(exported.manifest.unknownFields, manifest.unknownFields)
         XCTAssertEqual(exported.manifest.hashes.unknownFields, manifest.hashes.unknownFields)
         XCTAssertEqual(exported.manifest.assets[0].unknownFields, manifest.assets[0].unknownFields)
+        XCTAssertEqual(exported.manifest.assets[0].url, "", "Offline exports retain their legacy asset descriptor")
         let restored = try XCTUnwrap(exported.inkRecord)
         XCTAssertEqual(restored.unknownFields, ink.unknownFields)
         XCTAssertEqual(restored.layout.unknownFields, ink.layout.unknownFields)
