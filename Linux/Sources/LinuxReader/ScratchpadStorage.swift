@@ -12,7 +12,7 @@ public struct ScratchpadStorage: Sendable {
 
     }
 
-    public struct Image: Sendable {
+    public struct Image: Sendable, Codable {
         public let name: String
         public let data: Data
 
@@ -43,6 +43,35 @@ public struct ScratchpadStorage: Sendable {
         }
     }
 
+    public struct RecoveredDraft: Codable, Sendable {
+        public let text: String
+        public let baseline: Data?
+        public let staged: [Image]
+    }
+
+    private let recovery: ReaderDraftRecovery
+
+    @concurrent
+    public func recover(_ key: String, text: String, baseline: Data?, staged: [Image]) async throws {
+        let draft = RecoveredDraft(text: text, baseline: baseline, staged: staged)
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        try await recovery.save(try encoder.encode(draft), document: key, kind: "scratchpad")
+    }
+
+    @concurrent
+    public func recovered(_ key: String) async throws -> RecoveredDraft? {
+        guard canEdit, let bytes = try await recovery.load(document: key, kind: "scratchpad") else { return nil }
+        let draft = try PropertyListDecoder().decode(RecoveredDraft.self, from: bytes)
+        guard draft.staged.allSatisfy({ Self.attachmentName($0.name) != nil && $0.data.count <= Self.imageBytes }),
+              !draft.text.utf8.contains(0) else { throw Failure.invalidNote }
+        return draft
+    }
+
+    public func removeRecovery(_ key: String) async throws {
+        try await recovery.remove(document: key, kind: "scratchpad")
+    }
+
     public var canEdit: Bool { replace != nil }
     public let importDirectory: URL?
     private let files: ReadOnlyLibraryFileStore
@@ -52,6 +81,7 @@ public struct ScratchpadStorage: Sendable {
     private static let formats: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "heic"]
 
     public init(files: ReadOnlyLibraryFileStore, importDirectory: URL? = nil, replace: Replace? = nil) {
+        self.recovery = ReaderDraftRecovery(root: files.root)
         self.files = files
         self.importDirectory = importDirectory
         self.replace = replace

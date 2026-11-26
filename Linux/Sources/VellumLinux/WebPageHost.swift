@@ -67,7 +67,7 @@ final class WebPageHost {
                 moved ||= scrollY !== initialY;
                 if (!innerHeight || (saved && !moved)) return null;
                 const range = document.caretRangeFromPoint(innerWidth / 2, Math.min(32, innerHeight / 2));
-                const location = {page: pages.current(), page_count: pages.count,
+                const location = {page: pages.current(),
                     scroll_fraction: Math.min(1, Math.max(0, scrollY / (extent() || 1)))};
                 if (range?.startContainer.nodeType === Node.TEXT_NODE) {
                     const node = range.startContainer, index = range.startOffset;
@@ -110,13 +110,16 @@ final class WebPageHost {
     }
 
     private let resources: ArchiveResourceMap
+    private let onLocation: (ReadingPosition) -> Void
     var session: ReaderPositionSession?
     private let onReady: () -> Void
     private let probe: WebProbe?
     private var reader: OpaquePointer?
 
     init(stack: OpaquePointer, resources: ArchiveResourceMap, probe: WebProbe?,
-         restoring: ReadingPosition?, session: ReaderPositionSession?, onReady: @escaping () -> Void) {
+         restoring: ReadingPosition?, session: ReaderPositionSession?, onLocation: @escaping (ReadingPosition) -> Void,
+         onReady: @escaping () -> Void) {
+        self.onLocation = onLocation
         self.session = session
         self.resources = resources
         self.onReady = onReady
@@ -141,7 +144,11 @@ final class WebPageHost {
                 let host = Unmanaged<WebPageHost>.fromOpaque(owner!).takeUnretainedValue()
                 guard let body = try? JSONDecoder().decode(PageMessage.self, from: Data(String(cString: message!).utf8)),
                       body.uri == host.resources.documentURL.absoluteString else { return }
-                if body.event == "location", let position = body.position { host.session?.moved(position); return }
+                if body.event == "location", let position = body.position {
+                    host.onLocation(position)
+                    host.session?.moved(position)
+                    return
+                }
                 if body.event == nil { host.onReady() }
                 host.probe?.received(body)
             }

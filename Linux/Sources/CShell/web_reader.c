@@ -143,18 +143,32 @@ void web_reader_free(WebReader *r) {
 typedef struct {
     WebEvent reply;
     void *owner;
+    GCancellable *cancel;
+    guint timeout;
 } LocationReply;
+
+static gboolean location_timeout(gpointer data) {
+    LocationReply *reply = data;
+    reply->timeout = 0;
+    reply->reply(reply->owner, NULL);
+    reply->reply = NULL;
+    g_cancellable_cancel(reply->cancel);
+    return G_SOURCE_REMOVE;
+}
 
 static void location_ready(GObject *view, GAsyncResult *result, gpointer data) {
     g_autofree LocationReply *reply = data;
     g_autoptr(JSCValue) value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(view), result, NULL);
     g_autofree char *json = value && jsc_value_is_object(value) ? jsc_value_to_json(value, 0) : NULL;
-    reply->reply(reply->owner, json);
+    if (reply->timeout) g_source_remove(reply->timeout);
+    if (reply->reply) reply->reply(reply->owner, json);
+    g_object_unref(reply->cancel);
 }
 
 void web_reader_location(WebReader *r, WebEvent callback, void *owner) {
     LocationReply *reply = g_new(LocationReply, 1);
-    *reply = (LocationReply){callback, owner};
+    *reply = (LocationReply){callback, owner, g_cancellable_new(), 0};
+    reply->timeout = g_timeout_add(750, location_timeout, reply);
     webkit_web_view_evaluate_javascript(r->view, "window.vellumLocation?.()", -1, world,
-                                        NULL, NULL, location_ready, reply);
+                                        NULL, reply->cancel, location_ready, reply);
 }

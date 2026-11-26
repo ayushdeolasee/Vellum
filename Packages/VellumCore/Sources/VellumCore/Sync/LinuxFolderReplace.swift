@@ -3,6 +3,18 @@ import CFolderSync
 import Foundation
 import Glibc
 
+// A sync client or another reader can hold an advisory lock indefinitely.
+func lockLinuxFile(_ fd: Int32) throws {
+    let deadline = ContinuousClock.now + .milliseconds(400)
+    while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+        guard errno == EWOULDBLOCK || errno == EINTR else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+        guard ContinuousClock.now < deadline else { throw LibraryFileError.retryable }
+        usleep(10_000)
+    }
+}
+
 extension LocalFolderFileStore {
     /// The caller owns an independently opened description of the destination directory.
     /// All live and staging names resolve against that inode, even after a root rename.
@@ -12,7 +24,7 @@ extension LocalFolderFileStore {
               !name.utf8.contains(0), data.count <= limit, (expected?.count ?? 0) <= limit
         else { throw POSIXError(.EINVAL) }
         func error() -> POSIXError { POSIXError(.init(rawValue: errno) ?? .EIO) }
-        while flock(directory, LOCK_EX) != 0 { if errno != EINTR { throw error() } }
+        try lockLinuxFile(directory)
         defer { _ = flock(directory, LOCK_UN) }
 
         // Compare in chunks, including EOF. Never follow a replaced leaf or allocate
