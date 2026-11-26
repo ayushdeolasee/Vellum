@@ -14,7 +14,9 @@ public enum PdfEditEligibility: Equatable, Sendable {
     public static func classify(_ original: Data) -> Self {
         guard original.count <= 128 * 1024 * 1024 else { return .readOnly(.malformed) }
         do {
-            try PdfClassicStructure(original).inspect()
+            let structure = PdfClassicStructure(original)
+            try structure.inspect()
+            if structure.usesXrefStreams { return .readOnly(.unsupportedXref) }
             return .editable
         } catch let reason as PdfReadOnlyReason {
             return .readOnly(reason)
@@ -33,12 +35,12 @@ extension PdfClassicStructure {
     // Inspect EVERY live dictionary (including inline and unreachable ones) in
     // each revision's own object map. A newer object can replace even the name
     // or flags referenced by an older signature field.
-    private func inspect(_ value: Value, inbound: inout [Int: Int]) throws {
+    func inspect(_ value: Value, inbound: inout [Int: Int], structuralStream: Bool = false) throws {
         try charge()
         switch value {
         case .dictionary(let dict):
             let type = resolved(dict["Type"])?.name
-            if type == "XRef" || type == "ObjStm" { throw Reason.unsupportedXref }
+            if !structuralStream && (type == "XRef" || type == "ObjStm") { throw Reason.unsupportedXref }
             if dict["Perms"] != nil || dict["ByteRange"] != nil ||
                 resolved(dict["FT"])?.name == "Sig" || type == "Sig" || type == "DocTimeStamp" {
                 throw Reason.signed
@@ -58,14 +60,16 @@ extension PdfClassicStructure {
         }
     }
 
-    func validate(trailer: [String: Value], streamDictionaries: Dictionary<Int, Value>.Values) throws {
+    func validate(trailer: [String: Value], streamDictionaries: Dictionary<Int, Value>.Values, streamTrailer: Bool) throws {
         var inbound: [Int: Int] = [:]
         for value in objects.values {
             guard value.reference == nil else { throw Reason.malformed }
             try inspect(value, inbound: &inbound)
         }
-        for dict in streamDictionaries { try inspect(dict, inbound: &inbound) }
-        try inspect(.dictionary(trailer), inbound: &inbound)
+        for dict in streamDictionaries {
+            try inspect(dict, inbound: &inbound, structuralStream: dict.dictionary?["Type"]?.name == "ObjStm")
+        }
+        try inspect(.dictionary(trailer), inbound: &inbound, structuralStream: streamTrailer)
         guard let root = trailer["Root"]?.reference, let catalog = objects[root]?.dictionary,
               catalog["Type"]?.name == "Catalog", let pages = catalog["Pages"]?.reference,
               trailer["Info"] == nil || resolved(trailer["Info"])?.dictionary != nil
@@ -204,7 +208,7 @@ extension PdfClassicStructure {
                 // The writer reads a direct PDF text string. Bound decoding
                 // and reject IDs outside the unambiguous portable subset.
                 guard case .string(let range) = nm, range.count <= 1024,
-                      let string = PdfDictSource.decodeTextString(Array(bytes[range])),
+                      let string = PdfDictSource.decodeTextString(Array(range)),
                       !string.isEmpty, string.utf8.allSatisfy({ (32...126).contains($0) })
                 else { throw Reason.ambiguousAnnotation }
                 id = string

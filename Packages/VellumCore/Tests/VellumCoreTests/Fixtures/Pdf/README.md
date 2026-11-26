@@ -26,3 +26,9 @@ rm disposable.pem
 ```
 
 From the repository root, run `uv run tools/pdf-fixtures/validate.py` with Poppler and OpenSSL on PATH. It parses PDF objects with libqpdf recovery disabled, checks the detached signature against the actual byte ranges and samples the corner colors from all four rendered pages. `PdfFixturesSanityTests` compares the bundled bytes with the Swift factories and opens the fixtures in PDFKit on Apple platforms.
+
+The two `resume-stream-{string,name}.pdf` files are copies of the four-page
+rotation fixture saved by pikepdf with object stream generation enabled. Both
+carry the same UUID in compressed Info object 10 (stream 1, slot 8). One
+encodes it as a String and the other as a Name. The page landmarks allow the
+ordinary GTK reader's displayed resume page to be checked independently.

@@ -719,7 +719,7 @@ extension PdfDictSource {
 extension ClassicPdfFile {
     /// Verify the actual type behind PDFium's text-only metadata API. Traverse up
     /// to 64 classic revisions newest-first, with a 1 MiB window per table and
-    /// 8 MiB of total xref reads. Only the current Info object's row is relevant.
+    /// 8 MiB of total classic xref reads. Stream proofs use the bounded physical parser.
     public static func currentInfoText(forKey key: String, in data: Data) -> String? {
         guard data.starts(with: "%PDF-".utf8),
               let marker = data.suffix(1024).range(of: Data("startxref".utf8), options: .backwards)
@@ -737,8 +737,11 @@ extension ClassicPdfFile {
             remaining -= count
             let start = data.startIndex + offset
             let window = Array(data[start..<(start + count)])
-            guard let section = try? xrefSection(in: window, at: 0, verifyingIdentity: true),
-                  !section.trailer.hasKey("XRefStm") else { return nil }
+            if !PdfSyntax.keyword("xref", in: window, at: 0) {
+                return streamInfoText(forKey: key, in: data)
+            }
+            guard let section = try? xrefSection(in: window, at: 0, verifyingIdentity: true) else { return nil }
+            if section.trailer.hasKey("XRefStm") { return streamInfoText(forKey: key, in: data) }
             if revision == 0 {
                 guard count == upperBound - offset,
                       PdfSyntax.skipTrivia(window, from: section.end, to: count) == count,
@@ -761,6 +764,19 @@ extension ClassicPdfFile {
             offset = previous
         }
         return nil
+    }
+
+    private static func streamInfoText(forKey key: String, in data: Data) -> String? {
+        // The physical proof visits the complete revision chain. Bound both the
+        // source and total inflated bytes independently of the rendering limit.
+        guard data.count <= 128 * 1024 * 1024 else { return nil }
+        let structure = PdfClassicStructure(data)
+        guard (try? structure.inspect(forEditing: false)) != nil, structure.usesXrefStreams,
+              let info = structure.latestTrailer.reference(forKey: "Info"),
+              case .dictionary(let dictionary) = structure.objects[info],
+              case .string(let raw) = dictionary[key], raw.count <= 64 * 1024
+        else { return nil }
+        return PdfDictSource.decodeTextString(Array(raw))
     }
 
     private static func infoText(forKey key: String, in data: Data, number: Int, at object: Int,
